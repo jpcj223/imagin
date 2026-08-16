@@ -1,173 +1,205 @@
 <template>
   <div class="page world-page">
-    <!-- 页头 -->
-    <div class="page-header">
-      <div class="header-left">
-        <h1 class="page-title">
-          <span class="title-icon">🌍</span>
-          世界观设定
-        </h1>
-        <p class="page-subtitle">
-          构建世界规则、地点与禁忌，为章节生成提供稳定依据
+    <!-- 世界观概览横幅 -->
+    <div class="world-hero">
+      <div class="hero-left">
+        <div class="hero-badge">
+          <span class="badge-icon">🌍</span>
+          <span class="badge-text">{{ project?.name || '加载中' }} · 世界观</span>
+        </div>
+        <h1 class="hero-title">世界设定总览</h1>
+        <p class="hero-desc">
+          构建完整的世界规则、地理环境与势力格局，为创作提供稳定的设定支撑
         </p>
       </div>
-      <div class="header-right">
-        <div class="header-stats">
-          <div class="stat">
-            <span class="stat-num">{{ totalCount }}</span>
-            <span class="stat-label">设定总数</span>
+      <div class="hero-right">
+        <div class="hero-stat">
+          <div class="hero-stat-value">{{ totalCount }}</div>
+          <div class="hero-stat-label">设定条目</div>
+        </div>
+        <div class="hero-stat">
+          <div class="hero-stat-value">{{ coveredCategories }}</div>
+          <div class="hero-stat-label">已覆盖分类</div>
+        </div>
+        <div class="hero-stat">
+          <div class="hero-stat-value">{{ highCount }}</div>
+          <div class="hero-stat-label">高重要</div>
+        </div>
+        <div class="hero-stat">
+          <div class="hero-stat-value success">{{ completionRate }}%</div>
+          <div class="hero-stat-label">完整度</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 世界观总览简易编辑 -->
+    <div class="overview-card" :class="{ expanded: overviewExpanded }">
+      <div class="overview-head" @click="overviewExpanded = !overviewExpanded">
+        <div class="overview-title">
+          <span class="ov-icon">📝</span>
+          <span>世界观总览（简易编辑）</span>
+        </div>
+        <div class="overview-toggle">
+          {{ overviewExpanded ? '收起' : '展开编辑' }}
+          <span class="toggle-arrow">{{ overviewExpanded ? '▲' : '▼' }}</span>
+        </div>
+      </div>
+      <div v-show="overviewExpanded" class="overview-body">
+        <div class="overview-grid">
+          <div class="ov-field">
+            <label class="ov-label">世界观名称</label>
+            <n-input v-model:value="overviewForm.title" placeholder="给你的世界起个名字" size="small" />
           </div>
-          <div class="stat-divider"></div>
-          <div class="stat">
-            <span class="stat-num">{{ highImportanceCount }}</span>
-            <span class="stat-label">高重要</span>
+          <div class="ov-field">
+            <label class="ov-label">时代背景</label>
+            <n-input v-model:value="overviewForm.era" placeholder="如：古典仙侠、末世废土、星际时代" size="small" />
           </div>
-          <div class="stat-divider"></div>
-          <div class="stat">
-            <span class="stat-num">{{ categoryCount }}</span>
-            <span class="stat-label">分类数</span>
+          <div class="ov-field">
+            <label class="ov-label">核心力量体系</label>
+            <n-input v-model:value="overviewForm.power_system" placeholder="如：修炼体系、异能、魔法" size="small" />
+          </div>
+          <div class="ov-field">
+            <label class="ov-label">整体基调</label>
+            <n-input v-model:value="overviewForm.atmosphere" placeholder="如：热血、暗黑、治愈" size="small" />
           </div>
         </div>
-        <n-button type="primary" @click="startCreate">
-          <template #icon>＋</template>
-          新增设定
-        </n-button>
+        <div class="ov-field ov-full">
+          <label class="ov-label">世界观简介</label>
+          <n-input
+            v-model:value="overviewForm.synopsis"
+            type="textarea"
+            :autosize="{ minRows: 3, maxRows: 6 }"
+            placeholder="一句话介绍你的世界整体设定..."
+          />
+        </div>
+        <div class="ov-field ov-full">
+          <label class="ov-label">核心规则</label>
+          <n-input
+            v-model:value="overviewForm.core_rules"
+            type="textarea"
+            :autosize="{ minRows: 3, maxRows: 6 }"
+            placeholder="这个世界最重要的几条规则和禁忌..."
+          />
+        </div>
+        <div class="ov-actions">
+          <n-button size="small" @click="resetOverview">重置</n-button>
+          <n-button type="primary" size="small" :loading="overviewSaving" @click="saveOverview">
+            💾 保存总览
+          </n-button>
+        </div>
       </div>
     </div>
 
     <!-- 主体：三栏布局 -->
     <div class="workbench">
-      <!-- 左侧：设定索引 -->
-      <aside class="list-panel">
-        <div class="panel-tools">
-          <n-input v-model:value="keyword" clearable placeholder="搜索设定...">
-            <template #prefix>🔍</template>
-          </n-input>
-          <n-select
-            v-model:value="categoryFilter"
-            clearable
-            :options="categoryOptions"
-            placeholder="分类筛选"
-            style="width: 120px"
-          />
+      <!-- 左侧：分类树 -->
+      <aside class="category-panel">
+        <div class="panel-title">设定分类</div>
+        <div class="category-tree">
+          <div
+            v-for="cat in categoriesWithCount"
+            :key="cat.value"
+            class="cat-node"
+            :class="{ active: activeCategory === cat.value }"
+            @click="selectCategory(cat.value)"
+          >
+            <span class="cat-icon">{{ cat.icon }}</span>
+            <span class="cat-name">{{ cat.label }}</span>
+            <span class="cat-count">{{ cat.count }}</span>
+          </div>
         </div>
+      </aside>
 
-        <!-- 快捷模板 -->
-        <div class="template-bar">
-          <span class="template-label">快捷模板</span>
-          <div class="template-btns">
-            <n-button
-              v-for="tpl in templates"
-              :key="tpl.name"
-              size="tiny"
-              quaternary
-              @click="applyTemplate(tpl)"
-            >
-              {{ tpl.icon }} {{ tpl.name }}
+      <!-- 中间：条目列表 -->
+      <section class="list-panel">
+        <div class="list-head">
+          <div class="list-title">
+            <span class="cur-cat-icon">{{ currentCategoryIcon }}</span>
+            <span>{{ currentCategoryLabel }}</span>
+            <span class="list-count">{{ filteredList.length }} 条</span>
+          </div>
+          <div class="list-tools">
+            <n-input v-model:value="keyword" clearable placeholder="搜索..." size="small" style="width: 160px">
+              <template #prefix>🔍</template>
+            </n-input>
+            <n-button type="primary" size="small" @click="startCreate">
+              <template #icon>＋</template>
+              新增
             </n-button>
           </div>
         </div>
 
         <n-scrollbar class="list-scroll">
-          <div v-if="loading" class="list-loading">
-            <n-spin size="small" />
-            <span>加载中...</span>
-          </div>
-
-          <div v-else-if="groupedWorlds.length === 0" class="list-empty">
-            <div class="empty-icon">📑</div>
-            <p>还没有设定</p>
-            <p class="empty-sub">点击右上角「新增设定」开始构建世界</p>
-          </div>
-
-          <div v-else class="setting-groups">
-            <template v-for="group in groupedWorlds" :key="group.category">
-              <!-- 分类组头 -->
-              <div class="group-header">
-                <span class="group-icon">{{ categoryIcon(group.category) }}</span>
-                <span class="group-name">{{ categoryLabel(group.category) }}</span>
-                <n-tag size="tiny" type="default">{{ group.items.length }}</n-tag>
-              </div>
-
-              <!-- 设定列表 -->
-              <div class="group-items">
-                <div
-                  v-for="item in group.items"
-                  :key="item.id"
-                  class="setting-item"
-                  :class="{ active: editingId === item.id }"
-                  @click="selectWorld(item)"
-                >
-                  <div class="item-icon">{{ categoryIcon(item.category) }}</div>
-                  <div class="item-content">
-                    <div class="item-title-row">
-                      <span class="item-title">{{ item.title || '未命名设定' }}</span>
-                      <n-tag size="tiny" :type="importanceTagType(item.importance)">
-                        {{ importanceLabel(item.importance) }}
-                      </n-tag>
-                    </div>
-                    <div v-if="item.tags" class="item-tags">
-                      <span v-for="tag in parseTagList(item.tags).slice(0, 3)" :key="tag" class="tag-chip">
-                        {{ tag }}
-                      </span>
-                    </div>
-                    <div class="item-desc">
-                      {{ shortText(item.rules || item.geography || item.era || '暂无描述', 60) }}
-                    </div>
-                  </div>
+          <div class="list-inner">
+            <div v-if="loading" class="list-loading">
+              <n-spin size="small" />
+              <span>加载中...</span>
+            </div>
+            <div v-else-if="filteredList.length === 0" class="list-empty">
+              <div class="empty-icon">📑</div>
+              <p>暂无{{ currentCategoryLabel }}设定</p>
+              <p class="empty-sub">点击「新增」添加第一条</p>
+            </div>
+            <div v-else class="setting-list">
+              <div
+                v-for="item in filteredList"
+                :key="item.id"
+                class="setting-item"
+                :class="{ active: editingId === item.id }"
+                @click="selectWorld(item)"
+              >
+                <div class="item-head">
+                  <span class="item-title">{{ item.title || '未命名' }}</span>
+                  <n-tag size="tiny" :type="importanceTagType(item.importance)">
+                    {{ importanceLabel(item.importance) }}
+                  </n-tag>
+                </div>
+                <div v-if="item.tags" class="item-tags">
+                  <span v-for="tag in parseTagList(item.tags).slice(0, 3)" :key="tag" class="tag-chip">
+                    {{ tag }}
+                  </span>
+                </div>
+                <div class="item-desc">
+                  {{ shortDesc(item) }}
                 </div>
               </div>
-            </template>
+            </div>
           </div>
         </n-scrollbar>
-      </aside>
+      </section>
 
-      <!-- 中间：详情编辑 -->
+      <!-- 右侧：详情编辑 -->
       <section class="detail-panel">
         <div class="detail-header">
           <div class="detail-title">
-            <h2>
-              {{ editingId ? '编辑设定' : '新增设定' }}
-              <span v-if="isDirty" class="dirty-dot" title="有未保存的修改">●</span>
-            </h2>
-            <span class="detail-sub">
-              {{ editingId ? `ID ${editingId}` : '未保存' }}
-            </span>
+            <h2>{{ editingId ? '编辑设定' : (isCreating ? '新增设定' : '选择条目') }}</h2>
+            <span v-if="isDirty" class="dirty-dot" title="有未保存的修改">●</span>
           </div>
-          <div class="detail-actions">
+          <div class="detail-actions" v-if="editingId || isCreating">
             <n-popconfirm v-if="editingId" positive-text="确认删除" negative-text="取消" @positive-click="remove">
               <template #trigger>
-                <n-button type="error" text>🗑️ 删除</n-button>
+                <n-button type="error" text size="small">🗑️ 删除</n-button>
               </template>
               确认删除这条设定？
             </n-popconfirm>
-            <n-button @click="resetCurrent">↺ 重置</n-button>
-            <n-button type="primary" :disabled="!canSave" @click="save">
-              💾 保存
-            </n-button>
+            <n-button text size="small" @click="resetCurrent">↺ 重置</n-button>
+            <n-button type="primary" size="small" :disabled="!canSave" @click="save">💾 保存</n-button>
           </div>
         </div>
 
         <div v-if="!editingId && !isCreating" class="detail-empty">
           <div class="empty-icon">✏️</div>
           <p>从左侧选择一条设定进行编辑</p>
-          <p class="empty-sub">或点击右上角新增</p>
+          <p class="empty-sub">或点击「新增」创建</p>
         </div>
 
         <n-scrollbar v-else class="form-scroll">
           <n-form class="detail-form" label-placement="top" :show-label="true">
             <!-- 基本信息 -->
             <div class="form-section">
-              <div class="section-title">
-                基本信息
-                <span class="section-hint">设定的标识和分类</span>
-              </div>
+              <div class="section-title">基本信息</div>
               <n-form-item label="设定标题">
-                <n-input
-                  v-model:value="form.title"
-                  placeholder="例如：灵能等级体系、旧城禁区"
-                  size="large"
-                />
+                <n-input v-model:value="form.title" placeholder="输入设定名称" size="large" />
               </n-form-item>
               <div class="form-grid-3">
                 <n-form-item label="分类">
@@ -177,189 +209,65 @@
                   <n-select v-model:value="form.importance" :options="importanceOptions" />
                 </n-form-item>
                 <n-form-item label="关联章节">
-                  <n-input v-model:value="form.related_chapters" placeholder="例如：1-5, 12" />
+                  <n-input v-model:value="form.related_chapters" placeholder="如：1-5, 12" />
                 </n-form-item>
               </div>
               <n-form-item label="标签">
-                <n-input v-model:value="form.tags" placeholder="逗号分隔，例如：灵能, 禁忌, 城市" />
+                <n-input v-model:value="form.tags" placeholder="逗号分隔，如：灵能,禁忌,城市" />
               </n-form-item>
             </div>
 
-            <!-- 世界设定内容 -->
+            <!-- 设定内容 -->
             <div class="form-section">
-              <div class="section-title">
-                设定内容
-                <span class="section-hint">描述世界的规则与细节</span>
-              </div>
+              <div class="section-title">设定内容</div>
+              <n-form-item label="详细描述">
+                <n-input
+                  v-model:value="form.rules"
+                  type="textarea"
+                  :autosize="{ minRows: 8, maxRows: 16 }"
+                  placeholder="详细描述该设定的内容、规则、背景等"
+                />
+              </n-form-item>
               <div class="form-grid-2">
                 <n-form-item label="时代背景">
-                  <n-input
-                    v-model:value="form.era"
-                    type="textarea"
-                    :autosize="{ minRows: 4, maxRows: 8 }"
-                    placeholder="描述故事发生的时代、历史背景、社会结构..."
-                  />
+                  <n-input v-model:value="form.era" type="textarea" :autosize="{ minRows: 4, maxRows: 6 }" placeholder="相关时代背景信息" />
                 </n-form-item>
-                <n-form-item label="地点 / 空间结构">
-                  <n-input
-                    v-model:value="form.geography"
-                    type="textarea"
-                    :autosize="{ minRows: 4, maxRows: 8 }"
-                    placeholder="描述地理环境、重要地点、空间布局..."
-                  />
+                <n-form-item label="地理环境">
+                  <n-input v-model:value="form.geography" type="textarea" :autosize="{ minRows: 4, maxRows: 6 }" placeholder="相关地理信息" />
                 </n-form-item>
               </div>
-              <div class="form-grid-2">
-                <n-form-item label="氛围基调">
-                  <n-input
-                    v-model:value="form.atmosphere"
-                    type="textarea"
-                    :autosize="{ minRows: 4, maxRows: 8 }"
-                    placeholder="描述整体叙事氛围、情感基调、美学风格..."
-                  />
-                </n-form-item>
-                <n-form-item label="世界规则 / 禁忌">
-                  <n-input
-                    v-model:value="form.rules"
-                    type="textarea"
-                    :autosize="{ minRows: 4, maxRows: 8 }"
-                    placeholder="描述世界运行规则、力量体系、禁忌事项..."
-                  />
-                </n-form-item>
-              </div>
-              <n-form-item label="补充信息">
-                <n-input
-                  v-model:value="form.extra"
-                  type="textarea"
-                  :autosize="{ minRows: 4, maxRows: 10 }"
-                  placeholder="其他需要记录的补充设定..."
-                />
-                <div class="desc-footer">
-                  <span class="char-count">{{ totalContentLength }} 字</span>
-                </div>
+              <n-form-item label="氛围基调">
+                <n-input v-model:value="form.atmosphere" type="textarea" :autosize="{ minRows: 3, maxRows: 5 }" placeholder="该设定带来的氛围感受" />
               </n-form-item>
             </div>
 
-            <!-- 关联数据 -->
+            <!-- 关联资料 -->
             <div class="form-section">
-              <div class="section-title">
-                关联数据
-                <span class="section-hint">与其他资料的关联关系</span>
-              </div>
+              <div class="section-title">关联资料</div>
               <div class="form-grid-2">
                 <n-form-item label="关联人物">
-                  <n-select
-                    v-model:value="selectedCharacterIds"
-                    multiple
-                    clearable
-                    filterable
-                    :options="characterOptions"
-                    placeholder="选择受此设定影响的人物"
-                  />
+                  <n-select v-model:value="selectedCharacterIds" multiple filterable :options="characterOptions" placeholder="选择相关人物" />
                 </n-form-item>
                 <n-form-item label="关联组织">
-                  <n-select
-                    v-model:value="selectedOrganizationIds"
-                    multiple
-                    clearable
-                    filterable
-                    :options="organizationOptions"
-                    placeholder="选择相关的组织势力"
-                  />
+                  <n-select v-model:value="selectedOrganizationIds" multiple filterable :options="organizationOptions" placeholder="选择相关组织" />
                 </n-form-item>
               </div>
               <n-form-item label="关联伏笔">
-                <n-select
-                  v-model:value="selectedForeshadowingIds"
-                  multiple
-                  clearable
-                  filterable
-                  :options="foreshadowingOptions"
-                  placeholder="选择与此设定绑定的伏笔"
-                />
+                <n-select v-model:value="selectedForeshadowingIds" multiple filterable :options="foreshadowingOptions" placeholder="选择相关伏笔" />
               </n-form-item>
-              <n-form-item label="冲突检查备注">
-                <n-input
-                  v-model:value="form.conflict_notes"
-                  type="textarea"
-                  :autosize="{ minRows: 3, maxRows: 6 }"
-                  placeholder="记录可能与角色、组织、章节冲突的地方..."
-                />
+              <n-form-item label="潜在冲突">
+                <n-input v-model:value="form.conflict_notes" type="textarea" :autosize="{ minRows: 3, maxRows: 5 }" placeholder="该设定可能与哪些内容冲突" />
               </n-form-item>
             </div>
           </n-form>
         </n-scrollbar>
       </section>
-
-      <!-- 右侧：设定体检 -->
-      <aside class="side-panel">
-        <!-- 完整度卡片 -->
-        <div class="insight-card primary-card">
-          <div class="card-header">
-            <span class="card-icon">📊</span>
-            <span class="card-title">设定完整度</span>
-          </div>
-          <div class="completion-display">
-            <div class="completion-ring">
-              <svg viewBox="0 0 80 80" class="ring-svg">
-                <circle cx="40" cy="40" r="34" class="ring-bg" />
-                <circle
-                  cx="40"
-                  cy="40"
-                  r="34"
-                  class="ring-fill"
-                  :style="{ strokeDasharray: `${currentCompletion * 2.136} 213.6` }"
-                />
-              </svg>
-              <div class="ring-center">
-                <span class="ring-num">{{ currentCompletion }}</span>
-                <span class="ring-unit">%</span>
-              </div>
-            </div>
-          </div>
-          <p class="completion-advice">{{ completionAdvice }}</p>
-        </div>
-
-        <!-- 分类覆盖 -->
-        <div class="insight-card">
-          <div class="card-header">
-            <span class="card-icon">🏷️</span>
-            <span class="card-title">分类覆盖</span>
-          </div>
-          <div class="category-grid">
-            <div
-              v-for="item in categoryStats"
-              :key="item.value"
-              class="category-item"
-              :class="{ active: item.count > 0 }"
-            >
-              <span class="cat-icon">{{ categoryIcon(item.value) }}</span>
-              <span class="cat-name">{{ item.label }}</span>
-              <span class="cat-count">{{ item.count }}</span>
-            </div>
-          </div>
-        </div>
-
-        <!-- 快速清单 -->
-        <div class="insight-card">
-          <div class="card-header">
-            <span class="card-icon">💡</span>
-            <span class="card-title">AI 补全建议</span>
-          </div>
-          <div class="check-list">
-            <div v-for="(hint, idx) in assistantHints" :key="idx" class="check-row" :class="{ ready: hint.done }">
-              <span class="check-icon">{{ hint.done ? '✓' : '○' }}</span>
-              <span class="check-text">{{ hint.text }}</span>
-            </div>
-          </div>
-        </div>
-      </aside>
     </div>
   </div>
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref } from 'vue'
 import { createResource, deleteResource, listResource, updateResource } from '@/api/resources'
 import { useProjectStore } from '@/stores/project'
 import { useDictStore } from '@/stores/dict'
@@ -374,15 +282,97 @@ const worlds = ref<WorldSetting[]>([])
 const characters = ref<CharacterItem[]>([])
 const organizations = ref<OrganizationItem[]>([])
 const foreshadowings = ref<ForeshadowingItem[]>([])
+const loading = ref(false)
 const keyword = ref('')
-const categoryFilter = ref<string | null>(null)
+const activeCategory = ref('geography')
 const editingId = ref<number | null>(null)
 const isCreating = ref(false)
-const loading = ref(false)
 
-const form = reactive({
+// ===== 世界观总览 =====
+const overviewExpanded = ref(false)
+const overviewSaving = ref(false)
+const overviewId = ref<number | null>(null)
+const overviewForm = reactive({
   title: '',
-  category: 'other',
+  era: '',
+  power_system: '',
+  atmosphere: '',
+  synopsis: '',
+  core_rules: '',
+})
+const overviewOrigin = reactive({ ...overviewForm })
+
+function findOverviewItem(): WorldSetting | undefined {
+  return worlds.value.find((w) => w.category === 'overview' || w.title === '世界观总览')
+}
+
+function loadOverview() {
+  const item = findOverviewItem()
+  if (item) {
+    overviewId.value = item.id
+    overviewForm.title = item.title
+    overviewForm.era = item.era
+    overviewForm.atmosphere = item.atmosphere
+    overviewForm.synopsis = item.rules
+    overviewForm.core_rules = item.extra
+    overviewForm.power_system = item.geography
+  } else {
+    overviewId.value = null
+    overviewForm.title = '世界观总览'
+    overviewForm.era = ''
+    overviewForm.power_system = ''
+    overviewForm.atmosphere = ''
+    overviewForm.synopsis = ''
+    overviewForm.core_rules = ''
+  }
+  Object.assign(overviewOrigin, overviewForm)
+}
+
+function resetOverview() {
+  Object.assign(overviewForm, overviewOrigin)
+}
+
+async function saveOverview() {
+  const projectId = projectStore.currentProject?.id
+  if (!projectId) return
+  overviewSaving.value = true
+  try {
+    const payload = {
+      title: overviewForm.title || '世界观总览',
+      category: 'overview',
+      era: overviewForm.era,
+      geography: overviewForm.power_system,
+      atmosphere: overviewForm.atmosphere,
+      rules: overviewForm.synopsis,
+      extra: overviewForm.core_rules,
+      tags: '总览',
+      importance: 'high',
+      related_chapters: '',
+      related_characters: '',
+      related_organizations: '',
+      related_foreshadowings: '',
+      conflict_notes: '',
+    }
+    if (overviewId.value) {
+      await updateResource('world', overviewId.value, payload)
+    } else {
+      const created = await createResource<WorldSetting>('world', payload)
+      overviewId.value = created.id
+    }
+    Object.assign(overviewOrigin, overviewForm)
+    notify.success('总览已保存')
+    loadWorlds()
+  } catch (e) {
+    notify.error('保存失败')
+  } finally {
+    overviewSaving.value = false
+  }
+}
+
+const form = reactive<Partial<WorldSetting>>({
+  id: 0,
+  title: '',
+  category: 'geography',
   era: '',
   geography: '',
   atmosphere: '',
@@ -394,516 +384,509 @@ const form = reactive({
   related_characters: '',
   related_organizations: '',
   related_foreshadowings: '',
-  conflict_notes: ''
+  conflict_notes: '',
 })
 
-// 脏数据检测
 const { isDirty, markClean, confirmIfDirty } = useDirtySnapshot(form, '当前设定有未保存的修改，确定要离开吗？')
 
-// ===== 选项配置 =====
-const categoryOptions = [
-  { label: '时代', value: 'era' },
-  { label: '地点', value: 'location' },
-  { label: '力量体系', value: 'power' },
-  { label: '规则', value: 'rule' },
-  { label: '禁忌', value: 'taboo' },
-  { label: '名词', value: 'term' },
-  { label: '其他', value: 'other' }
-]
+const project = computed(() => projectStore.currentProject)
+
+// ===== 分类配置（从字典加载）=====
+const categoryOptions = computed(() => dictStore.options('world_category'))
+
+const categoryIcons: Record<string, string> = {
+  geography: '🗺️',
+  era: '📜',
+  power_system: '⚡',
+  rules: '📏',
+  items: '🎒',
+  weapons: '⚔️',
+  medicine: '💊',
+  creatures: '🐉',
+  organizations: '🏛️',
+  other: '📦',
+}
+
+const categoriesWithCount = computed(() => {
+  return categoryOptions.value.map((opt) => ({
+    value: opt.value,
+    label: opt.label,
+    icon: categoryIcons[opt.value] || '📌',
+    count: worlds.value.filter((w) => w.category === opt.value).length,
+  }))
+})
 
 const importanceOptions = computed(() => dictStore.options('importance'))
 
-const templates = [
-  {
-    icon: '⚔️',
-    name: '玄幻仙侠',
-    title: '灵力与宗门体系',
-    category: 'power',
-    era: '古典架空，宗门林立。',
-    geography: '九州、秘境、宗门山门。',
-    atmosphere: '热血、宿命、强者为尊。',
-    rules: '修为境界分明，灵力消耗必须自洽。',
+const characterOptions = computed(() => characters.value.map((c) => ({ label: c.name, value: c.id })))
+const organizationOptions = computed(() => organizations.value.map((o) => ({ label: o.name, value: o.id })))
+const foreshadowingOptions = computed(() => foreshadowings.value.map((f) => ({ label: f.keyword, value: f.id })))
+
+const selectedCharacterIds = computed({
+  get: () => parseIds(form.related_characters || ''),
+  set: (v: number[]) => { form.related_characters = joinIds(v) },
+})
+const selectedOrganizationIds = computed({
+  get: () => parseIds(form.related_organizations || ''),
+  set: (v: number[]) => { form.related_organizations = joinIds(v) },
+})
+const selectedForeshadowingIds = computed({
+  get: () => parseIds(form.related_foreshadowings || ''),
+  set: (v: number[]) => { form.related_foreshadowings = joinIds(v) },
+})
+
+// ===== 统计 =====
+const totalCount = computed(() => worlds.value.filter((w) => w.category !== 'overview').length)
+const highCount = computed(() => worlds.value.filter((w) => w.importance === 'high' && w.category !== 'overview').length)
+const coveredCategories = computed(() => new Set(worlds.value.filter((w) => w.category !== 'overview').map((w) => w.category)).size)
+const completionRate = computed(() => {
+  const total = categoryOptions.value.length || 10
+  return Math.round((coveredCategories.value / total) * 100)
+})
+
+const currentCategoryLabel = computed(() => {
+  const opt = categoryOptions.value.find((o) => o.value === activeCategory.value)
+  return opt?.label || '设定'
+})
+const currentCategoryIcon = computed(() => categoryIcons[activeCategory.value] || '📌')
+
+// ===== 列表过滤 =====
+const filteredList = computed(() => {
+  const kw = keyword.value.trim().toLowerCase()
+  return worlds.value
+    .filter((w) => w.category === activeCategory.value)
+    .filter((w) => {
+      if (!kw) return true
+      return [w.title, w.rules, w.tags, w.era, w.geography].join(' ').toLowerCase().includes(kw)
+    })
+    .sort((a, b) => {
+      if (a.importance === 'high' && b.importance !== 'high') return -1
+      if (a.importance !== 'high' && b.importance === 'high') return 1
+      return (b.id || 0) - (a.id || 0)
+    })
+})
+
+const canSave = computed(() => (form.title || '').trim().length > 0)
+
+// ===== 方法 =====
+function selectCategory(cat: string) {
+  activeCategory.value = cat
+  editingId.value = null
+  isCreating.value = false
+}
+
+function selectWorld(item: WorldSetting) {
+  if (!confirmIfDirty()) return
+  editingId.value = item.id
+  isCreating.value = false
+  Object.assign(form, { ...item })
+  markClean()
+}
+
+function startCreate() {
+  if (!confirmIfDirty()) return
+  editingId.value = null
+  isCreating.value = true
+  Object.assign(form, {
+    id: 0,
+    title: '',
+    category: activeCategory.value,
+    era: '',
+    geography: '',
+    atmosphere: '',
+    rules: '',
     extra: '',
-    tags: '修炼,宗门',
-    importance: 'high',
-    related_chapters: '',
-    related_characters: '',
-    related_organizations: '',
-    related_foreshadowings: '',
-    conflict_notes: ''
-  },
-  {
-    icon: '🏙️',
-    name: '都市异能',
-    title: '城市异常管理',
-    category: 'rule',
-    era: '现代都市，异能隐藏于日常。',
-    geography: '城市、地下组织、异能管理局。',
-    atmosphere: '现实压迫与超常力量并存。',
-    rules: '能力有代价，官方组织会追踪异常事件。',
-    extra: '',
-    tags: '异能,管理局',
-    importance: 'high',
-    related_chapters: '',
-    related_characters: '',
-    related_organizations: '',
-    related_foreshadowings: '',
-    conflict_notes: ''
-  },
-  {
-    icon: '🚀',
-    name: '星际科幻',
-    title: '星际航行边界',
-    category: 'rule',
-    era: '远未来，星际航行成熟。',
-    geography: '殖民星、空间站、边境航道。',
-    atmosphere: '宏大、冷峻、文明冲突。',
-    rules: '能源、航行距离和信息延迟需要保持一致。',
-    extra: '',
-    tags: '星舰,边境',
+    tags: '',
     importance: 'medium',
     related_chapters: '',
     related_characters: '',
     related_organizations: '',
     related_foreshadowings: '',
-    conflict_notes: ''
-  }
-]
-
-// ===== 计算属性 =====
-const filteredWorlds = computed(() => {
-  const text = keyword.value.trim().toLowerCase()
-  return worlds.value.filter((item) => {
-    const matchedText =
-      !text ||
-      [item.title, item.category, item.era, item.geography, item.atmosphere, item.rules, item.extra, item.tags, item.conflict_notes]
-        .join(' ')
-        .toLowerCase()
-        .includes(text)
-    const matchedCategory = !categoryFilter.value || item.category === categoryFilter.value
-    return matchedText && matchedCategory
+    conflict_notes: '',
   })
-})
-
-// 按分类分组
-const groupedWorlds = computed(() => {
-  const groups: { category: string; items: WorldSetting[] }[] = []
-  const categoryOrder = categoryOptions.map((o) => o.value)
-
-  for (const cat of categoryOrder) {
-    const items = filteredWorlds.value.filter((w) => w.category === cat)
-    if (items.length > 0) {
-      groups.push({ category: cat, items })
-    }
-  }
-  return groups
-})
-
-// 统计数据
-const totalCount = computed(() => worlds.value.length)
-const highImportanceCount = computed(() => worlds.value.filter((w) => w.importance === 'high').length)
-const categoryCount = computed(() => new Set(worlds.value.map((w) => w.category)).size)
-
-const canSave = computed(() => form.title.trim().length > 0)
-
-const currentCompletion = computed(() => completionOf(form))
-
-const totalContentLength = computed(() => {
-  return form.era.length + form.geography.length + form.atmosphere.length + form.rules.length + form.extra.length
-})
-
-const categoryStats = computed(() =>
-  categoryOptions.map((option) => ({
-    ...option,
-    count: worlds.value.filter((item) => item.category === option.value).length
-  }))
-)
-
-const completionAdvice = computed(() => {
-  if (currentCompletion.value >= 80) return '设定已经较完整，适合进入章节生成上下文。'
-  if (form.category === 'rule' || form.category === 'taboo') return '规则类设定建议写清触发条件、代价和例外。'
-  return '建议补充标题、标签、规则和关联章节，方便后续检索。'
-})
-
-const assistantHints = computed(() => [
-  { done: !!form.rules, text: form.rules ? '规则可用于生成前约束' : '缺少明确规则描述' },
-  { done: !!form.related_chapters, text: form.related_chapters ? '已标记关联章节' : '可补充关联章节范围' },
-  {
-    done: !!(form.related_characters || form.related_organizations),
-    text: form.related_characters || form.related_organizations ? '已建立资料关联' : '可关联人物或组织'
-  },
-  { done: !!form.conflict_notes, text: form.conflict_notes ? '已记录潜在冲突' : '建议记录可能的冲突点' }
-])
-
-const characterOptions = computed(() => characters.value.map((item) => ({ label: item.name, value: item.id })))
-const organizationOptions = computed(() => organizations.value.map((item) => ({ label: item.name, value: item.id })))
-const foreshadowingOptions = computed(() => foreshadowings.value.map((item) => ({ label: item.keyword, value: item.id })))
-
-const selectedCharacterIds = computed({
-  get: () => parseIds(form.related_characters),
-  set: (value: number[]) => {
-    form.related_characters = joinIds(value)
-  }
-})
-const selectedOrganizationIds = computed({
-  get: () => parseIds(form.related_organizations),
-  set: (value: number[]) => {
-    form.related_organizations = joinIds(value)
-  }
-})
-const selectedForeshadowingIds = computed({
-  get: () => parseIds(form.related_foreshadowings),
-  set: (value: number[]) => {
-    form.related_foreshadowings = joinIds(value)
-  }
-})
-
-// ===== 工具函数 =====
-function parseIds(value: string) {
-  return value
-    .split(',')
-    .map((item) => Number(item.trim()))
-    .filter((item) => Number.isFinite(item) && item > 0)
-}
-
-function joinIds(value: number[]) {
-  return value.join(',')
-}
-
-function parseTagList(tags: string) {
-  return tags
-    .split(',')
-    .map((t) => t.trim())
-    .filter((t) => t.length > 0)
-}
-
-function completionOf(item: Partial<WorldSetting> | typeof form) {
-  const fields = ['title', 'category', 'era', 'geography', 'atmosphere', 'rules', 'extra', 'tags', 'importance', 'related_chapters']
-  const finished = fields.filter((field) => String(item[field as keyof typeof item] ?? '').trim()).length
-  return Math.round((finished / fields.length) * 100)
-}
-
-function shortText(value: string, max = 50) {
-  return value?.length > max ? `${value.slice(0, max)}...` : value || ''
-}
-
-function categoryLabel(value: string) {
-  return categoryOptions.find((item) => item.value === value)?.label ?? '其他'
-}
-
-function categoryIcon(category: string): string {
-  const icons: Record<string, string> = {
-    era: '⏳',
-    location: '📍',
-    power: '⚡',
-    rule: '📜',
-    taboo: '⛔',
-    term: '📖',
-    other: '📁'
-  }
-  return icons[category] || '📁'
-}
-
-function importanceLabel(value: string) {
-  return dictStore.label('importance', value)
-}
-
-function importanceTagType(importance: string): 'default' | 'success' | 'info' | 'warning' | 'error' {
-  const map: Record<string, 'default' | 'success' | 'info' | 'warning' | 'error'> = {
-    low: 'default',
-    medium: 'info',
-    high: 'warning'
-  }
-  return map[importance] || 'default'
-}
-
-// ===== 表单操作 =====
-function fillForm(item?: Partial<WorldSetting>) {
-  Object.assign(form, {
-    title: item?.title ?? '',
-    category: item?.category ?? 'other',
-    era: item?.era ?? '',
-    geography: item?.geography ?? '',
-    atmosphere: item?.atmosphere ?? '',
-    rules: item?.rules ?? '',
-    extra: item?.extra ?? '',
-    tags: item?.tags ?? '',
-    importance: item?.importance ?? 'medium',
-    related_chapters: item?.related_chapters ?? '',
-    related_characters: item?.related_characters ?? '',
-    related_organizations: item?.related_organizations ?? '',
-    related_foreshadowings: item?.related_foreshadowings ?? '',
-    conflict_notes: item?.conflict_notes ?? ''
-  })
-}
-
-async function startCreate() {
-  if (!(await confirmIfDirty())) return
-  editingId.value = null
-  isCreating.value = true
-  fillForm()
-  await nextTick()
   markClean()
 }
 
-async function selectWorld(item: WorldSetting) {
-  if (editingId.value === item.id) return
-  if (!(await confirmIfDirty())) return
-  editingId.value = item.id
-  isCreating.value = false
-  fillForm(item)
-  await nextTick()
-  markClean()
-}
-
-async function resetCurrent() {
-  if (!(await confirmIfDirty('确定要重置当前编辑内容吗？'))) return
-  const current = worlds.value.find((item) => item.id === editingId.value)
-  if (current) {
-    fillForm(current)
+function resetCurrent() {
+  if (editingId.value) {
+    const item = worlds.value.find((w) => w.id === editingId.value)
+    if (item) Object.assign(form, { ...item })
   } else {
+    Object.assign(form, {
+      id: 0,
+      title: '',
+      category: activeCategory.value,
+      era: '',
+      geography: '',
+      atmosphere: '',
+      rules: '',
+      extra: '',
+      tags: '',
+      importance: 'medium',
+      related_chapters: '',
+      related_characters: '',
+      related_organizations: '',
+      related_foreshadowings: '',
+      conflict_notes: '',
+    })
+  }
+  markClean()
+}
+
+async function save() {
+  if (!canSave.value) return
+  const projectId = projectStore.currentProject?.id
+  if (!projectId) return
+
+  try {
+    if (editingId.value) {
+      await updateResource('world', editingId.value, { ...form })
+      notify.success('已保存')
+    } else {
+      const created = await createResource<WorldSetting>('world', { ...form })
+      editingId.value = created.id
+      isCreating.value = false
+      notify.success('已创建')
+    }
+    markClean()
+    loadWorlds()
+  } catch (e) {
+    notify.error('保存失败')
+  }
+}
+
+async function remove() {
+  const projectId = projectStore.currentProject?.id
+  if (!projectId || !editingId.value) return
+  try {
+    await deleteResource('world', editingId.value)
     editingId.value = null
     isCreating.value = false
-    fillForm()
+    notify.success('已删除')
+    loadWorlds()
+  } catch (e) {
+    notify.error('删除失败')
   }
-  await nextTick()
-  markClean()
 }
 
-async function applyTemplate(template: (typeof templates)[number]) {
-  if (!(await confirmIfDirty())) return
-  editingId.value = null
-  isCreating.value = true
-  Object.assign(form, template)
-  await nextTick()
-  markClean()
+function parseIds(str: string): number[] {
+  if (!str) return []
+  return str.split(',').map((s) => parseInt(s.trim())).filter((n) => !isNaN(n))
+}
+function joinIds(ids: number[]): string {
+  return ids.join(',')
 }
 
-async function ensureProject() {
-  if (!projectStore.currentProject) await projectStore.loadDefaultProject()
-  return projectStore.currentProject?.id
+function parseTagList(str: string): string[] {
+  if (!str) return []
+  return str.split(/[,，]/).map((s) => s.trim()).filter(Boolean)
 }
 
-// ===== 数据加载 =====
-async function load() {
-  const projectId = projectStore.currentProject!.id
+function shortDesc(item: WorldSetting): string {
+  const text = item.rules || item.geography || item.era || '暂无描述'
+  return text.length > 60 ? text.substring(0, 60) + '...' : text
+}
+
+function importanceLabel(val: string): string {
+  return dictStore.label('importance', val) || val
+}
+
+function importanceTagType(val: string): 'default' | 'success' | 'warning' | 'info' | 'error' {
+  if (val === 'high') return 'error'
+  if (val === 'medium') return 'warning'
+  return 'default'
+}
+
+async function loadWorlds() {
+  const projectId = projectStore.currentProject?.id
+  if (!projectId) return
   loading.value = true
   try {
-    const [worldList, characterList, organizationList, foreshadowingList] = await Promise.all([
-      listResource<WorldSetting>(projectId, 'world'),
-      listResource<CharacterItem>(projectId, 'characters'),
-      listResource<OrganizationItem>(projectId, 'organizations'),
-      listResource<ForeshadowingItem>(projectId, 'foreshadowings')
-    ])
-    worlds.value = worldList
-    characters.value = characterList
-    organizations.value = organizationList
-    foreshadowings.value = foreshadowingList
-
-    if (!editingId.value && !isCreating.value && worlds.value[0]) {
-      editingId.value = worlds.value[0].id
-      fillForm(worlds.value[0])
-      await nextTick()
-      markClean()
-    }
+    worlds.value = await listResource<WorldSetting>(projectId, 'world')
   } finally {
     loading.value = false
   }
 }
 
-// ===== CRUD =====
-async function save() {
-  if (!canSave.value) return
-  const projectId = await ensureProject()
+async function load() {
+  const projectId = projectStore.currentProject?.id
   if (!projectId) return
+  loading.value = true
+  try {
+    const [wList, cList, oList, fList] = await Promise.all([
+      listResource<WorldSetting>(projectId, 'world'),
+      listResource<CharacterItem>(projectId, 'characters'),
+      listResource<OrganizationItem>(projectId, 'organizations'),
+      listResource<ForeshadowingItem>(projectId, 'foreshadowings'),
+      dictStore.loadBatch(['world_category', 'importance']),
+    ])
+    worlds.value = wList
+    characters.value = cList
+    organizations.value = oList
+    foreshadowings.value = fList
 
-  if (editingId.value) {
-    const updated = await updateResource<WorldSetting>('world', editingId.value, { ...form })
-    notify.success('设定已更新')
-    await load()
-    const fresh = worlds.value.find((item) => item.id === updated.id)
-    if (fresh) {
-      fillForm(fresh)
-      await nextTick()
-      markClean()
+    // 默认选中第一个有数据的分类，否则第一个分类
+    const firstWithData = categoriesWithCount.value.find((c) => c.count > 0)
+    if (firstWithData) {
+      activeCategory.value = firstWithData.value
+    } else if (categoryOptions.value.length > 0) {
+      activeCategory.value = categoryOptions.value[0].value
     }
-  } else {
-    const created = await createResource<WorldSetting>('world', { project_id: projectId, ...form })
-    notify.success('设定已新增')
-    isCreating.value = false
-    await load()
-    const fresh = worlds.value.find((item) => item.id === created.id)
-    if (fresh) {
-      editingId.value = fresh.id
-      fillForm(fresh)
-      await nextTick()
-      markClean()
-    }
+
+    // 加载世界观总览
+    loadOverview()
+  } finally {
+    loading.value = false
   }
 }
-
-async function remove() {
-  if (!editingId.value) return
-  const currentIndex = worlds.value.findIndex((item) => item.id === editingId.value)
-  await deleteResource('world', editingId.value)
-  notify.success('设定已删除')
-  const nextItem = worlds.value[currentIndex + 1] || worlds.value[currentIndex - 1]
-  if (nextItem) {
-    editingId.value = nextItem.id
-    fillForm(nextItem)
-  } else {
-    editingId.value = null
-    isCreating.value = false
-    fillForm()
-  }
-  await load()
-  await nextTick()
-  markClean()
-}
-
-onMounted(async () => {
-  await dictStore.load('importance')
-})
 
 useProjectDataLoader(load)
 </script>
 
 <style scoped>
 .world-page {
-  height: calc(100vh - 60px);
+  padding: 20px 24px;
   display: flex;
   flex-direction: column;
-  gap: 12px;
-  padding-bottom: 12px;
+  gap: 16px;
+  height: 100%;
 }
 
-/* ===== 页头 ===== */
-.page-header {
+/* ===== 世界观概览横幅 ===== */
+.world-hero {
   display: flex;
-  align-items: center;
   justify-content: space-between;
-  flex-shrink: 0;
+  align-items: flex-end;
+  padding: 20px 24px;
+  background: linear-gradient(135deg, #1e3a5f 0%, #0f172a 100%);
+  border: 1px solid #2c4a6e;
+  border-radius: 10px;
 }
 
-.header-left {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-
-.page-title {
-  font-size: 18px;
-  font-weight: 700;
-  margin: 0;
-}
-
-.title-icon {
-  font-size: 18px;
-  margin-right: -2px;
-}
-
-.page-subtitle {
+.hero-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 12px;
+  background: rgba(59, 130, 246, 0.2);
+  border-radius: 20px;
   font-size: 12px;
-  color: var(--n-text-color-3, #6b7280);
+  color: #60a5fa;
+  margin-bottom: 10px;
+}
+.badge-icon { font-size: 14px; }
+
+.hero-title {
+  font-size: 22px;
+  font-weight: 700;
+  color: #f3f4f6;
+  margin: 0 0 6px 0;
+}
+
+.hero-desc {
+  font-size: 13px;
+  color: #9ca3af;
   margin: 0;
 }
 
-.header-right {
+.hero-right {
   display: flex;
-  align-items: center;
-  gap: 12px;
+  gap: 24px;
 }
-
-.header-stats {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 6px 14px;
-  background: var(--n-color-card, #1a1d21);
-  border: 1px solid var(--n-border-color, #2a2f3a);
-  border-radius: 8px;
+.hero-stat {
+  text-align: center;
 }
-
-.stat {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  min-width: 50px;
-}
-
-.stat-num {
-  font-size: 16px;
+.hero-stat-value {
+  font-size: 24px;
   font-weight: 700;
-  color: var(--n-color-primary, #3b82f6);
+  color: #f3f4f6;
   line-height: 1.2;
 }
-
-.stat-label {
-  font-size: 10px;
-  color: var(--n-text-color-3, #6b7280);
-  margin-top: 2px;
+.hero-stat-value.success { color: #4ade80; }
+.hero-stat-label {
+  font-size: 12px;
+  color: #9ca3af;
+  margin-top: 4px;
 }
 
-.stat-divider {
-  width: 1px;
-  height: 24px;
-  background: var(--n-border-color, #2a2f3a);
+/* ===== 世界观总览卡片 ===== */
+.overview-card {
+  background: #1c1f23;
+  border: 1px solid #2c3035;
+  border-radius: 8px;
+  overflow: hidden;
+  transition: all 0.2s;
+}
+.overview-card.expanded {
+  border-color: #3b82f6;
 }
 
-/* ===== 工作区 ===== */
-.workbench {
-  flex: 1;
+.overview-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 12px 16px;
+  cursor: pointer;
+  user-select: none;
+  transition: background 0.15s;
+}
+.overview-head:hover {
+  background: #202328;
+}
+
+.overview-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  font-weight: 600;
+  color: #e5e7eb;
+}
+.ov-icon { font-size: 16px; }
+
+.overview-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: #6b7280;
+}
+.toggle-arrow { font-size: 10px; }
+
+.overview-body {
+  padding: 0 16px 16px;
+  border-top: 1px solid #2c3035;
+  padding-top: 14px;
+}
+
+.overview-grid {
   display: grid;
-  grid-template-columns: 320px minmax(480px, 1fr) 280px;
+  grid-template-columns: repeat(4, 1fr);
   gap: 12px;
+  margin-bottom: 12px;
+}
+
+.ov-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.ov-field.ov-full {
+  margin-bottom: 12px;
+}
+
+.ov-label {
+  font-size: 12px;
+  color: #9ca3af;
+  font-weight: 500;
+}
+
+.ov-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+/* ===== 工作台 ===== */
+.workbench {
+  display: grid;
+  grid-template-columns: 200px 280px 1fr;
+  gap: 12px;
+  flex: 1;
   min-height: 0;
 }
 
-/* ===== 通用面板 ===== */
-.list-panel,
-.detail-panel,
-.side-panel {
-  background: var(--n-color-card, #1a1d21);
-  border: 1px solid var(--n-border-color, #2a2f3a);
-  border-radius: 10px;
+/* ===== 分类面板 ===== */
+.category-panel {
+  background: #1c1f23;
+  border: 1px solid #2c3035;
+  border-radius: 8px;
+  padding: 14px;
   display: flex;
   flex-direction: column;
-  overflow: hidden;
+  min-height: 0;
 }
 
-/* ===== 左侧列表面板 ===== */
-.panel-tools {
-  display: flex;
-  gap: 8px;
-  padding: 12px;
-  border-bottom: 1px solid var(--n-border-color, #2a2f3a);
-  flex-shrink: 0;
+.panel-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: #e5e7eb;
+  margin-bottom: 12px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid #2c3035;
 }
 
-.panel-tools > :first-child {
+.category-tree {
   flex: 1;
+  overflow-y: auto;
 }
 
-.template-bar {
+.cat-node {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 8px 12px;
-  border-bottom: 1px solid var(--n-border-color, #2a2f3a);
-  flex-shrink: 0;
-  flex-wrap: wrap;
+  padding: 8px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+  margin-bottom: 2px;
+  transition: background 0.15s;
+}
+.cat-node:hover { background: #24282d; }
+.cat-node.active {
+  background: #22262b;
+  border-left: 3px solid #3b82f6;
+  padding-left: 7px;
 }
 
-.template-label {
+.cat-icon { font-size: 16px; flex-shrink: 0; }
+.cat-name { flex: 1; font-size: 13px; color: #d1d5db; }
+.cat-count {
   font-size: 11px;
-  color: var(--n-text-color-3, #6b7280);
-  font-weight: 600;
+  color: #6b7280;
+  background: #24282d;
+  padding: 1px 7px;
+  border-radius: 10px;
 }
 
-.template-btns {
+/* ===== 列表面板 ===== */
+.list-panel {
+  background: #1c1f23;
+  border: 1px solid #2c3035;
+  border-radius: 8px;
   display: flex;
-  gap: 4px;
-  flex-wrap: wrap;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.list-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 12px 14px;
+  border-bottom: 1px solid #2c3035;
+  flex-shrink: 0;
+}
+
+.list-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 14px;
+  font-weight: 600;
+  color: #e5e7eb;
+}
+.cur-cat-icon { font-size: 16px; }
+.list-count {
+  font-size: 12px;
+  color: #6b7280;
+  font-weight: 400;
+  margin-left: 4px;
+}
+
+.list-tools {
+  display: flex;
+  gap: 8px;
 }
 
 .list-scroll {
@@ -911,449 +894,164 @@ useProjectDataLoader(load)
   min-height: 0;
 }
 
-.list-loading,
-.list-empty {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  padding: 60px 20px;
-  gap: 10px;
-  color: var(--n-text-color-3, #6b7280);
-  font-size: 13px;
-}
-
-.empty-icon {
-  font-size: 36px;
-}
-
-.list-empty p {
-  margin: 0;
-}
-
-.empty-sub {
-  font-size: 12px;
-  color: var(--n-text-color-3, #6b7280);
-}
-
-/* 设定分组 */
-.setting-groups {
-  padding: 8px 10px 12px;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.group-header {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 10px 8px 6px;
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--n-text-color-2, #9ca3af);
-  position: sticky;
-  top: 0;
-  background: var(--n-color-card, #1a1d21);
-  z-index: 1;
-}
-
-.group-header:first-child {
-  padding-top: 4px;
-}
-
-.group-icon {
-  font-size: 14px;
-}
-
-.group-name {
-  flex: 1;
-}
-
-.group-items {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
+.setting-list {
+  padding: 8px;
 }
 
 .setting-item {
-  display: flex;
-  align-items: flex-start;
-  gap: 10px;
-  padding: 10px 12px;
+  padding: 12px;
   border-radius: 8px;
   cursor: pointer;
+  margin-bottom: 8px;
+  border: 1px solid #2c3035;
+  background: #1a1d21;
   transition: all 0.15s;
-  border: 1px solid transparent;
 }
-
 .setting-item:hover {
-  background: var(--n-color-hover, #23272f);
+  background: #202429;
+  border-color: #3a3f46;
+  transform: translateX(2px);
 }
-
 .setting-item.active {
-  background: var(--n-color-primary-1-suppl, #1e3a5f);
-  border-color: var(--n-color-primary-3, #3b82f6);
+  background: #1e293b;
+  border-color: #3b82f6;
+  box-shadow: 0 2px 8px rgba(59, 130, 246, 0.15);
 }
 
-.item-icon {
-  font-size: 16px;
-  flex-shrink: 0;
-  width: 22px;
-  text-align: center;
-  margin-top: 1px;
-}
-
-.item-content {
-  flex: 1;
-  min-width: 0;
-}
-
-.item-title-row {
+.item-head {
   display: flex;
-  align-items: center;
   justify-content: space-between;
+  align-items: flex-start;
+  margin-bottom: 8px;
   gap: 8px;
-  margin-bottom: 4px;
 }
-
 .item-title {
   font-size: 13px;
   font-weight: 600;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  color: #f3f4f6;
+  flex: 1;
+  line-height: 1.4;
+  word-break: break-all;
 }
 
 .item-tags {
   display: flex;
   flex-wrap: wrap;
   gap: 4px;
-  margin-bottom: 4px;
+  margin-bottom: 8px;
 }
-
 .tag-chip {
-  padding: 1px 6px;
-  font-size: 10px;
-  border-radius: 4px;
-  background: var(--n-color-1, #1e2228);
-  color: var(--n-text-color-2, #9ca3af);
-  border: 1px solid var(--n-border-color, #2a2f3a);
+  font-size: 11px;
+  padding: 2px 8px;
+  background: #24282d;
+  color: #9ca3af;
+  border-radius: 10px;
+  border: 1px solid #2c3035;
 }
 
 .item-desc {
-  font-size: 11px;
-  color: var(--n-text-color-2, #9ca3af);
-  line-height: 1.5;
+  font-size: 12px;
+  color: #6b7280;
+  line-height: 1.6;
   display: -webkit-box;
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
   overflow: hidden;
 }
 
-/* ===== 中间详情面板 ===== */
+.list-loading, .list-empty, .detail-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 40px 20px;
+  color: #6b7280;
+  gap: 8px;
+}
+.empty-icon { font-size: 36px; margin-bottom: 4px; }
+.empty-sub { font-size: 12px; color: #4b5563; }
+
+/* ===== 详情面板 ===== */
+.detail-panel {
+  background: #1c1f23;
+  border: 1px solid #2c3035;
+  border-radius: 8px;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
 .detail-header {
   display: flex;
-  align-items: center;
   justify-content: space-between;
-  padding: 14px 20px;
-  border-bottom: 1px solid var(--n-border-color, #2a2f3a);
+  align-items: center;
+  padding: 12px 16px;
+  border-bottom: 1px solid #2c3035;
   flex-shrink: 0;
 }
 
 .detail-title h2 {
   font-size: 15px;
   font-weight: 600;
+  color: #f3f4f6;
   margin: 0;
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
 }
-
-.detail-sub {
-  font-size: 12px;
-  color: var(--n-text-color-3, #6b7280);
-  margin-top: 2px;
-}
-
-.dirty-dot {
-  color: #f59e0b;
-  font-size: 12px;
-  animation: dirtyPulse 1.5s ease-in-out infinite;
-}
-
-@keyframes dirtyPulse {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.4; }
-}
+.dirty-dot { color: #f59e0b; font-size: 10px; }
 
 .detail-actions {
   display: flex;
   gap: 8px;
 }
 
-.detail-empty {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 8px;
-  color: var(--n-text-color-3, #6b7280);
-  padding: 40px;
-  text-align: center;
-}
-
-.detail-empty .empty-icon {
-  font-size: 48px;
-  margin-bottom: 8px;
-}
-
-.detail-empty p {
-  margin: 0;
-  font-size: 14px;
-}
-
-.detail-empty .empty-sub {
-  font-size: 12px;
-}
-
 .form-scroll {
   flex: 1;
   min-height: 0;
-}
-
-.detail-form {
-  padding: 20px 28px 28px;
+  padding: 16px;
 }
 
 .form-section {
-  margin-bottom: 24px;
+  margin-bottom: 20px;
 }
-
-.form-section:last-child {
-  margin-bottom: 0;
-}
-
 .section-title {
-  font-size: 14px;
+  font-size: 13px;
   font-weight: 600;
-  margin-bottom: 14px;
-  padding-left: 10px;
-  border-left: 3px solid #6366f1;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-}
-
-.section-hint {
-  font-size: 11px;
-  font-weight: 400;
-  color: var(--n-text-color-3, #6b7280);
-  border-left: none;
-  padding-left: 0;
+  color: #d1d5db;
+  margin-bottom: 12px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid #2c3035;
 }
 
 .form-grid-2 {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: 12px 16px;
+  gap: 12px;
 }
-
 .form-grid-3 {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 12px 16px;
-}
-
-.desc-footer {
-  display: flex;
-  justify-content: flex-end;
-  margin-top: 6px;
-}
-
-.char-count {
-  font-size: 11px;
-  color: var(--n-text-color-3, #6b7280);
-}
-
-/* ===== 右侧面板 ===== */
-.side-panel {
-  padding: 12px;
+  grid-template-columns: 1fr 1fr 1fr;
   gap: 12px;
-  overflow-y: auto;
 }
 
-.insight-card {
-  padding: 14px;
-  border: 1px solid var(--n-border-color, #2a2f3a);
-  border-radius: 10px;
-  background: var(--n-color-1, #1e2228);
+/* ===== 响应式 ===== */
+@media (max-width: 1400px) {
+  .workbench {
+    grid-template-columns: 180px 260px 1fr;
+  }
+  .form-grid-3 {
+    grid-template-columns: 1fr 1fr;
+  }
 }
 
-.primary-card {
-  background: linear-gradient(135deg, var(--n-color-primary-1-suppl, #1e3a5f) 0%, var(--n-color-1, #1e2228) 100%);
-  border-color: var(--n-color-primary-3, #3b82f6);
-}
-
-.card-header {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-bottom: 12px;
-}
-
-.card-icon {
-  font-size: 16px;
-}
-
-.card-title {
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--n-text-color-1, #e5e7eb);
-}
-
-/* 完整度圆环 */
-.completion-display {
-  display: flex;
-  justify-content: center;
-  margin-bottom: 12px;
-}
-
-.completion-ring {
-  position: relative;
-  width: 80px;
-  height: 80px;
-}
-
-.ring-svg {
-  width: 100%;
-  height: 100%;
-  transform: rotate(-90deg);
-}
-
-.ring-bg {
-  fill: none;
-  stroke: var(--n-border-color, #2a2f3a);
-  stroke-width: 6;
-}
-
-.ring-fill {
-  fill: none;
-  stroke: url(#ringGradient);
-  stroke: var(--n-color-primary, #3b82f6);
-  stroke-width: 6;
-  stroke-linecap: round;
-  transition: stroke-dasharray 0.5s ease;
-}
-
-.ring-center {
-  position: absolute;
-  top: 50%;
-  left: 50%;
-  transform: translate(-50%, -50%);
-  display: flex;
-  align-items: baseline;
-  gap: 1px;
-}
-
-.ring-num {
-  font-size: 20px;
-  font-weight: 700;
-  color: var(--n-text-color-1, #e5e7eb);
-  line-height: 1;
-}
-
-.ring-unit {
-  font-size: 12px;
-  color: var(--n-text-color-3, #6b7280);
-}
-
-.completion-advice {
-  margin: 0;
-  font-size: 11px;
-  color: var(--n-text-color-2, #9ca3af);
-  line-height: 1.6;
-  text-align: center;
-}
-
-/* 分类网格 */
-.category-grid {
-  display: grid;
-  grid-template-columns: repeat(2, 1fr);
-  gap: 6px;
-}
-
-.category-item {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 6px 8px;
-  border-radius: 6px;
-  background: var(--n-color-card, #1a1d21);
-  border: 1px solid var(--n-border-color, #2a2f3a);
-  font-size: 11px;
-  transition: all 0.15s;
-}
-
-.category-item.active {
-  border-color: var(--n-color-primary-3, #3b82f6);
-  background: var(--n-color-primary-1-suppl, #1e3a5f);
-}
-
-.cat-icon {
-  font-size: 13px;
-}
-
-.cat-name {
-  flex: 1;
-  color: var(--n-text-color-2, #9ca3af);
-}
-
-.category-item.active .cat-name {
-  color: var(--n-text-color-1, #e5e7eb);
-}
-
-.cat-count {
-  font-weight: 600;
-  color: var(--n-text-color-3, #6b7280);
-}
-
-.category-item.active .cat-count {
-  color: var(--n-color-primary, #3b82f6);
-}
-
-/* 检查清单 */
-.check-list {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.check-row {
-  display: flex;
-  align-items: flex-start;
-  gap: 8px;
-  font-size: 12px;
-  color: var(--n-text-color-3, #6b7280);
-}
-
-.check-row.ready {
-  color: var(--n-text-color-2, #9ca3af);
-}
-
-.check-icon {
-  flex-shrink: 0;
-  width: 16px;
-  text-align: center;
-  font-size: 11px;
-}
-
-.check-row.ready .check-icon {
-  color: var(--n-color-success, #36d399);
-}
-
-.check-text {
-  line-height: 1.5;
+@media (max-width: 1100px) {
+  .workbench {
+    grid-template-columns: 180px 1fr;
+  }
+  .detail-panel { display: none; }
+  .form-grid-2, .form-grid-3 {
+    grid-template-columns: 1fr;
+  }
 }
 </style>
