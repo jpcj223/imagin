@@ -28,8 +28,8 @@ def _api_timeout_seconds() -> int:
         return 300
 
 
-def _max_tokens() -> int:
-    """限制单次生成长度，避免短目标触发模型自由扩写后长时间不返回。"""
+def _max_tokens_default() -> int:
+    """限制单次生成长度的全局默认值，避免短目标触发模型自由扩写后长时间不返回。"""
     raw = os.getenv("LLM_MAX_TOKENS", "2048")
     try:
         return max(256, int(raw))
@@ -45,7 +45,85 @@ def get_active_model_config() -> dict[str, Any] | None:
     return dict(row) if row else None
 
 
-def chat_completion(messages: list[dict[str, str]], temperature: float = 0.7) -> str:
+def _build_payload(config: dict[str, Any], messages: list[dict[str, str]],
+                   temperature: float | None = None,
+                   max_tokens: int | None = None,
+                   stream: bool = False) -> dict[str, Any]:
+    """根据配置 + 调用方覆盖参数构造请求 payload。
+
+    优先级：调用方传入参数 > 配置中保存的参数 > 硬编码默认值。
+    """
+    payload: dict[str, Any] = {
+        "model": config["model"],
+        "messages": messages,
+    }
+
+    # 温度：调用方优先，其次配置值，最后默认 0.7
+    if temperature is not None:
+        payload["temperature"] = temperature
+    elif config.get("temperature") is not None:
+        payload["temperature"] = config["temperature"]
+    else:
+        payload["temperature"] = 0.7
+
+    # max_tokens：调用方优先，其次配置值，最后环境变量默认
+    if max_tokens is not None:
+        payload["max_tokens"] = max_tokens
+    elif config.get("max_tokens"):
+        payload["max_tokens"] = config["max_tokens"]
+    else:
+        payload["max_tokens"] = _max_tokens_default()
+
+    # top_p：配置中有就传
+    if config.get("top_p") is not None:
+        payload["top_p"] = config["top_p"]
+
+    # frequency_penalty：配置中有就传
+    if config.get("frequency_penalty") is not None:
+        payload["frequency_penalty"] = config["frequency_penalty"]
+
+    # presence_penalty：配置中有就传
+    if config.get("presence_penalty") is not None:
+        payload["presence_penalty"] = config["presence_penalty"]
+
+    if stream:
+        payload["stream"] = True
+
+    return payload
+
+
+def _make_urlopen(config: dict[str, Any], payload: dict[str, Any]):
+    """构造并发送请求，返回 response 对象（供 with 使用）。
+
+    支持 proxy_url 配置；没有代理时走默认直连。
+    """
+    base_url = config["base_url"].rstrip("/")
+    data = json.dumps(payload).encode("utf-8")
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {config['api_key']}",
+    }
+    request = urllib.request.Request(
+        f"{base_url}/chat/completions",
+        data=data,
+        headers=headers,
+        method="POST",
+    )
+
+    proxy_url = config.get("proxy_url") or ""
+    if proxy_url:
+        proxy_handler = urllib.request.ProxyHandler({
+            "http": proxy_url,
+            "https": proxy_url,
+        })
+        opener = urllib.request.build_opener(proxy_handler)
+        return opener.open(request, timeout=_api_timeout_seconds())
+    else:
+        return urllib.request.urlopen(request, timeout=_api_timeout_seconds())
+
+
+def chat_completion(messages: list[dict[str, str]], temperature: float | None = None,
+                    max_tokens: int | None = None) -> str:
     """调用 OpenAI-compatible 聊天接口。
 
     这里刻意保持轻量，不把业务流程绑死到 LangChain；后续可以替换为更完整的模型适配层。
@@ -59,24 +137,12 @@ def chat_completion(messages: list[dict[str, str]], temperature: float = 0.7) ->
         # 当前应用内 Agent 使用 OpenAI-compatible /chat/completions 协议；
         # Anthropic 地址通常给 Claude Code 等工具使用，直接拼接会得到 404。
         raise LLMError("当前模型通道使用 OpenAI-compatible 协议，请填写以 /v1 结尾的兼容地址，例如 https://api.siliconflow.cn/v1")
-    payload = {
-        "model": config["model"],
-        "messages": messages,
-        "temperature": temperature,
-        "max_tokens": _max_tokens(),
-    }
-    request = urllib.request.Request(
-        f"{base_url}/chat/completions",
-        data=json.dumps(payload).encode("utf-8"),
-        headers={
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {config['api_key']}",
-        },
-        method="POST",
-    )
+
+    payload = _build_payload(config, messages, temperature=temperature,
+                             max_tokens=max_tokens, stream=False)
 
     try:
-        with urllib.request.urlopen(request, timeout=_api_timeout_seconds()) as response:
+        with _make_urlopen(config, payload) as response:
             body = json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode("utf-8", errors="ignore")
@@ -92,7 +158,9 @@ def chat_completion(messages: list[dict[str, str]], temperature: float = 0.7) ->
         raise LLMError("模型返回格式不符合 OpenAI-compatible 规范") from exc
 
 
-def chat_completion_stream(messages: list[dict[str, str]], temperature: float = 0.7) -> Iterator[str]:
+def chat_completion_stream(messages: list[dict[str, str]],
+                           temperature: float | None = None,
+                           max_tokens: int | None = None) -> Iterator[str]:
     """流式调用 OpenAI-compatible 聊天接口。
 
     后端只向业务层暴露纯文本增量，SSE/JSON 解析细节封装在这里，方便以后替换模型供应商。
@@ -103,28 +171,13 @@ def chat_completion_stream(messages: list[dict[str, str]], temperature: float = 
 
     base_url = config["base_url"].rstrip("/")
     if "/anthropic" in base_url.lower():
-        # 当前应用内 Agent 使用 OpenAI-compatible /chat/completions 协议。
         raise LLMError("当前模型通道使用 OpenAI-compatible 协议，请填写以 /v1 结尾的兼容地址，例如 https://api.siliconflow.cn/v1")
 
-    payload = {
-        "model": config["model"],
-        "messages": messages,
-        "temperature": temperature,
-        "stream": True,
-        "max_tokens": _max_tokens(),
-    }
-    request = urllib.request.Request(
-        f"{base_url}/chat/completions",
-        data=json.dumps(payload).encode("utf-8"),
-        headers={
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {config['api_key']}",
-        },
-        method="POST",
-    )
+    payload = _build_payload(config, messages, temperature=temperature,
+                             max_tokens=max_tokens, stream=True)
 
     try:
-        with urllib.request.urlopen(request, timeout=_api_timeout_seconds()) as response:
+        with _make_urlopen(config, payload) as response:
             for raw_line in response:
                 line = raw_line.decode("utf-8", errors="ignore").strip()
                 if not line or not line.startswith("data:"):

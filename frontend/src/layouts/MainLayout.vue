@@ -10,11 +10,11 @@
         <div v-for="group in groups" :key="group.title" class="nav-group">
           <div class="group-title">{{ group.title }}</div>
           <button
-            v-for="item in group.items"
-            :key="item.path"
-            class="nav-item"
-            :class="{ active: route.path === item.path && tabsStore.isRouteOpen(item.path) }"
-            @click="go(item)"
+              v-for="item in group.items"
+              :key="item.path"
+              class="nav-item"
+              :class="{ active: route.path === item.path && tabsStore.isRouteOpen(item.path) }"
+              @click="go(item)"
           >
             <span>{{ item.icon }}</span>
             <span>{{ item.title }}</span>
@@ -26,11 +26,11 @@
     <main class="workspace">
       <div class="tabs">
         <button
-          v-for="tab in tabsStore.tabs"
-          :key="tab.path"
-          class="tab"
-          :class="{ active: route.path === tab.path }"
-          @click="router.push(tab.path)"
+            v-for="tab in tabsStore.tabs"
+            :key="tab.path"
+            class="tab"
+            :class="{ active: route.path === tab.path }"
+            @click="router.push(tab.path)"
         >
           <span>{{ tab.icon }}</span>
           <span>{{ tab.title }}</span>
@@ -42,7 +42,7 @@
       <div class="content">
         <router-view v-if="tabsStore.isRouteOpen(route.path)" v-slot="{ Component }">
           <keep-alive>
-            <component :is="Component" :key="route.path" />
+            <component :is="Component" :key="route.path"/>
           </keep-alive>
         </router-view>
       </div>
@@ -51,10 +51,10 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, watch } from 'vue'
-import { useRoute, useRouter } from 'vue-router'
-import { useProjectStore } from '@/stores/project'
-import { useWorkspaceTabsStore, type WorkspaceTab } from '@/stores/workspaceTabs'
+import {onMounted, watch} from 'vue'
+import {useRoute, useRouter} from 'vue-router'
+import {useProjectStore} from '@/stores/project'
+import {useWorkspaceTabsStore, type WorkspaceTab} from '@/stores/workspaceTabs'
 
 const router = useRouter()
 const route = useRoute()
@@ -65,30 +65,31 @@ const groups = [
   {
     title: '导航控制台',
     items: [
-      { title: '创作中心', path: '/dashboard', icon: '🚀' },
-      { title: '章节生成', path: '/chapter-generate', icon: '✨' }
+      {title: '创作中心', path: '/dashboard', icon: '🚀'},
+      {title: '章节生成', path: '/chapter-generate', icon: '✨'}
     ]
   },
   {
     title: '核心管理',
     items: [
-      { title: '世界观设定', path: '/world', icon: '🌍' },
-      { title: '大纲管理', path: '/outline', icon: '📋' }
+      {title: '世界观设定', path: '/world', icon: '🌍'},
+      {title: '大纲管理', path: '/outline', icon: '📋'}
     ]
   },
   {
     title: '项目数据',
     items: [
-      { title: '人物卡片', path: '/characters', icon: '👥' },
-      { title: '组织势力', path: '/organizations', icon: '🏛️' },
-      { title: '伏笔看板', path: '/foreshadowings', icon: '🎭' },
-      { title: '长期记忆', path: '/memory', icon: '🧠' },
-      { title: '项目配置', path: '/project-config', icon: '⚙️' }
+      {title: '人物卡片', path: '/characters', icon: '👥'},
+      {title: '人物关系', path: '/character-relations', icon: '🕸️'},
+      {title: '组织势力', path: '/organizations', icon: '🏛️'},
+      {title: '伏笔看板', path: '/foreshadowings', icon: '🎭'},
+      {title: '长期记忆', path: '/memory', icon: '🧠'},
+      {title: '项目配置', path: '/project-config', icon: '⚙️'}
     ]
   },
   {
     title: '配置',
-    items: [{ title: 'API 配置', path: '/api-config', icon: '🔌' }]
+    items: [{title: 'API 配置', path: '/api-config', icon: '🔌'}]
   }
 ]
 
@@ -110,16 +111,16 @@ function closeTab(path: string) {
 }
 
 watch(
-  () => route.path,
-  () => {
-    const tab = navTabs.find((item) => item.path === route.path)
-    // 标签只允许来自导航白名单；没有标题的临时路由不生成标签。
-    // 注意：即使标签列表为空，只要当前路由是合法页面，也应该自动打开它，
-    // 避免刷新后因缓存清空导致内容区空白。
-    if (!tab) return
-    tabsStore.open(tab)
-  },
-  { immediate: true }
+    () => route.path,
+    () => {
+      const tab = navTabs.find((item) => item.path === route.path)
+      // 标签只允许来自导航白名单；没有标题的临时路由不生成标签。
+      // 注意：即使标签列表为空，只要当前路由是合法页面，也应该自动打开它，
+      // 避免刷新后因缓存清空导致内容区空白。
+      if (!tab) return
+      tabsStore.open(tab)
+    },
+    {immediate: true}
 )
 
 onMounted(() => {
@@ -163,24 +164,25 @@ onMounted(() => {
 }
 
 .nav-group {
-  padding: 12px 10px;
+  padding: 12px 14px;
   border-bottom: 1px solid #24282d;
 }
 
 .group-title {
-  margin: 0 8px 6px;
+  margin: 0 0 6px;
   color: #c8d1df;
   font-size: 13px;
   font-weight: 700;
+  text-align: left;
 }
 
 .nav-item {
-  display: grid;
-  grid-template-columns: 24px 1fr;
+  display: flex;
   align-items: center;
+  gap: 10px;
   width: 100%;
   height: 34px;
-  padding: 0 10px;
+  padding: 0 12px;
   border: 0;
   border-left: 3px solid transparent;
   border-radius: 4px;
@@ -188,6 +190,7 @@ onMounted(() => {
   background: transparent;
   text-align: left;
   cursor: pointer;
+  justify-content: flex-start;
 }
 
 .nav-item:hover,

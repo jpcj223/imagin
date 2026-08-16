@@ -7,22 +7,74 @@ export interface ModelConfig {
   api_key: string
   model: string
   is_active: number
+  temperature?: number | null
+  max_tokens?: number | null
+  top_p?: number | null
+  frequency_penalty?: number | null
+  presence_penalty?: number | null
+  proxy_url?: string
+  created_at?: string
+  updated_at?: string
 }
 
+export interface ModelConfigPayload {
+  name: string
+  base_url: string
+  api_key: string
+  model: string
+  is_active?: boolean
+  temperature?: number | null
+  max_tokens?: number | null
+  top_p?: number | null
+  frequency_penalty?: number | null
+  presence_penalty?: number | null
+  proxy_url?: string
+}
+
+/** 列出所有模型配置。 */
 export async function listModelConfigs() {
-  // 读取历史配置，用于进入页面时回填当前启用模型，避免用户反复手输。
   const { data } = await apiClient.get<ModelConfig[]>('/models')
   return data
 }
 
-export async function saveModelConfig(payload: Record<string, unknown>) {
-  // 保存 OpenAI-compatible 配置，后端会将 active 配置用于 Agent 调用。
-  const { data } = await apiClient.post('/models', payload)
+/** 获取当前启用的配置。 */
+export async function getActiveConfig() {
+  const { data } = await apiClient.get<ModelConfig | null>('/models/active')
   return data
 }
 
+/** 获取单条配置详情。 */
+export async function getModelConfig(id: number) {
+  const { data } = await apiClient.get<ModelConfig>(`/models/${id}`)
+  return data
+}
+
+/** 新建配置。 */
+export async function createModelConfig(payload: ModelConfigPayload) {
+  const { data } = await apiClient.post<ModelConfig>('/models', payload)
+  return data
+}
+
+/** 更新配置。 */
+export async function updateModelConfig(id: number, payload: ModelConfigPayload) {
+  const { data } = await apiClient.put<ModelConfig>(`/models/${id}`, payload)
+  return data
+}
+
+/** 设为启用配置。 */
+export async function activateModelConfig(id: number) {
+  const { data } = await apiClient.post<ModelConfig>(`/models/${id}/activate`)
+  return data
+}
+
+/** 删除配置。 */
+export async function deleteModelConfig(id: number) {
+  const { data } = await apiClient.delete<{ success: boolean }>(`/models/${id}`)
+  return data
+}
+
+/** 测试当前启用的模型连接。 */
 export async function testModelConnection() {
-  // 用一个最小聊天请求验证当前启用模型是否可用。
   const { data } = await apiClient.post<{ ok: boolean; message: string }>('/models/test')
   return data
 }

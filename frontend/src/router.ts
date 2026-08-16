@@ -9,6 +9,8 @@ import CharacterPage from '@/pages/CharacterPage.vue'
 import OrganizationPage from '@/pages/OrganizationPage.vue'
 import ForeshadowingPage from '@/pages/ForeshadowingPage.vue'
 import MemoryCenterPage from '@/pages/MemoryCenterPage.vue'
+import CharacterRelationsPage from '@/pages/CharacterRelationsPage.vue'
+
 
 const router = createRouter({
   history: createWebHistory(),
@@ -21,6 +23,7 @@ const router = createRouter({
     { path: '/outline', component: OutlinePage, meta: { title: '大纲管理', icon: '📋' } },
     { path: '/chapter-generate', component: ChapterGeneratePage, meta: { title: '章节生成', icon: '✨' } },
     { path: '/characters', component: CharacterPage, meta: { title: '人物卡片', icon: '👥' } },
+          { path: '/character-relations', component: CharacterRelationsPage, meta: { title: '人物关系', icon: '🕸️' } },
     { path: '/organizations', component: OrganizationPage, meta: { title: '组织势力', icon: '🏛️' } },
     { path: '/foreshadowings', component: ForeshadowingPage, meta: { title: '伏笔看板', icon: '🎭' } },
     { path: '/memory', component: MemoryCenterPage, meta: { title: '长期记忆', icon: '🧠' } }

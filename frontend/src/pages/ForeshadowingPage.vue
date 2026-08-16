@@ -1,141 +1,246 @@
 <template>
-  <div class="page page-wide">
-    <div class="page-title">
-      <div>
-        <h1>🎭 剧情风险看板</h1>
-        <p class="muted">把伏笔按生命周期排布，及时发现过期、长期未回收和剧情债。</p>
+  <div class="page page-wide foreshadowing-page">
+    <!-- 页头 -->
+    <div class="page-header">
+      <div class="header-left">
+        <h1 class="page-title">
+          <span class="title-icon">🎭</span>
+          伏笔看板
+        </h1>
+        <p class="page-subtitle">
+          把伏笔按生命周期排布，及时发现过期、长期未回收和剧情债
+        </p>
       </div>
-      <div class="title-actions">
-        <n-button @click="load">刷新</n-button>
-        <n-button type="primary" @click="startCreate">添加伏笔</n-button>
+      <div class="header-right">
+        <div class="header-stats">
+          <div class="stat">
+            <span class="stat-num">{{ totalCount }}</span>
+            <span class="stat-label">伏笔总数</span>
+          </div>
+          <div class="stat-divider"></div>
+          <div class="stat">
+            <span class="stat-num danger">{{ highRiskCount }}</span>
+            <span class="stat-label">高风险</span>
+          </div>
+          <div class="stat-divider"></div>
+          <div class="stat">
+            <span class="stat-num success">{{ resolvedCount }}</span>
+            <span class="stat-label">已回收</span>
+          </div>
+        </div>
+        <n-button type="primary" @click="startCreate">
+          <template #icon>＋</template>
+          添加伏笔
+        </n-button>
       </div>
     </div>
 
-    <div class="kanban-shell">
-      <div class="kanban-filters">
-        <n-input v-model:value="keyword" clearable placeholder="搜索关键词、描述、备注" />
-        <n-select v-model:value="importanceFilter" clearable :options="importanceOptions" placeholder="重要性" />
-        <n-input-number v-model:value="chapterFilter" clearable :min="1" placeholder="章节范围" />
-      </div>
+    <!-- 筛选工具栏 -->
+    <div class="filter-bar">
+      <n-input v-model:value="keyword" clearable placeholder="搜索关键词、描述、备注" style="width: 280px">
+        <template #prefix>🔍</template>
+      </n-input>
+      <n-select v-model:value="importanceFilter" clearable :options="importanceOptions" placeholder="重要性" style="width: 120px" />
+      <n-input-number v-model:value="chapterFilter" clearable :min="1" placeholder="章节范围" style="width: 120px" />
+      <div class="filter-spacer"></div>
+      <n-button text size="small" @click="load">↻ 刷新</n-button>
+    </div>
 
-      <div class="kanban-workbench">
-        <section class="kanban-board">
+    <!-- 主体：看板 + 详情 -->
+    <div class="workbench">
+      <!-- 左侧：看板 -->
+      <section class="kanban-panel">
+        <div class="panel-head">
+          <h2>伏笔生命周期</h2>
+        </div>
+        <div class="kanban-container">
           <div v-for="column in statusColumns" :key="column.value" class="kanban-column">
-            <div class="kanban-head">
+            <div class="column-header">
               <strong>{{ column.label }}</strong>
-              <span>{{ itemsByStatus(column.value).length }}</span>
+              <n-tag size="tiny" type="default">{{ itemsByStatus(column.value).length }}</n-tag>
             </div>
-            <div class="kanban-list">
-              <n-empty v-if="itemsByStatus(column.value).length === 0" size="small" description="暂无伏笔" />
-              <template v-else>
-                <button
-                  v-for="item in itemsByStatus(column.value)"
-                  :key="item.id"
-                  class="kanban-card"
-                  :class="{ active: editingId === item.id, danger: riskOf(item) === 'high', warning: riskOf(item) === 'medium' }"
-                  @click="selectForeshadowing(item)"
-                >
-                  <div class="item-title">
-                    <span>{{ item.keyword }}</span>
-                    <span class="muted">{{ importanceLabel(item.importance) }}</span>
+            <n-scrollbar class="column-scroll">
+              <div class="column-body">
+                <n-empty v-if="itemsByStatus(column.value).length === 0" size="small" description="暂无伏笔" />
+                <template v-else>
+                  <div
+                    v-for="item in itemsByStatus(column.value)"
+                    :key="item.id"
+                    class="kanban-card"
+                    :class="{ active: editingId === item.id, danger: riskOf(item) === 'high', warning: riskOf(item) === 'medium' }"
+                    @click="selectForeshadowing(item)"
+                  >
+                    <div class="card-header">
+                      <span class="card-title">{{ item.keyword }}</span>
+                      <n-tag size="tiny" :type="importanceTagType(item.importance)">
+                        {{ importanceLabel(item.importance) }}
+                      </n-tag>
+                    </div>
+                    <div class="card-meta">
+                      埋 {{ item.planted_chapter ?? '-' }} · 回 {{ item.payoff_chapter ?? '-' }}
+                    </div>
+                    <div class="card-desc">{{ shortText(item.description) }}</div>
+                    <div class="card-actions">
+                      <n-button
+                        v-for="target in nextStatuses(item.status)"
+                        :key="target.value"
+                        size="tiny"
+                        @click.stop="moveStatus(item, target.value)"
+                      >
+                        {{ target.short }}
+                      </n-button>
+                    </div>
                   </div>
-                  <div class="item-meta">
-                    埋 {{ item.planted_chapter ?? '-' }} · 回 {{ item.payoff_chapter ?? '-' }}
-                  </div>
-                  <div class="item-meta">{{ shortText(item.description) }}</div>
-                  <div class="quick-status">
-                    <n-button
-                      v-for="target in nextStatuses(item.status)"
-                      :key="target.value"
-                      size="tiny"
-                      @click.stop="moveStatus(item, target.value)"
-                    >
-                      {{ target.short }}
-                    </n-button>
-                  </div>
-                </button>
-              </template>
-            </div>
+                </template>
+              </div>
+            </n-scrollbar>
           </div>
-        </section>
+        </div>
+      </section>
 
-        <aside class="detail-panel risk-detail">
-          <div class="panel-head inline-head">
+      <!-- 右侧：详情编辑 -->
+      <aside class="detail-panel">
+        <div class="detail-header">
+          <div class="detail-title">
             <h2>
               {{ editingId ? '伏笔详情' : '新伏笔' }}
               <span v-if="isDirty" class="dirty-dot" title="有未保存的修改">●</span>
             </h2>
-            <span class="muted">{{ riskText }}</span>
+            <span class="detail-sub">{{ riskText }}</span>
           </div>
-
-          <n-form label-placement="top">
-            <n-form-item label="伏笔关键词">
-              <n-input v-model:value="form.keyword" placeholder="例如：神秘信件" />
-            </n-form-item>
-            <n-form-item label="伏笔描述">
-              <n-input v-model:value="form.description" type="textarea" :autosize="{ minRows: 4 }" />
-            </n-form-item>
-            <div class="grid-2">
-              <n-form-item label="状态">
-                <n-select v-model:value="form.status" :options="statusOptions" />
-              </n-form-item>
-              <n-form-item label="重要性">
-                <n-select v-model:value="form.importance" :options="importanceOptions" />
-              </n-form-item>
-            </div>
-            <div class="grid-2">
-              <n-form-item label="埋下章节">
-                <n-input-number v-model:value="form.planted_chapter" :min="1" clearable />
-              </n-form-item>
-              <n-form-item label="回收章节">
-                <n-input-number v-model:value="form.payoff_chapter" :min="1" clearable />
-              </n-form-item>
-            </div>
-            <div class="grid-2">
-              <n-form-item label="生效起始章节">
-                <n-input-number v-model:value="form.effective_from" :min="1" clearable />
-              </n-form-item>
-              <n-form-item label="失效章节">
-                <n-input-number v-model:value="form.expires_at" :min="1" clearable />
-              </n-form-item>
-            </div>
-            <n-form-item label="关联角色">
-              <n-select v-model:value="selectedCharacterIds" multiple clearable filterable :options="characterOptions" placeholder="选择伏笔牵连的角色" />
-            </n-form-item>
-            <n-form-item label="关联组织">
-              <n-select v-model:value="selectedOrganizationIds" multiple clearable filterable :options="organizationOptions" placeholder="选择伏笔牵连的组织" />
-            </n-form-item>
-            <n-form-item label="关联大纲">
-              <n-select v-model:value="selectedOutlineIds" multiple clearable filterable :options="outlineOptions" placeholder="选择埋设或回收所在大纲" />
-            </n-form-item>
-            <n-form-item label="备注">
-              <n-input v-model:value="form.notes" type="textarea" :autosize="{ minRows: 4 }" />
-            </n-form-item>
-          </n-form>
-
           <div class="detail-actions">
-            <n-button type="primary" @click="save">保存</n-button>
-            <n-button @click="startCreate">新增</n-button>
-            <n-button @click="resetCurrent">重置</n-button>
             <n-popconfirm v-if="editingId" positive-text="确认删除" negative-text="取消" @positive-click="remove">
               <template #trigger>
-                <n-button type="error">删除</n-button>
+                <n-button type="error" text>🗑️ 删除</n-button>
               </template>
               确认删除这个伏笔？
             </n-popconfirm>
+            <n-button @click="resetCurrent">↺ 重置</n-button>
+            <n-button type="primary" @click="save">💾 保存</n-button>
+          </div>
+        </div>
+
+        <div v-if="!editingId && !isCreating" class="detail-empty">
+          <div class="empty-icon">✏️</div>
+          <p>从左侧选择一个伏笔进行编辑</p>
+          <p class="empty-sub">或点击右上角添加</p>
+        </div>
+
+        <n-scrollbar v-else class="form-scroll">
+          <n-form class="detail-form" label-placement="top">
+            <div class="form-section">
+              <div class="section-title">
+                基本信息
+                <span class="section-hint">伏笔的核心标识</span>
+              </div>
+              <n-form-item label="伏笔关键词">
+                <n-input v-model:value="form.keyword" placeholder="例如：神秘信件" size="large" />
+              </n-form-item>
+              <div class="form-grid-2">
+                <n-form-item label="状态">
+                  <n-select v-model:value="form.status" :options="statusOptions" />
+                </n-form-item>
+                <n-form-item label="重要性">
+                  <n-select v-model:value="form.importance" :options="importanceOptions" />
+                </n-form-item>
+              </div>
+            </div>
+
+            <div class="form-section">
+              <div class="section-title">
+                生命周期
+                <span class="section-hint">埋下和回收的章节节点</span>
+              </div>
+              <div class="form-grid-2">
+                <n-form-item label="埋下章节">
+                  <n-input-number v-model:value="form.planted_chapter" :min="1" clearable style="width: 100%" />
+                </n-form-item>
+                <n-form-item label="回收章节">
+                  <n-input-number v-model:value="form.payoff_chapter" :min="1" clearable style="width: 100%" />
+                </n-form-item>
+              </div>
+              <div class="form-grid-2">
+                <n-form-item label="生效起始章节">
+                  <n-input-number v-model:value="form.effective_from" :min="1" clearable style="width: 100%" />
+                </n-form-item>
+                <n-form-item label="失效章节">
+                  <n-input-number v-model:value="form.expires_at" :min="1" clearable style="width: 100%" />
+                </n-form-item>
+              </div>
+            </div>
+
+            <div class="form-section">
+              <div class="section-title">
+                关联数据
+                <span class="section-hint">与其他资料的关联关系</span>
+              </div>
+              <n-form-item label="关联角色">
+                <n-select v-model:value="selectedCharacterIds" multiple clearable filterable :options="characterOptions" placeholder="选择伏笔牵连的角色" />
+              </n-form-item>
+              <n-form-item label="关联组织">
+                <n-select v-model:value="selectedOrganizationIds" multiple clearable filterable :options="organizationOptions" placeholder="选择伏笔牵连的组织" />
+              </n-form-item>
+              <n-form-item label="关联大纲">
+                <n-select v-model:value="selectedOutlineIds" multiple clearable filterable :options="outlineOptions" placeholder="选择埋设或回收所在大纲" />
+              </n-form-item>
+            </div>
+
+            <div class="form-section">
+              <div class="section-title">
+                伏笔描述
+                <span class="section-hint">详细内容和回收方式</span>
+              </div>
+              <n-form-item label="描述">
+                <n-input v-model:value="form.description" type="textarea" :autosize="{ minRows: 6, maxRows: 10 }" placeholder="详细描述伏笔具体内容、表现形式、回收方式..." />
+              </n-form-item>
+              <n-form-item label="备注">
+                <n-input v-model:value="form.notes" type="textarea" :autosize="{ minRows: 4, maxRows: 6 }" placeholder="额外说明、注意事项、可能的剧情影响..." />
+              </n-form-item>
+            </div>
+
+            <div v-if="form.status === 'abandoned'" class="form-section">
+              <div class="section-title">
+                废弃处理
+                <span class="section-hint">标记替代伏笔</span>
+              </div>
+              <n-form-item label="被替代伏笔">
+                <n-select
+                  v-model:value="form.replaced_by_id"
+                  clearable
+                  filterable
+                  :options="foreshadowingOptions"
+                  placeholder="选择接替本伏笔的新伏笔"
+                />
+                <div class="field-hint">标记后，新伏笔会出现在原伏笔的"替代链"中，方便追踪剧情演变。</div>
+              </n-form-item>
+            </div>
+          </n-form>
+
+          <!-- 智能发现入口 -->
+          <div class="ai-discovery-entry">
+            <div class="ai-discovery-icon">✨</div>
+            <div class="ai-discovery-text">
+              <div class="ai-discovery-title">智能伏笔发现</div>
+              <div class="ai-discovery-desc">分析已写章节，自动识别未登记的伏笔、长期未回收的剧情债。</div>
+            </div>
+            <n-button size="small" type="primary" ghost disabled>即将上线</n-button>
           </div>
 
-          <div class="insight-card">
-            <div class="insight-label">风险提示</div>
+          <!-- 风险提示 -->
+          <div class="risk-card">
+            <div class="risk-header">
+              <span class="risk-icon">⚠️</span>
+              <span class="risk-title">风险提示</span>
+            </div>
             <div class="check-list">
               <div v-for="item in riskHints" :key="item" class="check-row" :class="{ ready: !item.includes('风险') }">
-                <span>{{ item.includes('风险') ? '!' : '✓' }}</span>
-                <span>{{ item }}</span>
+                <span class="check-icon">{{ item.includes('风险') ? '!' : '✓' }}</span>
+                <span class="check-text">{{ item }}</span>
               </div>
             </div>
           </div>
-        </aside>
-      </div>
+        </n-scrollbar>
+      </aside>
     </div>
   </div>
 </template>
@@ -144,6 +249,7 @@
 import { computed, nextTick, onMounted, reactive, ref } from 'vue'
 import { createResource, deleteResource, listResource, updateResource } from '@/api/resources'
 import { useProjectStore } from '@/stores/project'
+import { useProjectDataLoader } from '@/composables/useProjectDataLoader'
 import { useDirtySnapshot } from '@/composables/useDirtySnapshot'
 import { notify } from '@/utils/notify'
 import type { CharacterItem, ChapterItem, ForeshadowingItem, OrganizationItem, OutlineItem } from '@/types/domain'
@@ -158,6 +264,7 @@ const keyword = ref('')
 const importanceFilter = ref<string | null>(null)
 const chapterFilter = ref<number | null>(null)
 const editingId = ref<number | null>(null)
+const isCreating = ref(false)
 const loading = ref(false)
 const form = reactive({
   keyword: '',
@@ -171,10 +278,11 @@ const form = reactive({
   notes: '',
   related_character_ids: '',
   related_organization_ids: '',
-  related_outline_ids: ''
+  related_outline_ids: '',
+  replaced_by_id: null as number | null
 })
 
-// 脏数据检测：切换伏笔、新增、重置前检查是否有未保存修改。
+// 脏数据检测
 const { isDirty, markClean, confirmIfDirty } = useDirtySnapshot(form, '当前伏笔有未保存的修改，确定要离开吗？')
 
 const statusColumns = [
@@ -193,6 +301,10 @@ const importanceOptions = [
 ]
 
 const latestChapterNo = computed(() => Math.max(0, ...chapters.value.map((item) => item.chapter_no)))
+const totalCount = computed(() => foreshadowings.value.length)
+const highRiskCount = computed(() => foreshadowings.value.filter((item) => riskOf(item) === 'high').length)
+const resolvedCount = computed(() => foreshadowings.value.filter((item) => item.status === 'resolved').length)
+
 const filteredForeshadowings = computed(() => {
   const text = keyword.value.trim().toLowerCase()
   return foreshadowings.value.filter((item) => {
@@ -202,12 +314,14 @@ const filteredForeshadowings = computed(() => {
     return matchedText && matchedImportance && matchedChapter
   })
 })
+
 const riskText = computed(() => {
   const risk = riskOf(form as ForeshadowingItem)
   if (risk === 'high') return '高风险'
   if (risk === 'medium') return '需关注'
   return '正常'
 })
+
 const riskHints = computed(() => {
   const hints = []
   if (!form.payoff_chapter && ['planted', 'developing', 'payoff_pending'].includes(form.status)) hints.push('风险：未设置回收章节')
@@ -216,10 +330,16 @@ const riskHints = computed(() => {
   if (!hints.length) hints.push('生命周期信息清晰')
   return hints
 })
+
 const characterOptions = computed(() => characters.value.map((item) => ({ label: item.name, value: item.id })))
 const organizationOptions = computed(() => organizations.value.map((item) => ({ label: item.name, value: item.id })))
 const outlineOptions = computed(() =>
   outlines.value.map((item) => ({ label: `${item.chapter_no ? `第${item.chapter_no}章 · ` : ''}${item.title}`, value: item.id }))
+)
+const foreshadowingOptions = computed(() =>
+  foreshadowings.value
+    .filter((item) => item.id !== editingId.value)
+    .map((item) => ({ label: item.keyword, value: item.id }))
 )
 const selectedCharacterIds = computed({
   get: () => parseIds(form.related_character_ids),
@@ -268,8 +388,16 @@ function riskOf(item: Partial<ForeshadowingItem>) {
   return 'low'
 }
 
+function importanceTagType(importance: string): 'default' | 'success' | 'warning' | 'info' | 'error' {
+  const map: Record<string, 'default' | 'success' | 'warning' | 'info' | 'error'> = {
+    high: 'error',
+    medium: 'warning',
+    low: 'default'
+  }
+  return map[importance] || 'default'
+}
+
 function nextStatuses(status: string) {
-  // 卡片上的快捷动作只提供邻近状态，避免误把伏笔跳到很远的生命周期节点。
   const order = statusColumns.map((item) => item.value)
   const index = order.indexOf(status)
   return statusColumns.filter((_, itemIndex) => itemIndex === index + 1 || itemIndex === statusColumns.length - 1)
@@ -292,7 +420,8 @@ function fillForm(item?: Partial<ForeshadowingItem>) {
     notes: item?.notes ?? '',
     related_character_ids: item?.related_character_ids ?? '',
     related_organization_ids: item?.related_organization_ids ?? '',
-    related_outline_ids: item?.related_outline_ids ?? ''
+    related_outline_ids: item?.related_outline_ids ?? '',
+    replaced_by_id: item?.replaced_by_id ?? null
   })
 }
 
@@ -301,19 +430,19 @@ function importanceLabel(value: string) {
 }
 
 async function startCreate() {
-  // 新增伏笔前检查脏数据，避免丢失当前编辑内容。
   if (!(await confirmIfDirty())) return
   editingId.value = null
+  isCreating.value = true
   fillForm()
   await nextTick()
   markClean()
 }
 
 async function selectForeshadowing(item: ForeshadowingItem) {
-  // 看板卡片点击负责切换详情；同一条目重复点击直接跳过。
   if (editingId.value === item.id) return
   if (!(await confirmIfDirty())) return
   editingId.value = item.id
+  isCreating.value = false
   fillForm(item)
   await nextTick()
   markClean()
@@ -326,6 +455,7 @@ async function resetCurrent() {
     fillForm(current)
   } else {
     editingId.value = null
+    isCreating.value = false
     fillForm()
   }
   await nextTick()
@@ -350,8 +480,7 @@ async function ensureProject() {
 }
 
 async function load() {
-  const projectId = await ensureProject()
-  if (!projectId) return
+  const projectId = projectStore.currentProject!.id
   loading.value = true
   try {
     const [foreshadowingList, chapterList, characterList, organizationList, outlineList] = await Promise.all([
@@ -366,9 +495,9 @@ async function load() {
     characters.value = characterList
     organizations.value = organizationList
     outlines.value = outlineList
-    // 首次加载时自动选中第一条，但只有在没有正在编辑的条目时才覆盖。
     if (!editingId.value && foreshadowings.value[0]) {
       editingId.value = foreshadowings.value[0].id
+      isCreating.value = false
       fillForm(foreshadowings.value[0])
       await nextTick()
       markClean()
@@ -382,7 +511,6 @@ async function save() {
   const projectId = await ensureProject()
   if (!projectId) return
 
-  // 保存后刷新整块看板，让状态列、风险提示和详情区保持一致。
   if (editingId.value) {
     const updated = await updateResource<ForeshadowingItem>('foreshadowings', editingId.value, { ...form })
     notify.success('伏笔已更新')
@@ -400,6 +528,7 @@ async function save() {
     const fresh = foreshadowings.value.find((item) => item.id === created.id)
     if (fresh) {
       editingId.value = fresh.id
+      isCreating.value = false
       fillForm(fresh)
       await nextTick()
       markClean()
@@ -412,13 +541,13 @@ async function remove() {
   const currentIndex = foreshadowings.value.findIndex((item) => item.id === editingId.value)
   await deleteResource('foreshadowings', editingId.value)
   notify.success('伏笔已删除')
-  // 删除后自动选择下一条；如果是最后一条，选上一条；如果都没有，进入新建状态。
   const nextItem = foreshadowings.value[currentIndex + 1] || foreshadowings.value[currentIndex - 1]
   if (nextItem) {
     editingId.value = nextItem.id
     fillForm(nextItem)
   } else {
     editingId.value = null
+    isCreating.value = false
     fillForm()
   }
   await load()
@@ -426,125 +555,467 @@ async function remove() {
   markClean()
 }
 
-onMounted(load)
+useProjectDataLoader(load)
 </script>
 
 <style scoped>
-.title-actions {
+.foreshadowing-page {
+  height: calc(100vh - 60px);
   display: flex;
-  gap: 10px;
-}
-
-.kanban-shell {
-  display: grid;
-  gap: 14px;
-}
-
-.kanban-filters {
-  display: grid;
-  grid-template-columns: minmax(320px, 1fr) 180px 160px;
+  flex-direction: column;
   gap: 12px;
-  padding: 14px;
-  border: 1px solid #363b42;
+  padding-bottom: 12px;
+}
+
+/* ===== 页头 ===== */
+.page-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-shrink: 0;
+}
+
+.header-left {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.page-title {
+  font-size: 18px;
+  font-weight: 700;
+  margin: 0;
+  display: flex;
+  align-items: center;
+  gap: 0px;
+}
+
+.title-icon {
+  font-size: 18px;
+  margin-right: -2px;
+}
+
+.page-subtitle {
+  font-size: 12px;
+  color: var(--n-text-color-3, #6b7280);
+  margin: 0;
+}
+
+.header-right {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.header-stats {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 6px 14px;
+  background: var(--n-color-card, #1a1d21);
+  border: 1px solid var(--n-border-color, #2a2f3a);
   border-radius: 8px;
-  background: #202327;
 }
 
-.kanban-workbench {
+.stat {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  min-width: 50px;
+}
+
+.stat-num {
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--n-color-primary, #3b82f6);
+  line-height: 1.2;
+}
+
+.stat-num.danger {
+  color: #ef4444;
+}
+
+.stat-num.success {
+  color: #10b981;
+}
+
+.stat-label {
+  font-size: 10px;
+  color: var(--n-text-color-3, #6b7280);
+  margin-top: 2px;
+}
+
+.stat-divider {
+  width: 1px;
+  height: 24px;
+  background: var(--n-border-color, #2a2f3a);
+}
+
+/* ===== 筛选栏 ===== */
+.filter-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  background: var(--n-color-card, #1a1d21);
+  border: 1px solid var(--n-border-color, #2a2f3a);
+  border-radius: 10px;
+  flex-shrink: 0;
+}
+
+.filter-spacer {
+  flex: 1;
+}
+
+/* ===== 工作区 ===== */
+.workbench {
+  flex: 1;
   display: grid;
-  grid-template-columns: minmax(760px, 1fr) 360px;
-  gap: 16px;
-  align-items: start;
+  grid-template-columns: minmax(700px, 1fr) 360px;
+  gap: 12px;
+  min-height: 0;
 }
 
-.kanban-board {
+/* ===== 看板面板 ===== */
+.kanban-panel {
+  background: var(--n-color-card, #1a1d21);
+  border: 1px solid var(--n-border-color, #2a2f3a);
+  border-radius: 10px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  min-width: 0;
+}
+
+.panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--n-border-color, #2a2f3a);
+  flex-shrink: 0;
+}
+
+.panel-head h2 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.kanban-container {
+  flex: 1;
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 12px;
+  gap: 10px;
+  padding: 12px;
+  min-height: 0;
 }
 
 .kanban-column {
-  min-height: 360px;
-  border: 1px solid #363b42;
-  border-radius: 8px;
-  background: #202327;
-}
-
-.kanban-head {
   display: flex;
-  justify-content: space-between;
-  padding: 12px;
-  border-bottom: 1px solid #32363c;
-  color: #e5e7eb;
+  flex-direction: column;
+  background: var(--n-color-1, #1e2228);
+  border: 1px solid var(--n-border-color, #2a2f3a);
+  border-radius: 8px;
+  min-height: 0;
+  overflow: hidden;
 }
 
-.kanban-list {
-  display: grid;
-  gap: 10px;
-  min-height: 260px;
+.column-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--n-border-color, #2a2f3a);
+  font-size: 13px;
+  flex-shrink: 0;
+}
+
+.column-scroll {
+  flex: 1;
+  min-height: 0;
+}
+
+.column-body {
   padding: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
 }
 
 .kanban-card {
-  width: 100%;
-  padding: 10px;
-  border: 1px solid #30343a;
+  padding: 10px 12px;
+  border: 1px solid var(--n-border-color, #2a2f3a);
   border-radius: 8px;
-  color: #d1d5db;
-  background: #181b1f;
-  text-align: left;
+  background: var(--n-color-card, #1a1d21);
   cursor: pointer;
+  transition: all 0.15s ease;
 }
 
-.kanban-card:hover,
+.kanban-card:hover {
+  border-color: var(--n-color-primary-3, #3b82f6);
+  background: var(--n-color-hover, #23272f);
+}
+
 .kanban-card.active {
-  border-color: #4f8cff;
-  background: #222936;
+  border-color: var(--n-color-primary, #3b82f6);
+  background: rgba(59, 130, 246, 0.08);
 }
 
 .kanban-card.warning {
-  border-color: rgba(242, 201, 125, 0.6);
+  border-color: rgba(242, 201, 125, 0.5);
 }
 
 .kanban-card.danger {
-  border-color: rgba(232, 128, 128, 0.75);
+  border-color: rgba(239, 68, 68, 0.5);
 }
 
-.quick-status {
+.card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.card-title {
+  font-size: 13px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.card-meta {
+  font-size: 11px;
+  color: var(--n-text-color-3, #6b7280);
+  margin-bottom: 6px;
+}
+
+.card-desc {
+  font-size: 12px;
+  color: var(--n-text-color-2, #9ca3af);
+  line-height: 1.5;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.card-actions {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
   margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--n-border-color, #2a2f3a);
 }
 
-.risk-detail {
-  position: sticky;
-  top: 16px;
+/* ===== 详情面板 ===== */
+.detail-panel {
+  background: var(--n-color-card, #1a1d21);
+  border: 1px solid var(--n-border-color, #2a2f3a);
+  border-radius: 10px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  min-width: 0;
 }
 
-.insight-card {
-  margin-top: 14px;
-  padding: 12px;
-  border: 1px solid #30343a;
-  border-radius: 8px;
-  background: #181b1f;
+.detail-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--n-border-color, #2a2f3a);
+  flex-shrink: 0;
 }
 
-.insight-label {
-  margin-bottom: 8px;
-  color: #e5e7eb;
-  font-weight: 800;
+.detail-title {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.detail-title h2 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.detail-sub {
+  font-size: 11px;
+  color: var(--n-text-color-3, #6b7280);
+}
+
+.detail-actions {
+  display: flex;
+  gap: 8px;
 }
 
 .dirty-dot {
-  margin-left: 6px;
   color: #f59e0b;
-  font-size: 12px;
+  font-size: 10px;
   animation: pulse 1.5s ease-in-out infinite;
 }
 
 @keyframes pulse {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.4; }
+}
+
+.form-scroll {
+  flex: 1;
+  min-height: 0;
+  padding: 0 16px 16px;
+}
+
+.detail-form {
+  padding-top: 16px;
+}
+
+.form-section {
+  margin-bottom: 20px;
+  padding-bottom: 20px;
+  border-bottom: 1px solid var(--n-border-color, #2a2f3a);
+}
+
+.form-section:last-child {
+  margin-bottom: 0;
+  padding-bottom: 0;
+  border-bottom: none;
+}
+
+.section-title {
+  font-size: 13px;
+  font-weight: 600;
+  margin-bottom: 12px;
+  padding-left: 10px;
+  border-left: 3px solid var(--n-color-primary, #3b82f6);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.section-hint {
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--n-text-color-3, #6b7280);
+}
+
+.form-grid-2 {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.field-hint {
+  font-size: 11px;
+  color: var(--n-text-color-3, #6b7280);
+  margin-top: 6px;
+  line-height: 1.5;
+}
+
+.detail-empty {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  color: var(--n-text-color-3, #6b7280);
+}
+
+.detail-empty .empty-icon {
+  font-size: 40px;
+}
+
+.detail-empty p {
+  margin: 0;
+  font-size: 13px;
+}
+
+.detail-empty .empty-sub {
+  font-size: 12px;
+  color: var(--n-text-color-3, #6b7280);
+  opacity: 0.7;
+}
+
+/* ===== AI 发现入口 ===== */
+.ai-discovery-entry {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 14px;
+  margin: 16px 0;
+  background: linear-gradient(135deg, rgba(99, 102, 241, 0.1), rgba(168, 85, 247, 0.08));
+  border: 1px solid rgba(99, 102, 241, 0.25);
+  border-radius: 8px;
+}
+
+.ai-discovery-icon { font-size: 24px; flex-shrink: 0; }
+.ai-discovery-text { flex: 1; min-width: 0; }
+.ai-discovery-title {
+  font-size: 13px;
+  font-weight: 600;
+  margin-bottom: 2px;
+}
+.ai-discovery-desc {
+  font-size: 12px;
+  color: var(--n-text-color-3, #6b7280);
+  line-height: 1.4;
+}
+
+/* ===== 风险卡片 ===== */
+.risk-card {
+  padding: 12px 14px;
+  background: var(--n-color-1, #1e2228);
+  border: 1px solid var(--n-border-color, #2a2f3a);
+  border-radius: 8px;
+}
+
+.risk-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 10px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.risk-icon {
+  font-size: 14px;
+}
+
+.check-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.check-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--n-text-color-2, #9ca3af);
+}
+
+.check-row.ready {
+  color: var(--n-text-color-2, #9ca3af);
+}
+
+.check-icon {
+  color: #f59e0b;
+  font-weight: 700;
+  flex-shrink: 0;
+}
+
+.check-row.ready .check-icon {
+  color: #10b981;
 }
 </style>

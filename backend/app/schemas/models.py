@@ -21,6 +21,9 @@ class ProjectUpdate(BaseModel):
     novel_type: str | None = Field(default=None, description="小说类型")
     target_words: int | None = Field(default=None, description="单章目标字数")
     synopsis: str | None = Field(default=None, description="项目简介")
+    pace_level: int | None = Field(default=None, ge=1, le=5, description="整体节奏等级：1-慢热 到 5-高燃")
+    view_point: str | None = Field(default=None, description="叙事视角：第一人称/第三人称有限/第三人称全知/第二人称")
+    writing_style: str | None = Field(default=None, description="文风基调：严肃/轻松/热血/治愈/暗黑/史诗/其他")
 
 
 class ModelConfigCreate(BaseModel):
@@ -31,6 +34,12 @@ class ModelConfigCreate(BaseModel):
     api_key: str = Field(description="模型服务 API Key")
     model: str = Field(description="模型名称，例如 deepseek-v4-pro")
     is_active: bool = Field(default=True, description="是否设置为当前启用模型")
+    temperature: float | None = Field(default=None, ge=0, le=2, description="采样温度，0-2")
+    max_tokens: int | None = Field(default=None, gt=0, description="最大输出 token 数")
+    top_p: float | None = Field(default=None, ge=0, le=1, description="nucleus 采样概率，0-1")
+    frequency_penalty: float | None = Field(default=None, ge=-2, le=2, description="频率惩罚，-2到2")
+    presence_penalty: float | None = Field(default=None, ge=-2, le=2, description="存在惩罚，-2到2")
+    proxy_url: str | None = Field(default=None, description="HTTP 代理地址，如 http://127.0.0.1:7890")
 
 
 class WorldSettingSave(BaseModel):

@@ -17,6 +17,7 @@ const KNOWN_TAB_PATHS = new Set([
   '/world',
   '/outline',
   '/characters',
+  '/character-relations',
   '/organizations',
   '/foreshadowings',
   '/memory',

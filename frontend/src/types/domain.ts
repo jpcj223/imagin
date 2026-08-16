@@ -11,6 +11,16 @@ export interface Project {
   target_words: number
   /** 项目简介或故事概述。 */
   synopsis: string
+  /** 默认节奏等级：1-平淡 / 2-渐入 / 3-适中 / 4-紧凑 / 5-高潮。 */
+  pace_level: number
+  /** 叙事视角：第一人称/第三人称有限/第三人称全知/第二人称。 */
+  view_point: string
+  /** 文风基调：严肃/轻松/热血/治愈/暗黑/史诗/其他。 */
+  writing_style: string
+  /** 创建时间（ISO 字符串）。 */
+  created_at: string
+  /** 最后更新时间（ISO 字符串）。 */
+  updated_at: string
 }
 
 export interface DashboardCounts {
@@ -22,6 +32,31 @@ export interface DashboardCounts {
   chapters: number
   /** 伏笔数量。 */
   foreshadowings: number
+  /** 组织数量。 */
+  organizations: number
+  /** 世界观设定数量。 */
+  world_settings: number
+}
+
+export interface DashboardRecentChapter {
+  id: number
+  chapter_no: number
+  title: string
+  status: string
+  char_count: number
+  updated_at: string
+}
+
+export interface DashboardData {
+  counts: DashboardCounts
+  /** 全文字符总数。 */
+  total_chars: number
+  /** 最近章节列表。 */
+  recent_chapters: DashboardRecentChapter[]
+  /** 伏笔按状态分布。 */
+  foreshadowing_by_status: Record<string, number>
+  /** 角色按类型分布。 */
+  characters_by_type: Record<string, number>
 }
 
 export interface ChapterDraftResult {
@@ -191,8 +226,10 @@ export interface CharacterItem {
   identity: string
   /** 阵营或所属势力。 */
   faction: string
-  /** MBTI 或其他性格标签。 */
-  mbti: string
+  /** MBTI 主性格类型，例如 INTJ。 */
+  mbti_primary: string
+  /** MBTI 辅助/外在表现类型，可选。 */
+  mbti_secondary: string
   /** 外貌特征。 */
   appearance: string
   /** 性格特征和行为倾向。 */
@@ -209,16 +246,60 @@ export interface CharacterItem {
   dialogue_style: string
   /** 人物成长线或变化方向。 */
   arc: string
-  /** 关系摘要。 */
+  /** 关系摘要（旧字段，保留兼容）。 */
   relationships: string
   /** 出场章节。 */
   chapters: string
-  /** 关联组织 ID，逗号分隔。 */
+  /** 关联组织 ID，逗号分隔（旧字段，保留兼容）。 */
   organization_ids: string
-  /** 关联角色 ID，逗号分隔。 */
+  /** 关联角色 ID，逗号分隔（旧字段，保留兼容）。 */
   related_character_ids: string
   /** AI 建议或一致性检查备注。 */
   ai_notes: string
+  /** 动态属性列表（JSON 数组），用户可自定义添加，适配不同题材。 */
+  custom_attributes: CharacterAttribute[]
+  /** 组织关系列表（JSON 数组），结构化替代 organization_ids。 */
+  org_relations: CharacterOrgRelation[]
+  /** 人物关系列表（JSON 数组），结构化替代 related_character_ids。 */
+  character_relations: CharacterRelation[]
+  /** 旧版 MBTI 字段，保留用于数据迁移兼容。 */
+  mbti: string
+}
+
+/** 角色动态属性：用户可自定义的扩展属性，解决"人物扩展难"问题。 */
+export interface CharacterAttribute {
+  /** 属性名称，如"武功"、"宝物"、"职称"。 */
+  name: string
+  /** 属性值。 */
+  value: string
+  /** 当前章节号，记录该属性在剧情哪个时间点的状态，可选。 */
+  chapter_no?: number | null
+  /** 变更原因，可选。 */
+  change_reason?: string
+}
+
+/** 角色-组织关系：结构化的组织归属数据。 */
+export interface CharacterOrgRelation {
+  /** 组织 ID。 */
+  org_id: number
+  /** 在组织中的职位。 */
+  position: string
+  /** 忠诚值 1-10。 */
+  loyalty: number
+}
+
+/** 角色-角色关系：结构化的人物关系数据，支持随剧情演变。 */
+export interface CharacterRelation {
+  /** 目标角色 ID。 */
+  target_id: number
+  /** 关系类型：师徒/兄弟/恋人/仇敌/其他等。 */
+  relation_type: string
+  /** 关系深度 1-10。 */
+  depth: number
+  /** 生效起始章节，可选。 */
+  effective_from?: number | null
+  /** 失效章节，可选，不填则一直有效。 */
+  expires_at?: number | null
 }
 
 export interface OrganizationItem {
@@ -250,16 +331,22 @@ export interface OrganizationItem {
   member_count: number
   /** 组织当前状态，例如隐世、扩张、衰落。 */
   status: string
-  /** 核心成员。 */
+  /** 核心成员（旧版字符串字段，保留兼容）。 */
   core_members: string
-  /** 盟友组织。 */
+  /** 盟友组织 ID，逗号分隔。 */
   allies: string
-  /** 敌对组织。 */
+  /** 敌对组织 ID，逗号分隔。 */
   enemies: string
   /** 对剧情的影响。 */
   impact: string
   /** 风险提示。 */
   risk_notes: string
+  /** 隐藏设定：仅作者可见的秘密/暗线。 */
+  hidden_secrets: string
+  /** 主效起始章节号。 */
+  active_from_chapter: number | null
+  /** 覆灭/解散章节号，NULL 表示一直有效。 */
+  disbanded_chapter: number | null
 }
 
 export interface ForeshadowingItem {
@@ -291,4 +378,6 @@ export interface ForeshadowingItem {
   related_organization_ids: string
   /** 关联大纲 ID，逗号分隔。 */
   related_outline_ids: string
+  /** 被替代伏笔 ID：此伏笔被哪个新伏笔替代，形成替代链。 */
+  replaced_by_id: number | null
 }

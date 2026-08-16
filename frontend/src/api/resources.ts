@@ -1,9 +1,9 @@
 import { apiClient } from './client'
-import type { DashboardCounts } from '@/types/domain'
+import type { DashboardData } from '@/types/domain'
 
 export async function getDashboard(projectId: number) {
-  // 首页只关心数量概览，避免一次性拉取所有资料列表。
-  const { data } = await apiClient.get<DashboardCounts>(`/resources/${projectId}/dashboard`)
+  // 首页项目概览：计数、字数、最近章节、分布数据等。
+  const { data } = await apiClient.get<DashboardData>(`/resources/${projectId}/dashboard`)
   return data
 }
 

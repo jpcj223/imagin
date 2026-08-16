@@ -2,6 +2,12 @@
   font-family: Inter, "Microsoft YaHei", system-ui, sans-serif;
   color: #e5e7eb;
   background: #151719;
+
+  /* 滚动条变量 */
+  --scrollbar-width: 8px;
+  --scrollbar-thumb: #3a3f47;
+  --scrollbar-thumb-hover: #4a5058;
+  --scrollbar-track: transparent;
 }
 
 * {
@@ -15,14 +21,46 @@ body {
   background: #151719;
 }
 
+/* ===== 全局滚动条样式 ===== */
+::-webkit-scrollbar {
+  width: var(--scrollbar-width);
+  height: var(--scrollbar-width);
+}
+
+::-webkit-scrollbar-track {
+  background: var(--scrollbar-track);
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--scrollbar-thumb);
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--scrollbar-thumb-hover);
+}
+
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+/* Firefox */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--scrollbar-thumb) var(--scrollbar-track);
+}
+
 .page {
-  width: min(980px, calc(100vw - 360px));
-  margin: 0 auto;
+  width: calc(100vw - 308px);
+  margin: 0 0 0 28px;
   padding: 24px 0 56px;
+  min-width: 880px;
 }
 
 .page-wide {
-  width: min(1280px, calc(100vw - 340px));
+  width: calc(100vw - 308px);
+  margin: 0 0 0 28px;
+  min-width: 880px;
 }
 
 .page-title {
