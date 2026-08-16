@@ -10,3 +10,5 @@ frontend/vite.config.d.ts
 *.pyc
 *.log
 .DS_Store
+
+.idea
