@@ -1,9 +1,18 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException
+from sqlalchemy import func
 
-from app.db.database import get_connection
 from app.db.repository import delete_row, fetch_all, insert_row, update_row
+from app.db.session import get_business_db
+from app.models.business import (
+    Chapter,
+    Character,
+    Foreshadowing,
+    Organization,
+    Outline,
+    WorldSetting,
+)
 from app.schemas.models import (
     CharacterSave,
     ChapterSave,
@@ -24,70 +33,64 @@ def dashboard(project_id: int) -> dict:
     包含：各资源数量、字数统计、最近章节、组织/世界观数量等，
     供前端创作中心展示项目整体进度和快捷入口。
     """
-    with get_connection() as conn:
+    with get_business_db() as db:
         # 1. 基础计数
-        characters = conn.execute(
-            "SELECT COUNT(*) AS total FROM characters WHERE project_id = ?", (project_id,)
-        ).fetchone()["total"]
-        outlines = conn.execute(
-            "SELECT COUNT(*) AS total FROM outlines WHERE project_id = ?", (project_id,)
-        ).fetchone()["total"]
-        chapters = conn.execute(
-            "SELECT COUNT(*) AS total FROM chapters WHERE project_id = ?", (project_id,)
-        ).fetchone()["total"]
-        foreshadowings = conn.execute(
-            "SELECT COUNT(*) AS total FROM foreshadowings WHERE project_id = ?", (project_id,)
-        ).fetchone()["total"]
-        organizations = conn.execute(
-            "SELECT COUNT(*) AS total FROM organizations WHERE project_id = ?", (project_id,)
-        ).fetchone()["total"]
-        world_settings = conn.execute(
-            "SELECT COUNT(*) AS total FROM world_settings WHERE project_id = ?", (project_id,)
-        ).fetchone()["total"]
+        characters = db.query(func.count(Character.id)).filter(Character.project_id == project_id).scalar() or 0
+        outlines = db.query(func.count(Outline.id)).filter(Outline.project_id == project_id).scalar() or 0
+        chapters = db.query(func.count(Chapter.id)).filter(Chapter.project_id == project_id).scalar() or 0
+        foreshadowings = db.query(func.count(Foreshadowing.id)).filter(Foreshadowing.project_id == project_id).scalar() or 0
+        organizations = db.query(func.count(Organization.id)).filter(Organization.project_id == project_id).scalar() or 0
+        world_settings = db.query(func.count(WorldSetting.id)).filter(WorldSetting.project_id == project_id).scalar() or 0
 
         # 2. 总字数（所有章节正文长度之和）
-        total_words_row = conn.execute(
-            "SELECT COALESCE(SUM(LENGTH(content)), 0) AS total FROM chapters WHERE project_id = ?",
-            (project_id,),
-        ).fetchone()
-        total_chars = total_words_row["total"] if total_words_row else 0
+        total_chars_row = db.query(
+            func.coalesce(func.sum(func.length(Chapter.content)), 0)
+        ).filter(Chapter.project_id == project_id).first()
+        total_chars = total_chars_row[0] if total_chars_row else 0
 
         # 3. 最近章节（按章节号倒序取最近 5 章）
-        recent_chapters_rows = conn.execute(
-            """
-            SELECT id, chapter_no, title, status, LENGTH(content) as char_count, updated_at
-            FROM chapters
-            WHERE project_id = ?
-            ORDER BY chapter_no DESC
-            LIMIT 5
-            """,
-            (project_id,),
-        ).fetchall()
-        recent_chapters = [dict(row) for row in recent_chapters_rows]
+        recent_chapters_rows = db.query(
+            Chapter.id,
+            Chapter.chapter_no,
+            Chapter.title,
+            Chapter.status,
+            func.length(Chapter.content).label("char_count"),
+            Chapter.updated_at,
+        ).filter(
+            Chapter.project_id == project_id
+        ).order_by(
+            Chapter.chapter_no.desc()
+        ).limit(5).all()
+
+        recent_chapters = [
+            {
+                "id": row.id,
+                "chapter_no": row.chapter_no,
+                "title": row.title,
+                "status": row.status,
+                "char_count": row.char_count,
+                "updated_at": row.updated_at.isoformat() if row.updated_at else None,
+            }
+            for row in recent_chapters_rows
+        ]
 
         # 4. 伏笔状态分布
-        foreshadowing_status_rows = conn.execute(
-            """
-            SELECT status, COUNT(*) as count
-            FROM foreshadowings
-            WHERE project_id = ?
-            GROUP BY status
-            """,
-            (project_id,),
-        ).fetchall()
-        foreshadowing_by_status = {row["status"]: row["count"] for row in foreshadowing_status_rows}
+        foreshadowing_status_rows = db.query(
+            Foreshadowing.status,
+            func.count(Foreshadowing.id).label("count"),
+        ).filter(
+            Foreshadowing.project_id == project_id
+        ).group_by(Foreshadowing.status).all()
+        foreshadowing_by_status = {row.status: row.count for row in foreshadowing_status_rows}
 
         # 5. 角色类型分布
-        character_type_rows = conn.execute(
-            """
-            SELECT role_type, COUNT(*) as count
-            FROM characters
-            WHERE project_id = ?
-            GROUP BY role_type
-            """,
-            (project_id,),
-        ).fetchall()
-        characters_by_type = {row["role_type"]: row["count"] for row in character_type_rows}
+        character_type_rows = db.query(
+            Character.role_type,
+            func.count(Character.id).label("count"),
+        ).filter(
+            Character.project_id == project_id
+        ).group_by(Character.role_type).all()
+        characters_by_type = {row.role_type: row.count for row in character_type_rows}
 
     return {
         "counts": {

@@ -687,9 +687,6 @@ onMounted(() => {
   font-size: 18px;
   font-weight: 700;
   margin: 0;
-  display: flex;
-  align-items: center;
-  gap: 0px;
 }
 
 .title-icon {

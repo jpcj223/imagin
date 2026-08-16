@@ -461,15 +461,17 @@
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, reactive, ref } from 'vue'
+import { computed, nextTick, onMounted, reactive, ref } from 'vue'
 import { useDirtySnapshot } from '@/composables/useDirtySnapshot'
 import { createResource, deleteResource, listResource, updateResource } from '@/api/resources'
 import { useProjectStore } from '@/stores/project'
+import { useDictStore } from '@/stores/dict'
 import { useProjectDataLoader } from '@/composables/useProjectDataLoader'
 import { notify } from '@/utils/notify'
 import type { CharacterAttribute, CharacterItem, CharacterOrgRelation, CharacterRelation, OrganizationItem } from '@/types/domain'
 
 const projectStore = useProjectStore()
+const dictStore = useDictStore()
 const characters = ref<CharacterItem[]>([])
 const organizations = ref<OrganizationItem[]>([])
 const keyword = ref('')
@@ -532,11 +534,7 @@ const relationTypeOptions = [
 
 const attributeTemplates = ['武功', '宝物', '职称', '技能', '装备', '异能', '功法', '身份']
 
-const roleTypes = [
-  { label: '主角', value: 'protagonist' },
-  { label: '配角', value: 'supporting' },
-  { label: '反派', value: 'antagonist' }
-]
+const roleTypes = computed(() => dictStore.options('character_role'))
 
 // ---- 新增关系的临时数据 ----
 const newOrgRelation = reactive<{ org_id: number | null; position: string; loyalty: number }>({
@@ -578,7 +576,7 @@ const filteredCharacters = computed(() => {
 // 按角色类型分组
 const groupedCharacters = computed(() => {
   const groups: { roleType: string; items: CharacterItem[] }[] = []
-  for (const rt of roleTypes) {
+  for (const rt of roleTypes.value) {
     const items = filteredCharacters.value.filter((c) => c.role_type === rt.value)
     if (items.length > 0) {
       groups.push({ roleType: rt.value, items })
@@ -586,7 +584,7 @@ const groupedCharacters = computed(() => {
   }
   // 其他类型
   const others = filteredCharacters.value.filter(
-    (c) => !roleTypes.some((rt) => rt.value === c.role_type)
+    (c) => !roleTypes.value.some((rt) => rt.value === c.role_type)
   )
   if (others.length > 0) {
     groups.push({ roleType: 'other', items: others })
@@ -672,7 +670,7 @@ function completionOf(item: Partial<CharacterItem> | typeof form) {
 }
 
 function roleTypeLabel(value: string) {
-  return roleTypes.find((item) => item.value === value)?.label ?? '其他'
+  return dictStore.label('character_role', value) || '其他'
 }
 
 function roleTypeIcon(roleType: string): string {
@@ -867,7 +865,8 @@ async function load() {
   try {
     const [characterList, organizationList] = await Promise.all([
       listResource<CharacterItem>(projectId, 'characters'),
-      listResource<OrganizationItem>(projectId, 'organizations')
+      listResource<OrganizationItem>(projectId, 'organizations'),
+      dictStore.load('character_role'),
     ])
     characters.value = characterList
     organizations.value = organizationList
@@ -971,9 +970,6 @@ useProjectDataLoader(load)
   font-size: 18px;
   font-weight: 700;
   margin: 0;
-  display: flex;
-  align-items: center;
-  gap: 0px;
 }
 
 .title-icon {

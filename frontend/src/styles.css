@@ -64,19 +64,34 @@ body {
 }
 
 .page-title {
-  display: flex;
+  /*display: flex;*/
   align-items: center;
   justify-content: space-between;
-  gap: 16px;
+  gap: 8px;
   margin-bottom: 18px;
   padding-bottom: 14px;
   border-bottom: 1px solid #34383d;
+}
+
+/* h1 直接作为 page-title 的情况（图标 + 文字在同一行内） */
+h1.page-title {
+  font-size: 18px;
+  font-weight: 700;
+  margin: 0;
+  border: 0;
+  padding: 0;
 }
 
 .page-title h1 {
   margin: 0;
   font-size: 24px;
   line-height: 32px;
+}
+
+.title-icon {
+  font-size: 20px;
+  margin-right: 6px;
+  flex-shrink: 0;
 }
 
 .section {

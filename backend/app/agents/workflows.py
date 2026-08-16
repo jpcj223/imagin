@@ -4,7 +4,8 @@ from collections.abc import Iterator
 
 from app.agents.context import build_chapter_context
 from app.core.llm import LLMError, chat_completion, chat_completion_stream
-from app.db.database import get_connection
+from app.db.session import get_business_db
+from app.models.business import Chapter, ChapterSummary, GenerationLog
 
 
 def _format_context(context: dict) -> str:
@@ -110,42 +111,43 @@ def _upsert_draft_content(
     切断前端连接或浏览器崩溃时，也能在章节草稿里找回部分内容。
     """
     title = f"第{chapter_no}章"
-    with get_connection() as conn:
+    with get_business_db() as db:
         if chapter_id:
-            row = conn.execute(
-                "SELECT id FROM chapters WHERE id = ? AND project_id = ?",
-                (chapter_id, project_id),
-            ).fetchone()
+            chapter = (
+                db.query(Chapter)
+                .filter(Chapter.id == chapter_id, Chapter.project_id == project_id)
+                .first()
+            )
         else:
-            row = conn.execute(
-                """
-                SELECT id FROM chapters
-                WHERE project_id = ? AND chapter_no = ?
-                ORDER BY id DESC LIMIT 1
-                """,
-                (project_id, chapter_no),
-            ).fetchone()
+            chapter = (
+                db.query(Chapter)
+                .filter(Chapter.project_id == project_id, Chapter.chapter_no == chapter_no)
+                .order_by(Chapter.id.desc())
+                .first()
+            )
 
-        if row:
-            chapter_id = row["id"]
-            conn.execute(
-                """
-                UPDATE chapters
-                SET outline_id = ?, chapter_no = ?, title = ?, content = ?, status = ?, updated_at = CURRENT_TIMESTAMP
-                WHERE id = ?
-                """,
-                (outline_id, chapter_no, title, content, status, chapter_id),
-            )
+        if chapter:
+            chapter.outline_id = outline_id
+            chapter.chapter_no = chapter_no
+            chapter.title = title
+            chapter.content = content
+            chapter.status = status
+            db.commit()
+            db.refresh(chapter)
+            chapter_id = chapter.id
         else:
-            cursor = conn.execute(
-                """
-                INSERT INTO chapters (project_id, outline_id, chapter_no, title, content, status)
-                VALUES (?, ?, ?, ?, ?, ?)
-                """,
-                (project_id, outline_id, chapter_no, title, content, status),
+            chapter = Chapter(
+                project_id=project_id,
+                outline_id=outline_id,
+                chapter_no=chapter_no,
+                title=title,
+                content=content,
+                status=status,
             )
-            chapter_id = cursor.lastrowid
-        conn.commit()
+            db.add(chapter)
+            db.commit()
+            db.refresh(chapter)
+            chapter_id = chapter.id
 
     return {"chapter_id": chapter_id, "title": title, "content": content}
 
@@ -164,15 +166,16 @@ def _save_draft_chapter(
     完整生成结束后使用 draft 状态保存，并写入一条 Agent 日志。
     """
     chapter = _upsert_draft_content(project_id, chapter_no, outline_id, chapter_id, content, "draft")
-    with get_connection() as conn:
-        conn.execute(
-            """
-            INSERT INTO generation_logs (project_id, task_type, request, response, status)
-            VALUES (?, 'chapter_draft', ?, ?, 'success')
-            """,
-            (project_id, instruction, source),
+    with get_business_db() as db:
+        log = GenerationLog(
+            project_id=project_id,
+            task_type="chapter_draft",
+            request=instruction,
+            response=source,
+            status="success",
         )
-        conn.commit()
+        db.add(log)
+        db.commit()
 
     return {**chapter, "source": source}
 
@@ -300,30 +303,26 @@ def analyze_chapter(project_id: int, chapter_id: int, content: str) -> dict:
         "timeline_events": _extract_section(analysis, "时间线事件"),
     }
 
-    with get_connection() as conn:
-        conn.execute(
-            """
-            INSERT INTO chapter_summaries
-            (chapter_id, summary, character_changes, world_changes, new_foreshadowings, timeline_events)
-            VALUES (?, ?, ?, ?, ?, ?)
-            """,
-            (
-                chapter_id,
-                sections["summary"],
-                sections["character_changes"],
-                sections["world_changes"],
-                sections["new_foreshadowings"],
-                sections["timeline_events"],
-            ),
+    with get_business_db() as db:
+        summary = ChapterSummary(
+            chapter_id=chapter_id,
+            summary=sections["summary"],
+            character_changes=sections["character_changes"],
+            world_changes=sections["world_changes"],
+            new_foreshadowings=sections["new_foreshadowings"],
+            timeline_events=sections["timeline_events"],
         )
-        conn.execute(
-            """
-            INSERT INTO generation_logs (project_id, task_type, request, response, status)
-            VALUES (?, 'chapter_analyze', ?, ?, 'success')
-            """,
-            (project_id, f"chapter_id={chapter_id}", analysis),
+        db.add(summary)
+
+        log = GenerationLog(
+            project_id=project_id,
+            task_type="chapter_analyze",
+            request=f"chapter_id={chapter_id}",
+            response=analysis,
+            status="success",
         )
-        conn.commit()
+        db.add(log)
+        db.commit()
 
     return {"chapter_id": chapter_id, "analysis": analysis, **sections}
 
@@ -335,16 +334,17 @@ def check_consistency(project_id: int, chapter_id: int | None, content: str) -> 
     真正的 LLM 检查，但接口契约保持不变。
     """
     chapter_no = 1
-    with get_connection() as conn:
+    with get_business_db() as db:
         chapter = None
         if chapter_id:
-            chapter = conn.execute(
-                "SELECT * FROM chapters WHERE id = ? AND project_id = ?",
-                (chapter_id, project_id),
-            ).fetchone()
+            chapter = (
+                db.query(Chapter)
+                .filter(Chapter.id == chapter_id, Chapter.project_id == project_id)
+                .first()
+            )
             if chapter:
-                chapter_no = chapter["chapter_no"]
-                content = content or chapter["content"]
+                chapter_no = chapter.chapter_no
+                content = content or chapter.content
     context = build_chapter_context(project_id, chapter_no)
 
     missing: list[str] = []
@@ -365,15 +365,16 @@ def check_consistency(project_id: int, chapter_id: int | None, content: str) -> 
     if missing:
         suggestions.insert(0, "请补齐：" + "、".join(missing))
 
-    with get_connection() as conn:
-        conn.execute(
-            """
-            INSERT INTO generation_logs (project_id, task_type, request, response, status)
-            VALUES (?, 'consistency_check', ?, ?, 'success')
-            """,
-            (project_id, f"chapter_id={chapter_id or ''}", risk_level),
+    with get_business_db() as db:
+        log = GenerationLog(
+            project_id=project_id,
+            task_type="consistency_check",
+            request=f"chapter_id={chapter_id or ''}",
+            response=risk_level,
+            status="success",
         )
-        conn.commit()
+        db.add(log)
+        db.commit()
 
     return {
         "risk_level": risk_level,
@@ -391,12 +392,12 @@ def check_consistency(project_id: int, chapter_id: int | None, content: str) -> 
 
 def polish_chapter(project_id: int, chapter_id: int, mode: str, instruction: str) -> dict:
     """精修已有章节并覆盖原正文。"""
-    with get_connection() as conn:
-        row = conn.execute("SELECT * FROM chapters WHERE id = ?", (chapter_id,)).fetchone()
-    if not row:
+    with get_business_db() as db:
+        chapter = db.query(Chapter).filter(Chapter.id == chapter_id).first()
+    if not chapter:
         return {"chapter_id": chapter_id, "content": "", "error": "章节不存在"}
 
-    original = row["content"]
+    original = chapter.content
     messages = [
         {"role": "system", "content": "你是臆想创作的小说精修 Agent，负责保留剧情事实并提升文本质量。"},
         {
@@ -416,18 +417,20 @@ def polish_chapter(project_id: int, chapter_id: int, mode: str, instruction: str
     except LLMError:
         content = original + "\n\n【开发模式提示】配置模型后可在这里获得真实精修结果。"
 
-    with get_connection() as conn:
-        conn.execute(
-            "UPDATE chapters SET content = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-            (content, chapter_id),
+    with get_business_db() as db:
+        chapter = db.query(Chapter).filter(Chapter.id == chapter_id).first()
+        if chapter:
+            chapter.content = content
+            db.commit()
+
+        log = GenerationLog(
+            project_id=project_id,
+            task_type="chapter_polish",
+            request=mode,
+            response="polished",
+            status="success",
         )
-        conn.execute(
-            """
-            INSERT INTO generation_logs (project_id, task_type, request, response, status)
-            VALUES (?, 'chapter_polish', ?, ?, 'success')
-            """,
-            (project_id, mode, "polished"),
-        )
-        conn.commit()
+        db.add(log)
+        db.commit()
 
     return {"chapter_id": chapter_id, "content": content}

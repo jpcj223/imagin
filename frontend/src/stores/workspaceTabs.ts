@@ -22,7 +22,12 @@ const KNOWN_TAB_PATHS = new Set([
   '/foreshadowings',
   '/memory',
   '/project-config',
-  '/api-config'
+  '/api-config',
+  // 系统管理
+  '/system/users',
+  '/system/menus',
+  '/system/dictionaries',
+  '/system/configs',
 ])
 
 const defaultTabs: WorkspaceTab[] = [{ path: '/dashboard', title: '创作中心', icon: '🚀' }]

@@ -6,11 +6,13 @@ from collections.abc import Iterator
 
 from fastapi import APIRouter
 from fastapi.responses import StreamingResponse
+from sqlalchemy import desc
 
 from app.agents.context import build_context_preview
 from app.agents.workflows import analyze_chapter, check_consistency, draft_chapter, draft_chapter_stream, polish_chapter
-from app.db.database import get_connection
 from app.db.repository import rows_to_dicts
+from app.db.session import get_business_db
+from app.models.business import Chapter, ChapterSummary, GenerationLog
 from app.schemas.models import ChapterAnalyzeRequest, ChapterDraftRequest, ConsistencyCheckRequest, PolishRequest
 
 
@@ -25,18 +27,15 @@ def generation_logs(project_id: int, limit: int = 20) -> list[dict]:
     避免日志很多时一次性传输过多内容。
     """
     safe_limit = max(1, min(limit, 100))
-    with get_connection() as conn:
-        rows = conn.execute(
-            """
-            SELECT id, project_id, task_type, request, response, status, error, created_at
-            FROM generation_logs
-            WHERE project_id = ?
-            ORDER BY id DESC
-            LIMIT ?
-            """,
-            (project_id, safe_limit),
-        ).fetchall()
-    return rows_to_dicts(rows)
+    with get_business_db() as db:
+        logs = (
+            db.query(GenerationLog)
+            .filter(GenerationLog.project_id == project_id)
+            .order_by(GenerationLog.id.desc())
+            .limit(safe_limit)
+            .all()
+        )
+    return rows_to_dicts(logs)
 
 
 @router.get("/{project_id}/summaries")
@@ -46,29 +45,42 @@ def chapter_summaries(project_id: int, limit: int = 20) -> list[dict]:
     工作台右侧只需要最近摘要；后续若接入向量检索，可继续保持这个轻量列表入口。
     """
     safe_limit = max(1, min(limit, 100))
-    with get_connection() as conn:
-        rows = conn.execute(
-            """
-            SELECT
-                cs.id,
-                cs.chapter_id,
-                c.chapter_no,
-                c.title,
-                cs.summary,
-                cs.character_changes,
-                cs.world_changes,
-                cs.new_foreshadowings,
-                cs.timeline_events,
-                cs.created_at
-            FROM chapter_summaries cs
-            JOIN chapters c ON c.id = cs.chapter_id
-            WHERE c.project_id = ?
-            ORDER BY c.chapter_no DESC, cs.id DESC
-            LIMIT ?
-            """,
-            (project_id, safe_limit),
-        ).fetchall()
-    return rows_to_dicts(rows)
+    with get_business_db() as db:
+        rows = (
+            db.query(
+                ChapterSummary.id,
+                ChapterSummary.chapter_id,
+                Chapter.chapter_no,
+                Chapter.title,
+                ChapterSummary.summary,
+                ChapterSummary.character_changes,
+                ChapterSummary.world_changes,
+                ChapterSummary.new_foreshadowings,
+                ChapterSummary.timeline_events,
+                ChapterSummary.created_at,
+            )
+            .join(Chapter, Chapter.id == ChapterSummary.chapter_id)
+            .filter(Chapter.project_id == project_id)
+            .order_by(desc(Chapter.chapter_no), desc(ChapterSummary.id))
+            .limit(safe_limit)
+            .all()
+        )
+
+    return [
+        {
+            "id": row.id,
+            "chapter_id": row.chapter_id,
+            "chapter_no": row.chapter_no,
+            "title": row.title,
+            "summary": row.summary,
+            "character_changes": row.character_changes,
+            "world_changes": row.world_changes,
+            "new_foreshadowings": row.new_foreshadowings,
+            "timeline_events": row.timeline_events,
+            "created_at": row.created_at.isoformat() if row.created_at else None,
+        }
+        for row in rows
+    ]
 
 
 @router.get("/{project_id}/context-preview")

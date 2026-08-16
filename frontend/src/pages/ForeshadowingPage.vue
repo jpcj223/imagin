@@ -248,6 +248,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, reactive, ref } from 'vue'
 import { createResource, deleteResource, listResource, updateResource } from '@/api/resources'
+import { useDictStore } from '@/stores/dict'
 import { useProjectStore } from '@/stores/project'
 import { useProjectDataLoader } from '@/composables/useProjectDataLoader'
 import { useDirtySnapshot } from '@/composables/useDirtySnapshot'
@@ -255,6 +256,7 @@ import { notify } from '@/utils/notify'
 import type { CharacterItem, ChapterItem, ForeshadowingItem, OrganizationItem, OutlineItem } from '@/types/domain'
 
 const projectStore = useProjectStore()
+const dictStore = useDictStore()
 const foreshadowings = ref<ForeshadowingItem[]>([])
 const chapters = ref<ChapterItem[]>([])
 const characters = ref<CharacterItem[]>([])
@@ -294,11 +296,7 @@ const statusColumns = [
   { label: '废弃', value: 'abandoned', short: '废弃' }
 ]
 const statusOptions = statusColumns.map(({ label, value }) => ({ label, value }))
-const importanceOptions = [
-  { label: '低', value: 'low' },
-  { label: '中', value: 'medium' },
-  { label: '高', value: 'high' }
-]
+const importanceOptions = computed(() => dictStore.options('importance'))
 
 const latestChapterNo = computed(() => Math.max(0, ...chapters.value.map((item) => item.chapter_no)))
 const totalCount = computed(() => foreshadowings.value.length)
@@ -426,7 +424,7 @@ function fillForm(item?: Partial<ForeshadowingItem>) {
 }
 
 function importanceLabel(value: string) {
-  return importanceOptions.find((item) => item.value === value)?.label ?? value
+  return dictStore.label('importance', value)
 }
 
 async function startCreate() {
@@ -483,6 +481,7 @@ async function load() {
   const projectId = projectStore.currentProject!.id
   loading.value = true
   try {
+    await dictStore.load('importance')
     const [foreshadowingList, chapterList, characterList, organizationList, outlineList] = await Promise.all([
       listResource<ForeshadowingItem>(projectId, 'foreshadowings'),
       listResource<ChapterItem>(projectId, 'chapters'),
@@ -585,9 +584,6 @@ useProjectDataLoader(load)
   font-size: 18px;
   font-weight: 700;
   margin: 0;
-  display: flex;
-  align-items: center;
-  gap: 0px;
 }
 
 .title-icon {

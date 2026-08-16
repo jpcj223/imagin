@@ -216,6 +216,7 @@
 <script setup lang="ts">
 import { computed, reactive, ref, nextTick } from 'vue'
 import { useMessage } from 'naive-ui'
+import { useDictStore } from '@/stores/dict'
 import { useProjectStore } from '@/stores/project'
 import { listResource, updateResource } from '@/api/resources'
 import type { CharacterItem, CharacterRelation } from '@/types/domain'
@@ -229,6 +230,7 @@ import '@vue-flow/core/dist/theme-default.css'
 
 const message = useMessage()
 const projectStore = useProjectStore()
+const dictStore = useDictStore()
 
 const filterRoleType = ref<string | null>(null)
 const filterRelationType = ref<string | null>(null)
@@ -243,17 +245,15 @@ function fitView(options?: any) {
   vueFlowRef.value?.fitView?.(options)
 }
 
-const roleTypeOptions = [
-  { label: '主角', value: 'protagonist' },
-  { label: '配角', value: 'supporting' },
-  { label: '反派', value: 'antagonist' }
-]
+const roleTypeOptions = computed(() => dictStore.options('character_role'))
 
-const roleTypeLabelMap: Record<string, string> = {
-  protagonist: '主角',
-  supporting: '配角',
-  antagonist: '反派'
-}
+const roleTypeLabelMap = computed(() => {
+  const map: Record<string, string> = {}
+  roleTypeOptions.value.forEach((item) => {
+    map[item.value] = item.label
+  })
+  return map
+})
 
 const relationTypeOptions = [
   { label: '师徒', value: '师徒' },
@@ -671,6 +671,7 @@ async function loadCharacters(): Promise<void> {
   const pid = projectStore.currentProject?.id
   if (!pid) return
   try {
+    await dictStore.load('character_role')
     const list = await listResource<CharacterItem>(pid, 'characters')
     characters.value = list
     initGraph()
@@ -714,9 +715,6 @@ const { loading } = useProjectDataLoader(loadCharacters)
   font-size: 18px;
   font-weight: 700;
   margin: 0;
-  display: flex;
-  align-items: center;
-  gap: 0px;
 }
 
 .title-icon {

@@ -359,15 +359,17 @@
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, reactive, ref } from 'vue'
+import { computed, nextTick, onMounted, reactive, ref } from 'vue'
 import { createResource, deleteResource, listResource, updateResource } from '@/api/resources'
 import { useProjectStore } from '@/stores/project'
+import { useDictStore } from '@/stores/dict'
 import { useProjectDataLoader } from '@/composables/useProjectDataLoader'
 import { useDirtySnapshot } from '@/composables/useDirtySnapshot'
 import { notify } from '@/utils/notify'
 import type { CharacterItem, ForeshadowingItem, OrganizationItem, WorldSetting } from '@/types/domain'
 
 const projectStore = useProjectStore()
+const dictStore = useDictStore()
 const worlds = ref<WorldSetting[]>([])
 const characters = ref<CharacterItem[]>([])
 const organizations = ref<OrganizationItem[]>([])
@@ -409,11 +411,7 @@ const categoryOptions = [
   { label: '其他', value: 'other' }
 ]
 
-const importanceOptions = [
-  { label: '低', value: 'low' },
-  { label: '中', value: 'medium' },
-  { label: '高', value: 'high' }
-]
+const importanceOptions = computed(() => dictStore.options('importance'))
 
 const templates = [
   {
@@ -607,7 +605,7 @@ function categoryIcon(category: string): string {
 }
 
 function importanceLabel(value: string) {
-  return importanceOptions.find((item) => item.value === value)?.label ?? value
+  return dictStore.label('importance', value)
 }
 
 function importanceTagType(importance: string): 'default' | 'success' | 'info' | 'warning' | 'error' {
@@ -763,6 +761,10 @@ async function remove() {
   markClean()
 }
 
+onMounted(async () => {
+  await dictStore.load('importance')
+})
+
 useProjectDataLoader(load)
 </script>
 
@@ -793,9 +795,6 @@ useProjectDataLoader(load)
   font-size: 18px;
   font-weight: 700;
   margin: 0;
-  display: flex;
-  align-items: center;
-  gap: 0px;
 }
 
 .title-icon {

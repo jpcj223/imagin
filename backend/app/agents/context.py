@@ -1,7 +1,19 @@
 from __future__ import annotations
 
-from app.db.database import get_connection
-from app.db.repository import rows_to_dicts
+from sqlalchemy import desc, or_
+
+from app.db.repository import row_to_dict, rows_to_dicts
+from app.db.session import get_business_db
+from app.models.business import (
+    Chapter,
+    ChapterSummary,
+    Character,
+    Foreshadowing,
+    Organization,
+    Outline,
+    Project,
+    WorldSetting,
+)
 
 
 def build_chapter_context(project_id: int, chapter_no: int, outline_id: int | None = None) -> dict:
@@ -9,56 +21,73 @@ def build_chapter_context(project_id: int, chapter_no: int, outline_id: int | No
 
     第一版先用结构化资料 + 最近摘要；后续可在这里加入向量检索、BM25 和融合排序。
     """
-    with get_connection() as conn:
-        project = conn.execute("SELECT * FROM projects WHERE id = ?", (project_id,)).fetchone()
-        world = conn.execute(
-            "SELECT * FROM world_settings WHERE project_id = ? ORDER BY id DESC LIMIT 1",
-            (project_id,),
-        ).fetchone()
+    with get_business_db() as db:
+        project = db.query(Project).filter(Project.id == project_id).first()
+
+        world = (
+            db.query(WorldSetting)
+            .filter(WorldSetting.project_id == project_id)
+            .order_by(WorldSetting.id.desc())
+            .first()
+        )
+
         if outline_id:
-            outline = conn.execute(
-                "SELECT * FROM outlines WHERE id = ? AND project_id = ?",
-                (outline_id, project_id),
-            ).fetchone()
+            outline = (
+                db.query(Outline)
+                .filter(Outline.id == outline_id, Outline.project_id == project_id)
+                .first()
+            )
         else:
-            outline = conn.execute(
-                """
-                SELECT * FROM outlines
-                WHERE project_id = ? AND (chapter_no = ? OR sort_index = ?)
-                ORDER BY chapter_no DESC, id DESC LIMIT 1
-                """,
-                (project_id, chapter_no, chapter_no),
-            ).fetchone()
-        characters = conn.execute(
-            "SELECT * FROM characters WHERE project_id = ? ORDER BY id DESC LIMIT 12",
-            (project_id,),
-        ).fetchall()
-        organizations = conn.execute(
-            "SELECT * FROM organizations WHERE project_id = ? ORDER BY id DESC LIMIT 8",
-            (project_id,),
-        ).fetchall()
-        foreshadowings = conn.execute(
-            """
-            SELECT * FROM foreshadowings
-            WHERE project_id = ? AND status IN ('pending', 'planted', 'developing')
-            ORDER BY importance DESC, id DESC LIMIT 12
-            """,
-            (project_id,),
-        ).fetchall()
-        summaries = conn.execute(
-            """
-            SELECT cs.* FROM chapter_summaries cs
-            JOIN chapters c ON c.id = cs.chapter_id
-            WHERE c.project_id = ? AND c.chapter_no < ?
-            ORDER BY c.chapter_no DESC LIMIT 5
-            """,
-            (project_id, chapter_no),
-        ).fetchall()
+            outline = (
+                db.query(Outline)
+                .filter(
+                    Outline.project_id == project_id,
+                    or_(Outline.chapter_no == chapter_no, Outline.sort_index == chapter_no),
+                )
+                .order_by(desc(Outline.chapter_no), desc(Outline.id))
+                .first()
+            )
+
+        characters = (
+            db.query(Character)
+            .filter(Character.project_id == project_id)
+            .order_by(Character.id.desc())
+            .limit(12)
+            .all()
+        )
+
+        organizations = (
+            db.query(Organization)
+            .filter(Organization.project_id == project_id)
+            .order_by(Organization.id.desc())
+            .limit(8)
+            .all()
+        )
+
+        foreshadowings = (
+            db.query(Foreshadowing)
+            .filter(
+                Foreshadowing.project_id == project_id,
+                Foreshadowing.status.in_(["pending", "planted", "developing"]),
+            )
+            .order_by(desc(Foreshadowing.importance), desc(Foreshadowing.id))
+            .limit(12)
+            .all()
+        )
+
+        summaries = (
+            db.query(ChapterSummary)
+            .join(Chapter, Chapter.id == ChapterSummary.chapter_id)
+            .filter(Chapter.project_id == project_id, Chapter.chapter_no < chapter_no)
+            .order_by(desc(Chapter.chapter_no))
+            .limit(5)
+            .all()
+        )
 
     return {
-        "project": dict(project) if project else {},
-        "world": dict(world) if world else {},
-        "outline": dict(outline) if outline else {},
+        "project": row_to_dict(project) or {},
+        "world": row_to_dict(world) or {},
+        "outline": row_to_dict(outline) or {},
         "characters": rows_to_dicts(characters),
         "organizations": rows_to_dicts(organizations),
         "foreshadowings": rows_to_dicts(foreshadowings),
@@ -70,7 +99,7 @@ def build_context_preview(project_id: int, chapter_no: int, outline_id: int | No
     """生成给前端展示的上下文包预览。
 
     这个接口不改变生成逻辑，只把 Agent 实际会读取的资料压缩成可视摘要，
-    方便用户在生成前判断“这次模型到底看到了什么”。
+    方便用户在生成前判断"这次模型到底看到了什么"。
     """
     context = build_chapter_context(project_id, chapter_no, outline_id)
     world = context["world"]

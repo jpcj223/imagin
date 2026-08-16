@@ -241,9 +241,11 @@ import { useProjectStore } from '@/stores/project'
 import type { Project } from '@/types/domain'
 import { useDirtySnapshot } from '@/composables/useDirtySnapshot'
 import { notify } from '@/utils/notify'
+import { useDictStore } from '@/stores/dict'
 
 const message = useMessage()
 const projectStore = useProjectStore()
+const dictStore = useDictStore()
 
 // ---- 多项目切换 ----
 
@@ -312,50 +314,11 @@ function loadFormFromCurrent() {
   })
 }
 
-// ---- 选项配置 ----
+// ---- 选项配置（从字典动态获取）----
 
-const novelTypeOptions = [
-  { label: '玄幻', value: '玄幻' },
-  { label: '仙侠', value: '仙侠' },
-  { label: '都市', value: '都市' },
-  { label: '科幻', value: '科幻' },
-  { label: '历史', value: '历史' },
-  { label: '权谋', value: '权谋' },
-  { label: '悬疑', value: '悬疑' },
-  { label: '推理', value: '推理' },
-  { label: '末世', value: '末世' },
-  { label: '武侠', value: '武侠' },
-  { label: '言情', value: '言情' },
-  { label: '青春', value: '青春' },
-  { label: '灵异', value: '灵异' },
-  { label: '恐怖', value: '恐怖' },
-  { label: '军事', value: '军事' },
-  { label: '游戏', value: '游戏' },
-  { label: '竞技', value: '竞技' },
-  { label: '其他', value: '其他' },
-]
-
-const viewPointOptions = [
-  { label: '第一人称（我）', value: '第一人称' },
-  { label: '第三人称有限', value: '第三人称有限' },
-  { label: '第三人称全知', value: '第三人称全知' },
-  { label: '第二人称（你）', value: '第二人称' },
-  { label: '多视角切换', value: '多视角切换' },
-]
-
-const writingStyleOptions = [
-  { label: '严肃', value: '严肃' },
-  { label: '轻松', value: '轻松' },
-  { label: '热血', value: '热血' },
-  { label: '治愈', value: '治愈' },
-  { label: '暗黑', value: '暗黑' },
-  { label: '史诗', value: '史诗' },
-  { label: '幽默', value: '幽默' },
-  { label: '冷峻', value: '冷峻' },
-  { label: '唯美', value: '唯美' },
-  { label: '写实', value: '写实' },
-  { label: '其他', value: '其他' },
-]
+const novelTypeOptions = computed(() => dictStore.options('novel_type'))
+const viewPointOptions = computed(() => dictStore.options('view_point'))
+const writingStyleOptions = computed(() => dictStore.options('writing_style'))
 
 const paceMarks = {
   1: '慢热',
@@ -434,6 +397,7 @@ async function save() {
 // ---- 初始化 ----
 
 onMounted(async () => {
+  await dictStore.loadBatch(['novel_type', 'view_point', 'writing_style'])
   await projectStore.loadProjects()
   if (projectStore.currentProject) {
     loadFormFromCurrent()
@@ -470,9 +434,6 @@ onMounted(async () => {
   font-size: 18px;
   font-weight: 700;
   margin: 0;
-  display: flex;
-  align-items: center;
-  gap: 0px;
 }
 
 .title-icon {

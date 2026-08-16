@@ -7,19 +7,42 @@
       </div>
 
       <div class="nav-scroll">
-        <div v-for="group in groups" :key="group.title" class="nav-group">
-          <div class="group-title">{{ group.title }}</div>
-          <button
-              v-for="item in group.items"
-              :key="item.path"
-              class="nav-item"
-              :class="{ active: route.path === item.path && tabsStore.isRouteOpen(item.path) }"
-              @click="go(item)"
-          >
-            <span>{{ item.icon }}</span>
-            <span>{{ item.title }}</span>
-          </button>
-        </div>
+        <n-spin v-if="menuStore.loading" size="small" class="nav-loading">
+          <span>加载菜单中...</span>
+        </n-spin>
+
+        <template v-else>
+          <!-- 平铺菜单项 + 可展开分组 -->
+          <div class="nav-list">
+            <template v-for="item in menuStore.visibleTree" :key="item.id">
+              <!-- 目录型菜单（有子项） -->
+              <div v-if="item.menu_type === 'dir' && item.children?.length" class="nav-group">
+                <div class="group-title">{{ item.name }}</div>
+                <button
+                  v-for="child in item.children"
+                  :key="child.path"
+                  class="nav-item"
+                  :class="{ active: route.path === child.path && tabsStore.isRouteOpen(child.path) }"
+                  @click="go(child)"
+                >
+                  <span class="nav-icon">{{ child.icon }}</span>
+                  <span class="nav-text">{{ child.name }}</span>
+                </button>
+              </div>
+
+              <!-- 普通菜单（无子项） -->
+              <button
+                v-else-if="item.menu_type === 'menu'"
+                class="nav-item single"
+                :class="{ active: route.path === item.path && tabsStore.isRouteOpen(item.path) }"
+                @click="go(item)"
+              >
+                <span class="nav-icon">{{ item.icon }}</span>
+                <span class="nav-text">{{ item.name }}</span>
+              </button>
+            </template>
+          </div>
+        </template>
       </div>
     </aside>
 
@@ -55,49 +78,29 @@ import {onMounted, watch} from 'vue'
 import {useRoute, useRouter} from 'vue-router'
 import {useProjectStore} from '@/stores/project'
 import {useWorkspaceTabsStore, type WorkspaceTab} from '@/stores/workspaceTabs'
+import {useMenuStore, type MenuItem} from '@/stores/menu'
+import { useDictStore } from '@/stores/dict'
 
 const router = useRouter()
 const route = useRoute()
 const projectStore = useProjectStore()
 const tabsStore = useWorkspaceTabsStore()
+const menuStore = useMenuStore()
+const dictStore = useDictStore()
 
-const groups = [
-  {
-    title: '导航控制台',
-    items: [
-      {title: '创作中心', path: '/dashboard', icon: '🚀'},
-      {title: '章节生成', path: '/chapter-generate', icon: '✨'}
-    ]
-  },
-  {
-    title: '核心管理',
-    items: [
-      {title: '世界观设定', path: '/world', icon: '🌍'},
-      {title: '大纲管理', path: '/outline', icon: '📋'}
-    ]
-  },
-  {
-    title: '项目数据',
-    items: [
-      {title: '人物卡片', path: '/characters', icon: '👥'},
-      {title: '人物关系', path: '/character-relations', icon: '🕸️'},
-      {title: '组织势力', path: '/organizations', icon: '🏛️'},
-      {title: '伏笔看板', path: '/foreshadowings', icon: '🎭'},
-      {title: '长期记忆', path: '/memory', icon: '🧠'},
-      {title: '项目配置', path: '/project-config', icon: '⚙️'}
-    ]
-  },
-  {
-    title: '配置',
-    items: [{title: 'API 配置', path: '/api-config', icon: '🔌'}]
-  }
-]
-
-const navTabs = groups.flatMap((group) => group.items)
 tabsStore.sanitize()
 
-function go(item: WorkspaceTab) {
-  tabsStore.open(item)
+/** 将菜单项转为标签页格式 */
+function toTab(item: MenuItem): WorkspaceTab {
+  return {
+    title: item.name,
+    path: item.path,
+    icon: item.icon,
+  }
+}
+
+function go(item: MenuItem) {
+  tabsStore.open(toTab(item))
   router.push(item.path)
 }
 
@@ -105,25 +108,50 @@ function closeTab(path: string) {
   const closingActiveTab = route.path === path
   tabsStore.close(path)
   if (closingActiveTab && tabsStore.tabs.length > 0) {
-    // 关闭当前标签后切到最后访问的标签；如果已经没有标签，就只清空标签栏，不做无效跳转。
     router.push(tabsStore.tabs[tabsStore.tabs.length - 1].path)
   }
+}
+
+/**
+ * 根据路由路径匹配对应的菜单项（支持多层级查找）
+ */
+function findMenuByPath(path: string): MenuItem | undefined {
+  return menuStore.findByPath(path)
 }
 
 watch(
     () => route.path,
     () => {
-      const tab = navTabs.find((item) => item.path === route.path)
-      // 标签只允许来自导航白名单；没有标题的临时路由不生成标签。
-      // 注意：即使标签列表为空，只要当前路由是合法页面，也应该自动打开它，
-      // 避免刷新后因缓存清空导致内容区空白。
-      if (!tab) return
-      tabsStore.open(tab)
+      const menuItem = findMenuByPath(route.path)
+      // 只有找到对应菜单项的路由才自动打开标签
+      if (!menuItem) return
+      tabsStore.open(toTab(menuItem))
     },
     {immediate: true}
 )
 
-onMounted(() => {
+onMounted(async () => {
+  // 先加载菜单
+  await menuStore.load()
+  // 菜单加载完成后，确保当前路由对应的标签已打开
+  const currentMenu = menuStore.findByPath(route.path)
+  if (currentMenu) {
+    // 当前路由有对应菜单项，打开它
+    if (!tabsStore.isRouteOpen(route.path)) {
+      tabsStore.open(toTab(currentMenu))
+    }
+  } else {
+    // 当前路由没有对应菜单项，跳转到第一个可用菜单
+    const firstPath = menuStore.firstMenuPath
+    const firstMenu = menuStore.findByPath(firstPath)
+    if (firstMenu) {
+      tabsStore.open(toTab(firstMenu))
+      router.replace(firstPath)
+    }
+  }
+  // 加载常用字典（预加载，提升后续页面体验）
+  dictStore.loadBatch(['novel_type', 'importance', 'character_role', 'foreshadowing_status', 'writing_style', 'view_point'])
+  // 加载默认项目
   projectStore.loadDefaultProject()
 })
 </script>
@@ -163,25 +191,40 @@ onMounted(() => {
   overflow: auto;
 }
 
+.nav-loading {
+  display: flex;
+  justify-content: center;
+  padding: 40px 0;
+  color: #9ca3af;
+  font-size: 13px;
+}
+
+.nav-list {
+  padding: 8px 0;
+}
+
 .nav-group {
-  padding: 12px 14px;
+  padding: 8px 14px 12px;
   border-bottom: 1px solid #24282d;
 }
 
 .group-title {
-  margin: 0 0 6px;
+  margin: 4px 0 8px;
+  padding: 0 12px;
   color: #c8d1df;
-  font-size: 13px;
-  font-weight: 700;
+  font-size: 12px;
+  font-weight: 600;
   text-align: left;
+  letter-spacing: 0.5px;
+  opacity: 0.85;
 }
 
 .nav-item {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
   width: 100%;
-  height: 34px;
+  height: 36px;
   padding: 0 12px;
   border: 0;
   border-left: 3px solid transparent;
@@ -191,6 +234,21 @@ onMounted(() => {
   text-align: left;
   cursor: pointer;
   justify-content: flex-start;
+  transition: all 0.15s ease;
+}
+
+.nav-icon {
+  font-size: 15px;
+  width: 18px;
+  text-align: center;
+  flex-shrink: 0;
+}
+
+.nav-text {
+  font-size: 13px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .nav-item:hover,
@@ -198,6 +256,10 @@ onMounted(() => {
   border-left-color: #3b82f6;
   background: #22262b;
   color: #ffffff;
+}
+
+.nav-item.single {
+  margin: 2px 0;
 }
 
 .workspace {
