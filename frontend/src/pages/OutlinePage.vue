@@ -16,7 +16,8 @@
           <n-select v-model:value="statusFilter" clearable :options="statuses" placeholder="筛选状态" />
         </div>
         <div class="list-body">
-          <n-empty v-if="filteredOutlines.length === 0" description="暂无匹配大纲" />
+          <n-spin v-if="loading" description="加载中..." />
+          <n-empty v-else-if="filteredOutlines.length === 0" :description="outlines.length === 0 ? '还没有大纲，点击右上角新增' : '暂无匹配大纲'" />
           <template v-else>
             <button
               v-for="item in filteredOutlines"
@@ -38,7 +39,10 @@
 
       <section class="detail-panel">
         <div class="panel-head">
-          <h2>{{ editingId ? '编辑大纲详情' : '新增大纲详情' }}</h2>
+          <h2>
+            {{ editingId ? '编辑大纲详情' : '新增大纲详情' }}
+            <span v-if="isDirty" class="dirty-dot" title="有未保存的修改">●</span>
+          </h2>
           <span class="muted">{{ editingId ? `ID ${editingId}` : '未保存' }}</span>
         </div>
 
@@ -84,19 +88,23 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from 'vue'
-import { useMessage } from 'naive-ui'
+import { computed, nextTick, onMounted, reactive, ref } from 'vue'
 import { createResource, deleteResource, listResource, updateResource } from '@/api/resources'
 import { useProjectStore } from '@/stores/project'
+import { useDirtySnapshot } from '@/composables/useDirtySnapshot'
+import { notify } from '@/utils/notify'
 import type { OutlineItem } from '@/types/domain'
 
-const message = useMessage()
 const projectStore = useProjectStore()
 const outlines = ref<OutlineItem[]>([])
 const keyword = ref('')
 const statusFilter = ref<string | null>(null)
 const editingId = ref<number | null>(null)
+const loading = ref(false)
 const form = reactive({ title: '新章节', node_type: 'chapter', status: 'draft', chapter_no: 1 as number | null, sort_index: 1, description: '' })
+
+// 脏数据检测：切换条目、新增、重置前检查是否有未保存修改。
+const { isDirty, markClean, confirmIfDirty } = useDirtySnapshot(form, '当前大纲有未保存的修改，确定要离开吗？')
 
 const nodeTypes = [{ label: '章', value: 'chapter' }, { label: '卷', value: 'volume' }]
 const statuses = [{ label: '草稿', value: 'draft' }, { label: '已确认', value: 'confirmed' }]
@@ -129,21 +137,36 @@ function statusLabel(value: string) {
   return statuses.find((item) => item.value === value)?.label ?? value
 }
 
-function startCreate() {
-  // 新增状态与编辑状态共用右侧详情表单。
+async function startCreate() {
+  // 新增前检查脏数据，避免丢失当前编辑内容。
+  if (!(await confirmIfDirty())) return
   editingId.value = null
   fillForm()
+  await nextTick()
+  markClean()
 }
 
-function selectOutline(item: OutlineItem) {
+async function selectOutline(item: OutlineItem) {
   // 选择逻辑只复制当前条目，避免未保存输入影响列表数据。
+  if (editingId.value === item.id) return
+  if (!(await confirmIfDirty())) return
   editingId.value = item.id
   fillForm(item)
+  await nextTick()
+  markClean()
 }
 
-function resetCurrent() {
+async function resetCurrent() {
+  if (!(await confirmIfDirty('确定要重置当前大纲吗？'))) return
   const current = outlines.value.find((item) => item.id === editingId.value)
-  current ? selectOutline(current) : startCreate()
+  if (current) {
+    fillForm(current)
+  } else {
+    editingId.value = null
+    fillForm()
+  }
+  await nextTick()
+  markClean()
 }
 
 async function ensureProject() {
@@ -154,8 +177,19 @@ async function ensureProject() {
 async function load() {
   const projectId = await ensureProject()
   if (!projectId) return
-  outlines.value = await listResource<OutlineItem>(projectId, 'outlines')
-  if (!editingId.value && outlines.value[0]) selectOutline(outlines.value[0])
+  loading.value = true
+  try {
+    outlines.value = await listResource<OutlineItem>(projectId, 'outlines')
+    // 首次加载时自动选中第一条，但只有在没有正在编辑的条目时才覆盖。
+    if (!editingId.value && outlines.value[0]) {
+      editingId.value = outlines.value[0].id
+      fillForm(outlines.value[0])
+      await nextTick()
+      markClean()
+    }
+  } finally {
+    loading.value = false
+  }
 }
 
 async function save() {
@@ -165,25 +199,67 @@ async function save() {
   // 大纲保存后会被章节生成页读取，保存成功后保持右侧选中当前记录。
   if (editingId.value) {
     const updated = await updateResource<OutlineItem>('outlines', editingId.value, { ...form })
-    message.success('大纲已更新')
+    notify.success('大纲已更新')
     await load()
-    selectOutline(updated)
+    const fresh = outlines.value.find((item) => item.id === updated.id)
+    if (fresh) {
+      fillForm(fresh)
+      await nextTick()
+      markClean()
+    }
   } else {
     const created = await createResource<OutlineItem>('outlines', { project_id: projectId, ...form })
-    message.success('大纲已新增')
+    notify.success('大纲已新增')
     await load()
-    selectOutline(created)
+    const fresh = outlines.value.find((item) => item.id === created.id)
+    if (fresh) {
+      editingId.value = fresh.id
+      fillForm(fresh)
+      await nextTick()
+      markClean()
+    }
   }
 }
 
 async function remove() {
   if (!editingId.value) return
+  const currentIndex = outlines.value.findIndex((item) => item.id === editingId.value)
   await deleteResource('outlines', editingId.value)
-  message.success('大纲已删除')
-  editingId.value = null
-  fillForm()
+  notify.success('大纲已删除')
+  // 删除后自动选择下一条；如果是最后一条，选上一条；如果都没有，进入新建状态。
+  const nextItem = outlines.value[currentIndex + 1] || outlines.value[currentIndex - 1]
+  if (nextItem) {
+    editingId.value = nextItem.id
+    fillForm(nextItem)
+  } else {
+    editingId.value = null
+    fillForm()
+  }
   await load()
+  await nextTick()
+  markClean()
 }
 
 onMounted(load)
 </script>
+
+<style scoped>
+.dirty-dot {
+  margin-left: 6px;
+  color: #f59e0b;
+  font-size: 12px;
+  animation: pulse 1.5s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
+.list-body {
+  position: relative;
+  min-height: 200px;
+  display: flex;
+  flex-direction: column;
+}
+</style>

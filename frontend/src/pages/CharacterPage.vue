@@ -22,7 +22,8 @@
           <n-select v-model:value="roleFilter" clearable :options="roleTypes" placeholder="按角色类型筛选" />
         </div>
         <div class="list-body">
-          <n-empty v-if="filteredCharacters.length === 0" description="暂无匹配角色" />
+          <n-spin v-if="loading" description="加载中..." />
+          <n-empty v-else-if="filteredCharacters.length === 0" :description="characters.length === 0 ? '还没有角色，点击右上角新增' : '暂无匹配角色'" />
           <template v-else>
             <button
               v-for="item in filteredCharacters"
@@ -47,7 +48,10 @@
 
       <section class="detail-panel dossier-editor">
         <div class="panel-head inline-head">
-          <h2>{{ editingId ? '角色档案编辑' : '新角色档案' }}</h2>
+          <h2>
+            {{ editingId ? '角色档案编辑' : '新角色档案' }}
+            <span v-if="isDirty" class="dirty-dot" title="有未保存的修改">●</span>
+          </h2>
           <span class="muted">{{ editingId ? `ID ${editingId}` : '等待保存' }}</span>
         </div>
 
@@ -169,21 +173,20 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from 'vue'
-import { useDialog, useMessage } from 'naive-ui'
+import { computed, nextTick, onMounted, reactive, ref } from 'vue'
 import { useDirtySnapshot } from '@/composables/useDirtySnapshot'
 import { createResource, deleteResource, listResource, updateResource } from '@/api/resources'
 import { useProjectStore } from '@/stores/project'
+import { notify } from '@/utils/notify'
 import type { CharacterItem, OrganizationItem } from '@/types/domain'
 
-const dialog = useDialog()
-const message = useMessage()
 const projectStore = useProjectStore()
 const characters = ref<CharacterItem[]>([])
 const organizations = ref<OrganizationItem[]>([])
 const keyword = ref('')
 const roleFilter = ref<string | null>(null)
 const editingId = ref<number | null>(null)
+const loading = ref(false)
 
 const form = reactive({
   name: '新角色',
@@ -205,7 +208,7 @@ const form = reactive({
   related_character_ids: '',
   ai_notes: ''
 })
-const { isDirty, markClean } = useDirtySnapshot(form)
+const { isDirty, markClean, confirmIfDirty } = useDirtySnapshot(form, '当前角色档案有未保存内容，继续切换会丢弃这些修改。')
 
 const roleTypes = [
   { label: '主角', value: 'protagonist' },
@@ -315,42 +318,36 @@ function roleTypeLabel(value: string) {
   return roleTypes.find((item) => item.value === value)?.label ?? value
 }
 
-function startCreate() {
-  // 新建档案时解除左侧选择，避免把未保存内容误认为已有角色。
-  confirmDiscard(() => {
+async function startCreate() {
+  // 新建档案前检查脏数据，避免丢失当前编辑内容。
+  if (!(await confirmIfDirty())) return
+  editingId.value = null
+  fillForm()
+  await nextTick()
+  markClean()
+}
+
+async function selectCharacter(item: CharacterItem) {
+  // 左侧点击只水合右侧表单；真正写库仍由保存按钮统一触发。
+  if (editingId.value === item.id) return
+  if (!(await confirmIfDirty())) return
+  editingId.value = item.id
+  fillForm(item)
+  await nextTick()
+  markClean()
+}
+
+async function resetCurrent() {
+  if (!(await confirmIfDirty('确定要重置当前角色档案吗？'))) return
+  const current = characters.value.find((item) => item.id === editingId.value)
+  if (current) {
+    fillForm(current)
+  } else {
     editingId.value = null
     fillForm()
-  })
-}
-
-function selectCharacter(item: CharacterItem) {
-  // 左侧点击只水合右侧表单；真正写库仍由保存按钮统一触发。
-  confirmDiscard(() => {
-    editingId.value = item.id
-    fillForm(item)
-  })
-}
-
-function resetCurrent() {
-  const current = characters.value.find((item) => item.id === editingId.value)
-  confirmDiscard(() => {
-    current ? (editingId.value = current.id, fillForm(current)) : (editingId.value = null, fillForm())
-  })
-}
-
-function confirmDiscard(next: () => void) {
-  // 切换角色前检查脏状态，避免用户在工作台里误丢尚未保存的人设。
-  if (!isDirty.value) {
-    next()
-    return
   }
-  dialog.warning({
-    title: '放弃未保存修改？',
-    content: '当前角色档案有未保存内容，继续切换会丢弃这些修改。',
-    positiveText: '放弃并继续',
-    negativeText: '留在当前',
-    onPositiveClick: next
-  })
+  await nextTick()
+  markClean()
 }
 
 async function ensureProject() {
@@ -361,13 +358,24 @@ async function ensureProject() {
 async function load() {
   const projectId = await ensureProject()
   if (!projectId) return
-  const [characterList, organizationList] = await Promise.all([
-    listResource<CharacterItem>(projectId, 'characters'),
-    listResource<OrganizationItem>(projectId, 'organizations')
-  ])
-  characters.value = characterList
-  organizations.value = organizationList
-  if (!editingId.value && characters.value[0]) selectCharacter(characters.value[0])
+  loading.value = true
+  try {
+    const [characterList, organizationList] = await Promise.all([
+      listResource<CharacterItem>(projectId, 'characters'),
+      listResource<OrganizationItem>(projectId, 'organizations')
+    ])
+    characters.value = characterList
+    organizations.value = organizationList
+    // 首次加载时自动选中第一条，但只有在没有正在编辑的条目时才覆盖。
+    if (!editingId.value && characters.value[0]) {
+      editingId.value = characters.value[0].id
+      fillForm(characters.value[0])
+      await nextTick()
+      markClean()
+    }
+  } finally {
+    loading.value = false
+  }
 }
 
 async function save() {
@@ -378,24 +386,45 @@ async function save() {
   // 保存后刷新列表并重新选中返回行，保证左侧摘要与右侧表单始终同源。
   if (editingId.value) {
     const updated = await updateResource<CharacterItem>('characters', editingId.value, payload)
-    message.success('角色档案已更新')
+    notify.success('角色档案已更新')
     await load()
-    selectCharacter(updated)
+    const fresh = characters.value.find((item) => item.id === updated.id)
+    if (fresh) {
+      fillForm(fresh)
+      await nextTick()
+      markClean()
+    }
   } else {
     const created = await createResource<CharacterItem>('characters', { project_id: projectId, ...payload })
-    message.success('角色档案已新增')
+    notify.success('角色档案已新增')
     await load()
-    selectCharacter(created)
+    const fresh = characters.value.find((item) => item.id === created.id)
+    if (fresh) {
+      editingId.value = fresh.id
+      fillForm(fresh)
+      await nextTick()
+      markClean()
+    }
   }
 }
 
 async function remove() {
   if (!editingId.value) return
+  const currentIndex = characters.value.findIndex((item) => item.id === editingId.value)
   await deleteResource('characters', editingId.value)
-  message.success('角色档案已删除')
-  editingId.value = null
-  fillForm()
+  notify.success('角色档案已删除')
+  // 删除后自动选择下一条；如果是最后一条，选上一条；如果都没有，进入新建状态。
+  const nextItem = characters.value[currentIndex + 1] || characters.value[currentIndex - 1]
+  if (nextItem) {
+    editingId.value = nextItem.id
+    fillForm(nextItem)
+  } else {
+    editingId.value = null
+    fillForm()
+  }
   await load()
+  await nextTick()
+  markClean()
 }
 
 onMounted(load)
@@ -450,5 +479,24 @@ onMounted(load)
   margin-bottom: 8px;
   color: #e5e7eb;
   font-weight: 800;
+}
+
+.dirty-dot {
+  margin-left: 6px;
+  color: #f59e0b;
+  font-size: 12px;
+  animation: pulse 1.5s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
+.list-body {
+  position: relative;
+  min-height: 200px;
+  display: flex;
+  flex-direction: column;
 }
 </style>

@@ -113,8 +113,10 @@ watch(
   () => route.path,
   () => {
     const tab = navTabs.find((item) => item.path === route.path)
-    // 标签只允许来自导航白名单；没有标题的临时路由不再生成“页面”标签。
-    if (!tab || tabsStore.tabs.length === 0) return
+    // 标签只允许来自导航白名单；没有标题的临时路由不生成标签。
+    // 注意：即使标签列表为空，只要当前路由是合法页面，也应该自动打开它，
+    // 避免刷新后因缓存清空导致内容区空白。
+    if (!tab) return
     tabsStore.open(tab)
   },
   { immediate: true }

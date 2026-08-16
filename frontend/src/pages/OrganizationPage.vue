@@ -22,7 +22,8 @@
           <n-input v-model:value="typeFilter" clearable placeholder="按类型筛选" />
         </div>
         <div class="list-body">
-          <n-empty v-if="filteredOrganizations.length === 0" description="暂无匹配组织" />
+          <n-spin v-if="loading" description="加载中..." />
+          <n-empty v-else-if="filteredOrganizations.length === 0" :description="organizations.length === 0 ? '还没有组织，点击右上角新增' : '暂无匹配组织'" />
           <template v-else>
             <button
               v-for="item in filteredOrganizations"
@@ -47,7 +48,10 @@
 
       <section class="detail-panel org-editor">
         <div class="panel-head inline-head">
-          <h2>{{ editingId ? '势力详情编辑' : '新势力档案' }}</h2>
+          <h2>
+            {{ editingId ? '势力详情编辑' : '新势力档案' }}
+            <span v-if="isDirty" class="dirty-dot" title="有未保存的修改">●</span>
+          </h2>
           <span class="muted">{{ editingId ? `ID ${editingId}` : '等待保存' }}</span>
         </div>
 
@@ -162,19 +166,20 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from 'vue'
-import { useMessage } from 'naive-ui'
+import { computed, nextTick, onMounted, reactive, ref } from 'vue'
 import { createResource, deleteResource, listResource, updateResource } from '@/api/resources'
 import { useProjectStore } from '@/stores/project'
+import { useDirtySnapshot } from '@/composables/useDirtySnapshot'
+import { notify } from '@/utils/notify'
 import type { CharacterItem, OrganizationItem } from '@/types/domain'
 
-const message = useMessage()
 const projectStore = useProjectStore()
 const organizations = ref<OrganizationItem[]>([])
 const characters = ref<CharacterItem[]>([])
 const keyword = ref('')
 const typeFilter = ref('')
 const editingId = ref<number | null>(null)
+const loading = ref(false)
 const form = reactive({
   name: '新组织',
   org_type: '',
@@ -194,6 +199,9 @@ const form = reactive({
   impact: '',
   risk_notes: ''
 })
+
+// 脏数据检测：切换条目、新增、重置前检查是否有未保存修改。
+const { isDirty, markClean, confirmIfDirty } = useDirtySnapshot(form, '当前势力档案有未保存的修改，确定要离开吗？')
 
 const filteredOrganizations = computed(() => {
   const text = keyword.value.trim().toLowerCase()
@@ -288,21 +296,36 @@ function fillForm(item?: Partial<OrganizationItem>) {
   })
 }
 
-function startCreate() {
-  // 新增势力时清除选中态，右侧关系面板与中间表单共同组成一条记录。
+async function startCreate() {
+  // 新增势力前检查脏数据，避免丢失当前编辑内容。
+  if (!(await confirmIfDirty())) return
   editingId.value = null
   fillForm()
+  await nextTick()
+  markClean()
 }
 
-function selectOrganization(item: OrganizationItem) {
-  // 列表选择只是读取资料到编辑区，保存前不会影响原记录。
+async function selectOrganization(item: OrganizationItem) {
+  // 列表选择前检查脏数据；同一条目重复点击直接跳过。
+  if (editingId.value === item.id) return
+  if (!(await confirmIfDirty())) return
   editingId.value = item.id
   fillForm(item)
+  await nextTick()
+  markClean()
 }
 
-function resetCurrent() {
+async function resetCurrent() {
+  if (!(await confirmIfDirty('确定要重置当前编辑内容吗？'))) return
   const current = organizations.value.find((item) => item.id === editingId.value)
-  current ? selectOrganization(current) : startCreate()
+  if (current) {
+    fillForm(current)
+  } else {
+    editingId.value = null
+    fillForm()
+  }
+  await nextTick()
+  markClean()
 }
 
 async function ensureProject() {
@@ -313,13 +336,24 @@ async function ensureProject() {
 async function load() {
   const projectId = await ensureProject()
   if (!projectId) return
-  const [organizationList, characterList] = await Promise.all([
-    listResource<OrganizationItem>(projectId, 'organizations'),
-    listResource<CharacterItem>(projectId, 'characters')
-  ])
-  organizations.value = organizationList
-  characters.value = characterList
-  if (!editingId.value && organizations.value[0]) selectOrganization(organizations.value[0])
+  loading.value = true
+  try {
+    const [organizationList, characterList] = await Promise.all([
+      listResource<OrganizationItem>(projectId, 'organizations'),
+      listResource<CharacterItem>(projectId, 'characters')
+    ])
+    organizations.value = organizationList
+    characters.value = characterList
+    // 首次加载时自动选中第一条，但只有在没有正在编辑的条目时才覆盖。
+    if (!editingId.value && organizations.value[0]) {
+      editingId.value = organizations.value[0].id
+      fillForm(organizations.value[0])
+      await nextTick()
+      markClean()
+    }
+  } finally {
+    loading.value = false
+  }
 }
 
 async function save() {
@@ -329,24 +363,45 @@ async function save() {
   // 组织字段会被章节上下文直接读取，因此保存后刷新列表并保留当前选择。
   if (editingId.value) {
     const updated = await updateResource<OrganizationItem>('organizations', editingId.value, { ...form })
-    message.success('势力档案已更新')
+    notify.success('势力档案已更新')
     await load()
-    selectOrganization(updated)
+    const fresh = organizations.value.find((item) => item.id === updated.id)
+    if (fresh) {
+      fillForm(fresh)
+      await nextTick()
+      markClean()
+    }
   } else {
     const created = await createResource<OrganizationItem>('organizations', { project_id: projectId, ...form })
-    message.success('势力档案已新增')
+    notify.success('势力档案已新增')
     await load()
-    selectOrganization(created)
+    const fresh = organizations.value.find((item) => item.id === created.id)
+    if (fresh) {
+      editingId.value = fresh.id
+      fillForm(fresh)
+      await nextTick()
+      markClean()
+    }
   }
 }
 
 async function remove() {
   if (!editingId.value) return
+  const currentIndex = organizations.value.findIndex((item) => item.id === editingId.value)
   await deleteResource('organizations', editingId.value)
-  message.success('势力档案已删除')
-  editingId.value = null
-  fillForm()
+  notify.success('势力档案已删除')
+  // 删除后自动选择下一条；如果是最后一条，选上一条；如果都没有，进入新建状态。
+  const nextItem = organizations.value[currentIndex + 1] || organizations.value[currentIndex - 1]
+  if (nextItem) {
+    editingId.value = nextItem.id
+    fillForm(nextItem)
+  } else {
+    editingId.value = null
+    fillForm()
+  }
   await load()
+  await nextTick()
+  markClean()
 }
 
 onMounted(load)
@@ -409,5 +464,24 @@ onMounted(load)
 
 .metric-row:last-child {
   border-bottom: 0;
+}
+
+.dirty-dot {
+  margin-left: 6px;
+  color: #f59e0b;
+  font-size: 12px;
+  animation: pulse 1.5s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
+.list-body {
+  position: relative;
+  min-height: 200px;
+  display: flex;
+  flex-direction: column;
 }
 </style>

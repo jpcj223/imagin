@@ -27,7 +27,8 @@
           </div>
         </div>
         <div class="list-body">
-          <n-empty v-if="filteredWorlds.length === 0" description="暂无匹配设定" />
+          <n-spin v-if="loading" description="加载中..." />
+          <n-empty v-else-if="filteredWorlds.length === 0" :description="worlds.length === 0 ? '还没有设定，点击右上角新增' : '暂无匹配设定'" />
           <template v-else>
             <button
               v-for="item in filteredWorlds"
@@ -49,7 +50,10 @@
 
       <section class="detail-panel setting-editor">
         <div class="panel-head inline-head">
-          <h2>{{ editingId ? '设定详情编辑' : '新设定档案' }}</h2>
+          <h2>
+            {{ editingId ? '设定详情编辑' : '新设定档案' }}
+            <span v-if="isDirty" class="dirty-dot" title="有未保存的修改">●</span>
+          </h2>
           <span class="muted">{{ editingId ? `ID ${editingId}` : '等待保存' }}</span>
         </div>
 
@@ -160,13 +164,13 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from 'vue'
-import { useMessage } from 'naive-ui'
+import { computed, nextTick, onMounted, reactive, ref } from 'vue'
 import { createResource, deleteResource, listResource, updateResource } from '@/api/resources'
 import { useProjectStore } from '@/stores/project'
+import { useDirtySnapshot } from '@/composables/useDirtySnapshot'
+import { notify } from '@/utils/notify'
 import type { CharacterItem, ForeshadowingItem, OrganizationItem, WorldSetting } from '@/types/domain'
 
-const message = useMessage()
 const projectStore = useProjectStore()
 const worlds = ref<WorldSetting[]>([])
 const characters = ref<CharacterItem[]>([])
@@ -175,6 +179,7 @@ const foreshadowings = ref<ForeshadowingItem[]>([])
 const keyword = ref('')
 const categoryFilter = ref<string | null>(null)
 const editingId = ref<number | null>(null)
+const loading = ref(false)
 
 const form = reactive({
   title: '',
@@ -192,6 +197,9 @@ const form = reactive({
   related_foreshadowings: '',
   conflict_notes: ''
 })
+
+// 脏数据检测：切换条目、新增、重置前检查是否有未保存修改。
+const { isDirty, markClean, confirmIfDirty } = useDirtySnapshot(form, '当前设定有未保存的修改，确定要离开吗？')
 
 const categoryOptions = [
   { label: '时代', value: 'era' },
@@ -305,26 +313,44 @@ function importanceLabel(value: string) {
   return importanceOptions.find((item) => item.value === value)?.label ?? value
 }
 
-function startCreate() {
-  // 新增设定时保持右侧体检面板联动，让用户能边写边看完整度。
+async function startCreate() {
+  // 新增设定前检查脏数据，避免丢失当前编辑内容。
+  if (!(await confirmIfDirty())) return
   editingId.value = null
   fillForm()
+  await nextTick()
+  markClean()
 }
 
-function selectWorld(item: WorldSetting) {
-  // 从设定索引切换时只同步表单，不直接写数据库。
+async function selectWorld(item: WorldSetting) {
+  // 切换设定前检查脏数据；同一条目重复点击直接跳过。
+  if (editingId.value === item.id) return
+  if (!(await confirmIfDirty())) return
   editingId.value = item.id
   fillForm(item)
+  await nextTick()
+  markClean()
 }
 
-function resetCurrent() {
+async function resetCurrent() {
+  if (!(await confirmIfDirty('确定要重置当前编辑内容吗？'))) return
   const current = worlds.value.find((item) => item.id === editingId.value)
-  current ? selectWorld(current) : startCreate()
+  if (current) {
+    fillForm(current)
+  } else {
+    editingId.value = null
+    fillForm()
+  }
+  await nextTick()
+  markClean()
 }
 
-function applyTemplate(template: (typeof templates)[number]) {
+async function applyTemplate(template: (typeof templates)[number]) {
+  if (!(await confirmIfDirty())) return
   editingId.value = null
   Object.assign(form, template)
+  await nextTick()
+  markClean()
 }
 
 async function ensureProject() {
@@ -335,17 +361,28 @@ async function ensureProject() {
 async function load() {
   const projectId = await ensureProject()
   if (!projectId) return
-  const [worldList, characterList, organizationList, foreshadowingList] = await Promise.all([
-    listResource<WorldSetting>(projectId, 'world'),
-    listResource<CharacterItem>(projectId, 'characters'),
-    listResource<OrganizationItem>(projectId, 'organizations'),
-    listResource<ForeshadowingItem>(projectId, 'foreshadowings')
-  ])
-  worlds.value = worldList
-  characters.value = characterList
-  organizations.value = organizationList
-  foreshadowings.value = foreshadowingList
-  if (!editingId.value && worlds.value[0]) selectWorld(worlds.value[0])
+  loading.value = true
+  try {
+    const [worldList, characterList, organizationList, foreshadowingList] = await Promise.all([
+      listResource<WorldSetting>(projectId, 'world'),
+      listResource<CharacterItem>(projectId, 'characters'),
+      listResource<OrganizationItem>(projectId, 'organizations'),
+      listResource<ForeshadowingItem>(projectId, 'foreshadowings')
+    ])
+    worlds.value = worldList
+    characters.value = characterList
+    organizations.value = organizationList
+    foreshadowings.value = foreshadowingList
+    // 首次加载时自动选中第一条，但只有在没有正在编辑的条目时才覆盖。
+    if (!editingId.value && worlds.value[0]) {
+      editingId.value = worlds.value[0].id
+      fillForm(worlds.value[0])
+      await nextTick()
+      markClean()
+    }
+  } finally {
+    loading.value = false
+  }
 }
 
 async function save() {
@@ -355,24 +392,47 @@ async function save() {
   // 保存流程兼容旧数据：新增字段全部带默认值，旧库启动迁移后可直接写入。
   if (editingId.value) {
     const updated = await updateResource<WorldSetting>('world', editingId.value, { ...form })
-    message.success('设定已更新')
+    notify.success('设定已更新')
     await load()
-    selectWorld(updated)
+    // 保存成功后保持当前选中项，重新填充表单并同步脏快照。
+    const fresh = worlds.value.find((item) => item.id === updated.id)
+    if (fresh) {
+      fillForm(fresh)
+      await nextTick()
+      markClean()
+    }
   } else {
     const created = await createResource<WorldSetting>('world', { project_id: projectId, ...form })
-    message.success('设定已新增')
+    notify.success('设定已新增')
     await load()
-    selectWorld(created)
+    // 新增成功后自动跳转到新建的条目。
+    const fresh = worlds.value.find((item) => item.id === created.id)
+    if (fresh) {
+      editingId.value = fresh.id
+      fillForm(fresh)
+      await nextTick()
+      markClean()
+    }
   }
 }
 
 async function remove() {
   if (!editingId.value) return
+  const currentIndex = worlds.value.findIndex((item) => item.id === editingId.value)
   await deleteResource('world', editingId.value)
-  message.success('设定已删除')
-  editingId.value = null
-  fillForm()
+  notify.success('设定已删除')
+  // 删除后自动选择下一条；如果是最后一条，选上一条；如果都没有，进入新建状态。
+  const nextItem = worlds.value[currentIndex + 1] || worlds.value[currentIndex - 1]
+  if (nextItem) {
+    editingId.value = nextItem.id
+    fillForm(nextItem)
+  } else {
+    editingId.value = null
+    fillForm()
+  }
   await load()
+  await nextTick()
+  markClean()
 }
 
 onMounted(load)
@@ -442,4 +502,24 @@ onMounted(load)
   color: #cbd5e1;
   background: #202327;
 }
+
+.dirty-dot {
+  margin-left: 6px;
+  color: #f59e0b;
+  font-size: 12px;
+  animation: pulse 1.5s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
+.list-body {
+  position: relative;
+  min-height: 200px;
+  display: flex;
+  flex-direction: column;
+}
+
 </style>

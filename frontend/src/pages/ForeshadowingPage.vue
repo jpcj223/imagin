@@ -61,7 +61,10 @@
 
         <aside class="detail-panel risk-detail">
           <div class="panel-head inline-head">
-            <h2>{{ editingId ? '伏笔详情' : '新伏笔' }}</h2>
+            <h2>
+              {{ editingId ? '伏笔详情' : '新伏笔' }}
+              <span v-if="isDirty" class="dirty-dot" title="有未保存的修改">●</span>
+            </h2>
             <span class="muted">{{ riskText }}</span>
           </div>
 
@@ -138,13 +141,13 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from 'vue'
-import { useMessage } from 'naive-ui'
+import { computed, nextTick, onMounted, reactive, ref } from 'vue'
 import { createResource, deleteResource, listResource, updateResource } from '@/api/resources'
 import { useProjectStore } from '@/stores/project'
+import { useDirtySnapshot } from '@/composables/useDirtySnapshot'
+import { notify } from '@/utils/notify'
 import type { CharacterItem, ChapterItem, ForeshadowingItem, OrganizationItem, OutlineItem } from '@/types/domain'
 
-const message = useMessage()
 const projectStore = useProjectStore()
 const foreshadowings = ref<ForeshadowingItem[]>([])
 const chapters = ref<ChapterItem[]>([])
@@ -155,6 +158,7 @@ const keyword = ref('')
 const importanceFilter = ref<string | null>(null)
 const chapterFilter = ref<number | null>(null)
 const editingId = ref<number | null>(null)
+const loading = ref(false)
 const form = reactive({
   keyword: '',
   description: '',
@@ -169,6 +173,9 @@ const form = reactive({
   related_organization_ids: '',
   related_outline_ids: ''
 })
+
+// 脏数据检测：切换伏笔、新增、重置前检查是否有未保存修改。
+const { isDirty, markClean, confirmIfDirty } = useDirtySnapshot(form, '当前伏笔有未保存的修改，确定要离开吗？')
 
 const statusColumns = [
   { label: '待埋设', value: 'pending', short: '待埋' },
@@ -293,28 +300,48 @@ function importanceLabel(value: string) {
   return importanceOptions.find((item) => item.value === value)?.label ?? value
 }
 
-function startCreate() {
-  // 新增伏笔时右侧详情进入草稿态，保存后会进入对应状态列。
+async function startCreate() {
+  // 新增伏笔前检查脏数据，避免丢失当前编辑内容。
+  if (!(await confirmIfDirty())) return
   editingId.value = null
   fillForm()
+  await nextTick()
+  markClean()
 }
 
-function selectForeshadowing(item: ForeshadowingItem) {
-  // 看板卡片点击负责切换详情，状态修改仍走统一保存或快捷移动逻辑。
+async function selectForeshadowing(item: ForeshadowingItem) {
+  // 看板卡片点击负责切换详情；同一条目重复点击直接跳过。
+  if (editingId.value === item.id) return
+  if (!(await confirmIfDirty())) return
   editingId.value = item.id
   fillForm(item)
+  await nextTick()
+  markClean()
 }
 
-function resetCurrent() {
+async function resetCurrent() {
+  if (!(await confirmIfDirty('确定要重置当前伏笔吗？'))) return
   const current = foreshadowings.value.find((item) => item.id === editingId.value)
-  current ? selectForeshadowing(current) : startCreate()
+  if (current) {
+    fillForm(current)
+  } else {
+    editingId.value = null
+    fillForm()
+  }
+  await nextTick()
+  markClean()
 }
 
 async function moveStatus(item: ForeshadowingItem, status: string) {
   const updated = await updateResource<ForeshadowingItem>('foreshadowings', item.id, { status })
-  message.success(`已移动到「${statusColumns.find((column) => column.value === status)?.label}」`)
+  notify.success(`已移动到「${statusColumns.find((column) => column.value === status)?.label}」`)
   await load()
-  selectForeshadowing(updated)
+  const fresh = foreshadowings.value.find((f) => f.id === updated.id)
+  if (fresh && editingId.value === updated.id) {
+    fillForm(fresh)
+    await nextTick()
+    markClean()
+  }
 }
 
 async function ensureProject() {
@@ -325,19 +352,30 @@ async function ensureProject() {
 async function load() {
   const projectId = await ensureProject()
   if (!projectId) return
-  const [foreshadowingList, chapterList, characterList, organizationList, outlineList] = await Promise.all([
-    listResource<ForeshadowingItem>(projectId, 'foreshadowings'),
-    listResource<ChapterItem>(projectId, 'chapters'),
-    listResource<CharacterItem>(projectId, 'characters'),
-    listResource<OrganizationItem>(projectId, 'organizations'),
-    listResource<OutlineItem>(projectId, 'outlines')
-  ])
-  foreshadowings.value = foreshadowingList
-  chapters.value = chapterList
-  characters.value = characterList
-  organizations.value = organizationList
-  outlines.value = outlineList
-  if (!editingId.value && foreshadowings.value[0]) selectForeshadowing(foreshadowings.value[0])
+  loading.value = true
+  try {
+    const [foreshadowingList, chapterList, characterList, organizationList, outlineList] = await Promise.all([
+      listResource<ForeshadowingItem>(projectId, 'foreshadowings'),
+      listResource<ChapterItem>(projectId, 'chapters'),
+      listResource<CharacterItem>(projectId, 'characters'),
+      listResource<OrganizationItem>(projectId, 'organizations'),
+      listResource<OutlineItem>(projectId, 'outlines')
+    ])
+    foreshadowings.value = foreshadowingList
+    chapters.value = chapterList
+    characters.value = characterList
+    organizations.value = organizationList
+    outlines.value = outlineList
+    // 首次加载时自动选中第一条，但只有在没有正在编辑的条目时才覆盖。
+    if (!editingId.value && foreshadowings.value[0]) {
+      editingId.value = foreshadowings.value[0].id
+      fillForm(foreshadowings.value[0])
+      await nextTick()
+      markClean()
+    }
+  } finally {
+    loading.value = false
+  }
 }
 
 async function save() {
@@ -347,24 +385,45 @@ async function save() {
   // 保存后刷新整块看板，让状态列、风险提示和详情区保持一致。
   if (editingId.value) {
     const updated = await updateResource<ForeshadowingItem>('foreshadowings', editingId.value, { ...form })
-    message.success('伏笔已更新')
+    notify.success('伏笔已更新')
     await load()
-    selectForeshadowing(updated)
+    const fresh = foreshadowings.value.find((item) => item.id === updated.id)
+    if (fresh) {
+      fillForm(fresh)
+      await nextTick()
+      markClean()
+    }
   } else {
     const created = await createResource<ForeshadowingItem>('foreshadowings', { project_id: projectId, ...form })
-    message.success('伏笔已添加')
+    notify.success('伏笔已添加')
     await load()
-    selectForeshadowing(created)
+    const fresh = foreshadowings.value.find((item) => item.id === created.id)
+    if (fresh) {
+      editingId.value = fresh.id
+      fillForm(fresh)
+      await nextTick()
+      markClean()
+    }
   }
 }
 
 async function remove() {
   if (!editingId.value) return
+  const currentIndex = foreshadowings.value.findIndex((item) => item.id === editingId.value)
   await deleteResource('foreshadowings', editingId.value)
-  message.success('伏笔已删除')
-  editingId.value = null
-  fillForm()
+  notify.success('伏笔已删除')
+  // 删除后自动选择下一条；如果是最后一条，选上一条；如果都没有，进入新建状态。
+  const nextItem = foreshadowings.value[currentIndex + 1] || foreshadowings.value[currentIndex - 1]
+  if (nextItem) {
+    editingId.value = nextItem.id
+    fillForm(nextItem)
+  } else {
+    editingId.value = null
+    fillForm()
+  }
   await load()
+  await nextTick()
+  markClean()
 }
 
 onMounted(load)
@@ -475,5 +534,17 @@ onMounted(load)
   margin-bottom: 8px;
   color: #e5e7eb;
   font-weight: 800;
+}
+
+.dirty-dot {
+  margin-left: 6px;
+  color: #f59e0b;
+  font-size: 12px;
+  animation: pulse 1.5s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
 }
 </style>
