@@ -2,7 +2,7 @@
   <div class="shell">
     <aside class="sidebar">
       <div class="brand">
-        <strong>臆想创作</strong>
+        <strong>臆想</strong>
         <span>AI 小说创作工作台</span>
       </div>
 

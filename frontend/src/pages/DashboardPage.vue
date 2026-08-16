@@ -166,11 +166,11 @@
         <h2 class="section-title">🔄 创作流程</h2>
       </div>
       <n-steps :current="workflowStep" status="process" size="small">
-        <n-step title="项目配置" description="设定题材、主题、节奏基调" />
-        <n-step title="搭建资料" description="世界观、人物、组织、伏笔" />
-        <n-step title="规划大纲" description="卷章结构、剧情节点" />
-        <n-step title="生成章节" description="AI 辅助正文写作" />
-        <n-step title="沉淀记忆" description="摘要提取、长期记忆" />
+        <n-step title="世界观设定" description="构建故事背景、规则和势力" />
+        <n-step title="大纲规划" description="卷章结构、主线剧情节点" />
+        <n-step title="管理人物" description="角色卡片、人物关系网络" />
+        <n-step title="单章细纲" description="细化单章情节和场景" />
+        <n-step title="生成文章" description="AI 辅助正文写作" />
       </n-steps>
     </div>
   </div>
@@ -208,18 +208,11 @@ const project = computed(() => projectStore.currentProject)
 // ---- 快捷入口 ----
 const quickActions = [
   {
-    title: '生成新章节',
-    desc: 'AI 辅助快速创作正文',
-    icon: '✨',
-    path: '/chapter-generate',
-    color: 'linear-gradient(135deg, #6366f1, #8b5cf6)',
-  },
-  {
-    title: '管理人物',
-    desc: '维护角色卡和人物关系',
-    icon: '👤',
-    path: '/characters',
-    color: 'linear-gradient(135deg, #f59e0b, #ef4444)',
+    title: '世界观设定',
+    desc: '构建故事背景和规则体系',
+    icon: '🌍',
+    path: '/world',
+    color: 'linear-gradient(135deg, #3b82f6, #06b6d4)',
   },
   {
     title: '大纲规划',
@@ -229,11 +222,25 @@ const quickActions = [
     color: 'linear-gradient(135deg, #10b981, #059669)',
   },
   {
-    title: '世界观设定',
-    desc: '构建故事背景和规则',
-    icon: '🌍',
-    path: '/world',
-    color: 'linear-gradient(135deg, #3b82f6, #06b6d4)',
+    title: '管理人物',
+    desc: '维护角色卡和人物关系',
+    icon: '👤',
+    path: '/characters',
+    color: 'linear-gradient(135deg, #f59e0b, #ef4444)',
+  },
+  {
+    title: '单章细纲',
+    desc: '细化单章情节和场景',
+    icon: '📝',
+    path: '/outline',
+    color: 'linear-gradient(135deg, #8b5cf6, #6366f1)',
+  },
+  {
+    title: '生成文章',
+    desc: 'AI 辅助快速创作正文',
+    icon: '✨',
+    path: '/chapter-generate',
+    color: 'linear-gradient(135deg, #ec4899, #f43f5e)',
   },
 ]
 
@@ -286,16 +293,16 @@ const foreshadowStats = computed(() => {
 const workflowStep = computed(() => {
   const c = dashboard.value.counts
   let step = 0
-  // 有项目配置（肯定有）
-  step = 1
-  // 有任何资料 → 步骤 2
-  if (c.characters > 0 || c.organizations > 0 || c.world_settings > 0 || c.foreshadowings > 0) {
-    step = 2
-  }
-  // 有大纲 → 步骤 3
-  if (c.outlines > 0) step = 3
-  // 有章节 → 步骤 4
+  // 有世界观设定 → 步骤 1
+  if (c.world_settings > 0) step = 1
+  // 有大纲 → 步骤 2
+  if (c.outlines > 0) step = 2
+  // 有人物 → 步骤 3
+  if (c.characters > 0) step = 3
+  // 有章节 → 步骤 4（单章细纲和章节关联）
   if (c.chapters > 0) step = 4
+  // 有章节正文 → 步骤 5
+  if (dashboard.value.total_chars > 0) step = 5
   return step
 })
 
@@ -441,7 +448,7 @@ function statusTagType(status: string): 'default' | 'success' | 'warning' | 'inf
 /* ===== 快捷入口 ===== */
 .quick-actions {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(5, 1fr);
   gap: 14px;
 }
 
@@ -725,7 +732,7 @@ function statusTagType(status: string): 'default' | 'success' | 'warning' | 'inf
 /* ===== 响应式 ===== */
 @media (max-width: 1200px) {
   .quick-actions {
-    grid-template-columns: repeat(2, 1fr);
+    grid-template-columns: repeat(3, 1fr);
   }
   .dashboard-main {
     grid-template-columns: 1fr;
