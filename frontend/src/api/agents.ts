@@ -135,3 +135,19 @@ export async function checkConsistency(payload: Record<string, unknown>) {
   const { data } = await apiClient.post<ConsistencyCheckResult>('/agents/consistency-check', payload)
   return data
 }
+
+export async function analyzeVolume(payload: Record<string, unknown>) {
+  // 卷分析：分析卷设定并自动更新大纲总览，为章节生成 Agent 提供创作方向。
+  const { data } = await apiClient.post<{
+    volume_id: number
+    overview_id: number
+    analysis: string
+    main_plot: string
+    core_conflict: string
+    ending: string
+    volume_summary: string
+    chapter_suggestions: string
+    source: string
+  }>('/agents/volume-analyze', payload)
+  return data
+}

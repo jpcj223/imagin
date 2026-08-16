@@ -129,16 +129,22 @@ def update_row(table: str, item_id: int, payload: dict[str, Any]) -> dict[str, A
 
     注意：updated_at 由 ORM 模型的 onupdate=func.now() 自动维护，
     无需手动设置。
+    前端可能传过来的 id / created_at / updated_at 等字段会被过滤掉，
+    避免类型错误或意外覆盖。
     """
     if not payload:
         return fetch_one(table, item_id)
+
+    # 过滤掉不应由更新接口修改的字段
+    protected_fields = {"id", "created_at", "updated_at"}
+    clean_payload = {k: v for k, v in payload.items() if k not in protected_fields}
 
     model = _get_model(table)
     with get_business_db() as db:
         obj = db.query(model).filter(model.id == item_id).first()
         if not obj:
             return None
-        for key, value in payload.items():
+        for key, value in clean_payload.items():
             setattr(obj, key, value)
         db.commit()
         db.refresh(obj)

@@ -73,6 +73,8 @@ class OutlineSave(BaseModel):
     chapter_no: int | None = Field(default=None, description="章节号，章节生成时用于匹配")
     sort_index: int = Field(default=0, description="排序索引，用于无章节号时的显示顺序")
     description: str = Field(default="", description="剧情目标、冲突、场景、钩子等章节说明")
+    extra: str = Field(default="", description="扩展字段，JSON 格式存储精细化数据")
+    volume_id: int | None = Field(default=None, description="所属卷 ID，仅章节节点需要")
 
 
 class ChapterSave(BaseModel):
@@ -188,3 +190,14 @@ class ConsistencyCheckRequest(BaseModel):
     project_id: int = Field(description="所属项目 ID")
     chapter_id: int | None = Field(default=None, description="可选章节 ID")
     content: str = Field(default="", description="待检查正文或片段")
+
+
+class VolumeAnalyzeRequest(BaseModel):
+    """卷分析 Agent 请求。
+
+    分析卷的设定和规划，自动补充完善大纲总览。
+    """
+
+    project_id: int = Field(description="所属项目 ID")
+    volume_id: int = Field(description="要分析的卷 ID")
+    instruction: str = Field(default="", description="用户补充分析要求")

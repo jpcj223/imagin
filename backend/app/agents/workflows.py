@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+import json
 from collections.abc import Iterator
 
 from app.agents.context import build_chapter_context
 from app.core.llm import LLMError, chat_completion, chat_completion_stream
 from app.db.session import get_business_db
-from app.models.business import Chapter, ChapterSummary, GenerationLog
+from app.models.business import Chapter, ChapterSummary, GenerationLog, Outline
 
 
 def _format_context(context: dict) -> str:
@@ -434,3 +435,216 @@ def polish_chapter(project_id: int, chapter_id: int, mode: str, instruction: str
         db.commit()
 
     return {"chapter_id": chapter_id, "content": content}
+
+
+def analyze_volume(project_id: int, volume_id: int, instruction: str = "") -> dict:
+    """分析卷设定并自动更新大纲总览。
+
+    读取卷的描述、核心事件、出场人物等信息，通过 LLM 分析后
+    补充完善大纲总览（主线、核心冲突、结局走向等）。
+    """
+    with get_business_db() as db:
+        volume = db.query(Outline).filter(
+            Outline.id == volume_id,
+            Outline.project_id == project_id,
+            Outline.node_type == "volume"
+        ).first()
+        if not volume:
+            return {"error": "卷不存在"}
+
+        # 获取当前总览
+        overview = db.query(Outline).filter(
+            Outline.project_id == project_id,
+            Outline.node_type == "overview"
+        ).first()
+
+        # 获取所有卷的信息用于整体分析
+        all_volumes = db.query(Outline).filter(
+            Outline.project_id == project_id,
+            Outline.node_type == "volume"
+        ).order_by(Outline.volume_no).all()
+
+        # 获取本卷章节
+        chapters = db.query(Outline).filter(
+            Outline.project_id == project_id,
+            Outline.node_type == "chapter",
+            Outline.volume_id == volume_id
+        ).order_by(Outline.chapter_no).all()
+
+    # 组装上下文
+    volume_info = {
+        "卷名": volume.title,
+        "卷号": volume.volume_no,
+        "卷简介": volume.description,
+    }
+    try:
+        extra = volume.extra and json.loads(volume.extra) or {}
+        volume_info["核心事件"] = extra.get("core_events", "")
+        volume_info["主要场景"] = extra.get("locations", "")
+        volume_info["卷末高潮"] = extra.get("climax", "")
+    except Exception:
+        pass
+
+    chapters_info = [{"章号": c.chapter_no, "标题": c.title, "简介": c.description} for c in chapters]
+
+    overview_info = {}
+    if overview:
+        overview_info["当前主线"] = overview.description
+        try:
+            extra = overview.extra and json.loads(overview.extra) or {}
+            overview_info["核心冲突"] = extra.get("core_conflict", "")
+            overview_info["结局走向"] = extra.get("ending", "")
+        except Exception:
+            pass
+
+    all_volumes_info = [{"卷号": v.volume_no, "卷名": v.title, "简介": v.description} for v in all_volumes]
+
+    messages = [
+        {
+            "role": "system",
+            "content": "你是臆想创作的大纲分析 Agent，负责分析卷设定并完善大纲总览，为后续章节生成 Agent 提供更清晰的创作方向。",
+        },
+        {
+            "role": "user",
+            "content": f"""
+请分析当前卷的设定，并基于全卷规划补充完善大纲总览。
+
+【当前卷信息】
+{json.dumps(volume_info, ensure_ascii=False, indent=2)}
+
+【本卷章节】
+{json.dumps(chapters_info, ensure_ascii=False, indent=2)}
+
+【所有卷概览】
+{json.dumps(all_volumes_info, ensure_ascii=False, indent=2)}
+
+【当前总览】
+{json.dumps(overview_info, ensure_ascii=False, indent=2)}
+
+【用户补充要求】
+{instruction or "无"}
+
+请输出以下内容，用【】标记各段：
+【故事主线】
+基于全卷规划，提炼更清晰的故事主线（一句话概括）。
+
+【核心冲突】
+分析本卷和整体故事的核心矛盾、冲突点。
+
+【结局走向】
+基于当前卷的走向，推断或完善故事的结局方向。
+
+【卷分析摘要】
+本卷在整体故事中的定位、作用和叙事价值。
+
+【章节生成建议】
+针对本卷章节生成的建议，包括节奏、重点场景、需要注意的伏笔和人物弧光。
+""".strip(),
+        },
+    ]
+
+    try:
+        analysis = chat_completion(messages, temperature=0.3)
+        source = "llm"
+    except LLMError:
+        analysis = (
+            "【故事主线】开发模式：配置模型后将生成完整的故事主线分析。\n"
+            "【核心冲突】开发模式：配置模型后将分析核心冲突。\n"
+            "【结局走向】开发模式：配置模型后将推断结局走向。\n"
+            "【卷分析摘要】开发模式：本卷是故事发展的重要阶段，配置模型后将获得详细分析。\n"
+            "【章节生成建议】开发模式：配置模型后将生成针对性的章节生成建议。"
+        )
+        source = "fallback"
+
+    # 提取各段
+    def _extract(text: str, title: str) -> str:
+        marker = f"【{title}】"
+        start = text.find(marker)
+        if start < 0:
+            return ""
+        start += len(marker)
+        next_positions = [text.find("【", start), len(text)]
+        end = min(p for p in next_positions if p >= 0)
+        return text[start:end].strip()
+
+    main_plot = _extract(analysis, "故事主线")
+    core_conflict = _extract(analysis, "核心冲突")
+    ending = _extract(analysis, "结局走向")
+    volume_summary = _extract(analysis, "卷分析摘要")
+    chapter_suggestions = _extract(analysis, "章节生成建议")
+
+    # 更新总览
+    with get_business_db() as db:
+        if overview:
+            # 合并更新：用新分析补充，不覆盖已有内容
+            try:
+                extra = overview.extra and json.loads(overview.extra) or {}
+            except Exception:
+                extra = {}
+            if main_plot and not overview.description:
+                overview.description = main_plot
+            elif main_plot:
+                # 追加到现有描述后
+                overview.description = overview.description + "\n\n" + main_plot
+            if core_conflict:
+                extra["core_conflict"] = extra.get("core_conflict", "") + ("\n\n" if extra.get("core_conflict") else "") + core_conflict
+            if ending:
+                extra["ending"] = extra.get("ending", "") + ("\n\n" if extra.get("ending") else "") + ending
+            extra["ai_analysis"] = extra.get("ai_analysis", "") + ("\n\n---\n\n" if extra.get("ai_analysis") else "") + f"第{volume.volume_no}卷分析：{volume_summary}"
+            overview.extra = json.dumps(extra, ensure_ascii=False)
+            overview_id = overview.id
+        else:
+            # 创建新总览
+            extra = {
+                "core_conflict": core_conflict,
+                "ending": ending,
+                "ai_analysis": f"第{volume.volume_no}卷分析：{volume_summary}",
+                "target_words": 1000000,
+                "target_volumes": len(all_volumes),
+                "target_chapters": len(chapters) * len(all_volumes),
+                "pace": "3",
+            }
+            new_overview = Outline(
+                project_id=project_id,
+                title="大纲总览",
+                node_type="overview",
+                status="confirmed",
+                description=main_plot or "",
+                extra=json.dumps(extra, ensure_ascii=False),
+                sort_index=0,
+            )
+            db.add(new_overview)
+            db.flush()
+            overview_id = new_overview.id
+
+        # 更新卷的extra，加入分析结果
+        try:
+            vol_extra = volume.extra and json.loads(volume.extra) or {}
+        except Exception:
+            vol_extra = {}
+        vol_extra["ai_summary"] = volume_summary
+        vol_extra["chapter_suggestions"] = chapter_suggestions
+        volume.extra = json.dumps(vol_extra, ensure_ascii=False)
+
+        # 记录日志
+        log = GenerationLog(
+            project_id=project_id,
+            task_type="volume_analyze",
+            request=f"volume_id={volume_id}, instruction={instruction}",
+            response=analysis,
+            status="success",
+        )
+        db.add(log)
+        db.commit()
+
+    return {
+        "volume_id": volume_id,
+        "overview_id": overview_id,
+        "analysis": analysis,
+        "main_plot": main_plot,
+        "core_conflict": core_conflict,
+        "ending": ending,
+        "volume_summary": volume_summary,
+        "chapter_suggestions": chapter_suggestions,
+        "source": source,
+    }

@@ -162,6 +162,11 @@ def upgrade(db: Session) -> None:
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
         """))
 
+    _ensure_columns(db, dialect, "outlines", {
+        "extra": "TEXT DEFAULT ''",
+        "volume_id": "INTEGER",
+    })
+
     # ------------------------------------------------------------------
     # 4. chapters 章节表
     # ------------------------------------------------------------------

@@ -9,11 +9,11 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy import desc
 
 from app.agents.context import build_context_preview
-from app.agents.workflows import analyze_chapter, check_consistency, draft_chapter, draft_chapter_stream, polish_chapter
+from app.agents.workflows import analyze_chapter, check_consistency, draft_chapter, draft_chapter_stream, polish_chapter, analyze_volume
 from app.db.repository import rows_to_dicts
 from app.db.session import get_business_db
 from app.models.business import Chapter, ChapterSummary, GenerationLog
-from app.schemas.models import ChapterAnalyzeRequest, ChapterDraftRequest, ConsistencyCheckRequest, PolishRequest
+from app.schemas.models import ChapterAnalyzeRequest, ChapterDraftRequest, ConsistencyCheckRequest, PolishRequest, VolumeAnalyzeRequest
 
 
 router = APIRouter()
@@ -153,3 +153,14 @@ def polish(payload: PolishRequest) -> dict:
 def consistency_check(payload: ConsistencyCheckRequest) -> dict:
     """检查章节与资料库是否存在明显缺口或冲突。"""
     return check_consistency(payload.project_id, payload.chapter_id, payload.content)
+
+
+@router.post("/volume-analyze")
+def volume_analyze(payload: VolumeAnalyzeRequest) -> dict:
+    """分析卷设定并自动更新大纲总览。
+
+    读取卷的描述、核心事件、章节规划等信息，通过 LLM 分析后
+    补充完善大纲总览（主线、核心冲突、结局走向等），
+    为后续章节生成 Agent 提供更清晰的创作方向。
+    """
+    return analyze_volume(payload.project_id, payload.volume_id, payload.instruction)

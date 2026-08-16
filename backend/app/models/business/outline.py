@@ -20,5 +20,7 @@ class Outline(Base):
     chapter_no = Column(Integer, nullable=True)
     sort_index = Column(Integer, default=0)
     description = Column(Text, default="")
+    extra = Column(Text, default="", comment="扩展字段，JSON 格式存储精细化数据")
+    volume_id = Column(Integer, nullable=True, comment="所属卷 ID，仅章节节点需要")
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())

@@ -194,6 +194,10 @@ export interface OutlineItem {
   sort_index: number
   /** 本节点的剧情目标、冲突和场景说明。 */
   description: string
+  /** 扩展字段，JSON 格式存储卷/章节的精细化数据。 */
+  extra: string
+  /** 所属卷 ID，仅章节节点需要。 */
+  volume_id: number | null
 }
 
 export interface ChapterItem {
