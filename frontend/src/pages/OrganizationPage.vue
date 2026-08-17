@@ -207,6 +207,62 @@
               </div>
             </div>
 
+            <!-- 层级体系 -->
+            <div class="form-section">
+              <div class="section-title">
+                层级体系
+                <span class="section-hint">结构化的组织内部等级</span>
+              </div>
+              <div class="hierarchy-system-row">
+                <n-form-item label="体系类型" style="margin-bottom: 0; flex: 0 0 200px">
+                  <n-select
+                    v-model:value="form.hierarchy_system"
+                    :options="hierarchySystemOptions"
+                    placeholder="选择内置体系"
+                    clearable
+                    @update:value="onHierarchySystemChange"
+                  />
+                </n-form-item>
+                <n-button type="primary" ghost size="small" @click="addHierarchyLevel" style="margin-left: 12px">
+                  + 新增层级
+                </n-button>
+              </div>
+              <div v-if="form.hierarchy_levels.length === 0" class="hierarchy-empty">
+                暂无层级，选择内置体系或手动添加
+              </div>
+              <div v-else class="hierarchy-level-list">
+                <div
+                  v-for="(level, index) in form.hierarchy_levels"
+                  :key="index"
+                  class="hierarchy-level-item"
+                >
+                  <span class="level-badge">L{{ level.level }}</span>
+                  <n-input v-model:value="level.name" placeholder="层级名称" class="level-name-input" />
+                  <div class="level-actions">
+                    <n-button
+                      text
+                      size="small"
+                      :disabled="index === 0"
+                      @click="moveHierarchyLevelUp(index)"
+                    >
+                      ↑
+                    </n-button>
+                    <n-button
+                      text
+                      size="small"
+                      :disabled="index === form.hierarchy_levels.length - 1"
+                      @click="moveHierarchyLevelDown(index)"
+                    >
+                      ↓
+                    </n-button>
+                    <n-button text type="error" size="small" @click="removeHierarchyLevel(index)">
+                      删除
+                    </n-button>
+                  </div>
+                </div>
+              </div>
+            </div>
+
             <!-- 时间维度 -->
             <div class="form-section">
               <div class="section-title">
@@ -354,7 +410,9 @@ const form = reactive({
   risk_notes: '',
   active_from_chapter: null as number | null,
   disbanded_chapter: null as number | null,
-  hidden_secrets: ''
+  hidden_secrets: '',
+  hierarchy_system: 'none',
+  hierarchy_levels: [] as { name: string; level: number }[]
 })
 
 const { isDirty, markClean, confirmIfDirty } = useDirtySnapshot(form, '当前势力档案有未保存的修改，确定要离开吗？')
@@ -368,6 +426,116 @@ const orgStatusOptions = [
   { label: '蛰伏', value: '蛰伏' },
   { label: '转型中', value: '转型中' }
 ]
+
+// ===== 层级体系配置 =====
+interface HierarchyLevel {
+  name: string
+  level: number
+}
+
+const HIERARCHY_SYSTEMS: Record<string, { name: string; levels: HierarchyLevel[] }> = {
+  none: {
+    name: '无',
+    levels: []
+  },
+  sect: {
+    name: '门派',
+    levels: [
+      { name: '无', level: 0 },
+      { name: '盟主/掌门', level: 1 },
+      { name: '副盟主/副掌门', level: 2 },
+      { name: '长老', level: 3 },
+      { name: '堂主/殿主', level: 4 },
+      { name: '护法', level: 5 },
+      { name: '执事', level: 6 },
+      { name: '核心弟子', level: 7 },
+      { name: '内门弟子', level: 8 },
+      { name: '外门弟子', level: 9 },
+      { name: '杂役', level: 10 }
+    ]
+  },
+  company: {
+    name: '公司',
+    levels: [
+      { name: '无', level: 0 },
+      { name: '董事长', level: 1 },
+      { name: 'CEO/总裁', level: 2 },
+      { name: '副总裁', level: 3 },
+      { name: '总监', level: 4 },
+      { name: '经理', level: 5 },
+      { name: '主管', level: 6 },
+      { name: '高级员工', level: 7 },
+      { name: '正式员工', level: 8 },
+      { name: '实习生', level: 9 }
+    ]
+  },
+  army: {
+    name: '军队',
+    levels: [
+      { name: '无', level: 0 },
+      { name: '元帅/司令', level: 1 },
+      { name: '将军', level: 2 },
+      { name: '校官', level: 3 },
+      { name: '尉官', level: 4 },
+      { name: '士官长', level: 5 },
+      { name: '上士', level: 6 },
+      { name: '中士', level: 7 },
+      { name: '下士', level: 8 },
+      { name: '列兵', level: 9 }
+    ]
+  },
+  family: {
+    name: '家族',
+    levels: [
+      { name: '无', level: 0 },
+      { name: '家主/族长', level: 1 },
+      { name: '大长老', level: 2 },
+      { name: '长老', level: 3 },
+      { name: '嫡系子弟', level: 4 },
+      { name: '旁系子弟', level: 5 },
+      { name: '管家', level: 6 },
+      { name: '仆役', level: 7 }
+    ]
+  },
+  gang: {
+    name: '黑帮/社团',
+    levels: [
+      { name: '无', level: 0 },
+      { name: '老大/龙头', level: 1 },
+      { name: '二把手/副帮主', level: 2 },
+      { name: '堂主/香主', level: 3 },
+      { name: '护法', level: 4 },
+      { name: '执事', level: 5 },
+      { name: '核心成员', level: 6 },
+      { name: '普通成员', level: 7 },
+      { name: '外围成员', level: 8 }
+    ]
+  },
+  academy: {
+    name: '学院',
+    levels: [
+      { name: '无', level: 0 },
+      { name: '院长', level: 1 },
+      { name: '副院长', level: 2 },
+      { name: '系主任', level: 3 },
+      { name: '教授', level: 4 },
+      { name: '副教授', level: 5 },
+      { name: '讲师', level: 6 },
+      { name: '助教', level: 7 },
+      { name: '研究生', level: 8 },
+      { name: '本科生', level: 9 }
+    ]
+  },
+  custom: {
+    name: '自定义',
+    levels: []
+  }
+}
+
+const hierarchySystemOptions = Object.entries(HIERARCHY_SYSTEMS).map(([key, val]) => ({
+  label: val.name,
+  value: key
+}))
 
 const filteredOrganizations = computed(() => {
   const text = keyword.value.trim().toLowerCase()
@@ -464,7 +632,64 @@ function splitList(value: string) {
     .filter(Boolean)
 }
 
+// ===== 层级体系操作 =====
+function onHierarchySystemChange(system: string) {
+  if (!system) return
+  const sys = HIERARCHY_SYSTEMS[system]
+  if (sys && sys.levels.length > 0) {
+    form.hierarchy_levels = sys.levels.map((l) => ({ ...l }))
+  }
+}
+
+function addHierarchyLevel() {
+  const nextLevel = form.hierarchy_levels.length > 0
+    ? Math.max(...form.hierarchy_levels.map((l) => l.level)) + 1
+    : 1
+  form.hierarchy_levels.push({ name: '新层级', level: nextLevel })
+  _reindexLevels()
+}
+
+function removeHierarchyLevel(index: number) {
+  form.hierarchy_levels.splice(index, 1)
+  _reindexLevels()
+}
+
+function moveHierarchyLevelUp(index: number) {
+  if (index <= 0) return
+  const temp = form.hierarchy_levels[index - 1]
+  form.hierarchy_levels[index - 1] = form.hierarchy_levels[index]
+  form.hierarchy_levels[index] = temp
+  _reindexLevels()
+}
+
+function moveHierarchyLevelDown(index: number) {
+  if (index >= form.hierarchy_levels.length - 1) return
+  const temp = form.hierarchy_levels[index + 1]
+  form.hierarchy_levels[index + 1] = form.hierarchy_levels[index]
+  form.hierarchy_levels[index] = temp
+  _reindexLevels()
+}
+
+function _reindexLevels() {
+  form.hierarchy_levels.forEach((l, idx) => {
+    l.level = idx + 1
+  })
+}
+
 function fillForm(item?: Partial<OrganizationItem>) {
+  function safeParseLevels(value: unknown): HierarchyLevel[] {
+    if (Array.isArray(value)) return value as HierarchyLevel[]
+    if (typeof value === 'string') {
+      try {
+        const parsed = JSON.parse(value)
+        return Array.isArray(parsed) ? parsed : []
+      } catch {
+        return []
+      }
+    }
+    return []
+  }
+
   Object.assign(form, {
     name: item?.name ?? '新组织',
     org_type: item?.org_type ?? '',
@@ -485,7 +710,9 @@ function fillForm(item?: Partial<OrganizationItem>) {
     risk_notes: item?.risk_notes ?? '',
     active_from_chapter: item?.active_from_chapter ?? null,
     disbanded_chapter: item?.disbanded_chapter ?? null,
-    hidden_secrets: item?.hidden_secrets ?? ''
+    hidden_secrets: item?.hidden_secrets ?? '',
+    hierarchy_system: item?.hierarchy_system || 'none',
+    hierarchy_levels: safeParseLevels(item?.hierarchy_levels)
   })
 }
 
@@ -552,8 +779,13 @@ async function save() {
   const projectId = await ensureProject()
   if (!projectId) return
 
+  const payload = {
+    ...form,
+    hierarchy_levels: JSON.stringify(form.hierarchy_levels)
+  }
+
   if (editingId.value) {
-    const updated = await updateResource<OrganizationItem>('organizations', editingId.value, { ...form })
+    const updated = await updateResource<OrganizationItem>('organizations', editingId.value, payload)
     notify.success('势力档案已更新')
     await load()
     const fresh = organizations.value.find((item) => item.id === updated.id)
@@ -563,7 +795,7 @@ async function save() {
       markClean()
     }
   } else {
-    const created = await createResource<OrganizationItem>('organizations', { project_id: projectId, ...form })
+    const created = await createResource<OrganizationItem>('organizations', { project_id: projectId, ...payload })
     notify.success('势力档案已新增')
     isCreating.value = false
     await load()
@@ -1064,5 +1296,62 @@ useProjectDataLoader(load)
 .risk-label {
   font-size: 12px;
   color: var(--n-text-color-2, #9ca3af);
+}
+
+/* ===== 层级体系 ===== */
+.hierarchy-system-row {
+  display: flex;
+  align-items: flex-end;
+  margin-bottom: 12px;
+}
+
+.hierarchy-empty {
+  padding: 20px;
+  text-align: center;
+  color: var(--n-text-color-3, #6b7280);
+  font-size: 12px;
+  background: var(--n-color-1, #1e2228);
+  border: 1px dashed var(--n-border-color, #2a2f3a);
+  border-radius: 8px;
+}
+
+.hierarchy-level-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.hierarchy-level-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  background: var(--n-color-1, #1e2228);
+  border: 1px solid var(--n-border-color, #2a2f3a);
+  border-radius: 6px;
+}
+
+.level-badge {
+  flex-shrink: 0;
+  width: 36px;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  font-weight: 600;
+  color: #a5b4fc;
+  background: rgba(99, 102, 241, 0.15);
+  border-radius: 4px;
+}
+
+.level-name-input {
+  flex: 1;
+}
+
+.level-actions {
+  display: flex;
+  gap: 2px;
+  flex-shrink: 0;
 }
 </style>

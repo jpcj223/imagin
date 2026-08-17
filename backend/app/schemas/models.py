@@ -96,7 +96,9 @@ class CharacterSave(BaseModel):
     role_type: str = Field(default="supporting", description="角色类型：protagonist/supporting/antagonist")
     identity: str = Field(default="", description="身份、职业或表层定位")
     faction: str = Field(default="", description="阵营或所属势力")
-    mbti: str = Field(default="", description="MBTI 或其他性格类型标签")
+    mbti: str = Field(default="", description="MBTI 或其他性格类型标签（兼容旧字段）")
+    mbti_primary: str = Field(default="", description="主 MBTI 类型")
+    mbti_secondary: str = Field(default="", description="辅 MBTI 类型（外在表现型）")
     appearance: str = Field(default="", description="外貌特征")
     personality: str = Field(default="", description="性格特征和行为倾向")
     background: str = Field(default="", description="背景故事")
@@ -110,6 +112,11 @@ class CharacterSave(BaseModel):
     organization_ids: str = Field(default="", description="关联组织 ID，逗号分隔")
     related_character_ids: str = Field(default="", description="关联角色 ID，逗号分隔")
     ai_notes: str = Field(default="", description="AI 建议或一致性检查备注")
+    custom_attributes: str = Field(default="[]", description="自定义属性列表，JSON 格式")
+    org_relations: str = Field(default="[]", description="组织关系列表，JSON 格式")
+    character_relations: str = Field(default="[]", description="人物关系列表，JSON 格式")
+    status: str = Field(default="active", description="角色状态：active 启用 / inactive 关闭 / hidden 隐藏")
+    is_builtin: bool = Field(default=False, description="是否为内置角色，内置角色不可删除")
 
 
 class OrganizationSave(BaseModel):
@@ -121,7 +128,9 @@ class OrganizationSave(BaseModel):
     location: str = Field(default="", description="组织所在地或势力范围")
     slogan: str = Field(default="", description="宗旨、口号或核心信条")
     description: str = Field(default="", description="组织背景、目标、资源和叙事用途")
-    hierarchy: str = Field(default="", description="组织层级、职级或内部结构")
+    hierarchy: str = Field(default="", description="组织层级、职级或内部结构（旧字段，保留兼容）")
+    hierarchy_system: str = Field(default="", description="层级体系类型，如宗门制、军衔制等")
+    hierarchy_levels: str = Field(default="[]", description="层级列表，JSON 数组格式 [{name, level}]")
     resources: str = Field(default="", description="核心资源、人脉、资产或能力")
     goal: str = Field(default="", description="组织目标或当前战略")
     level: int = Field(default=1, description="组织层级，1-10")

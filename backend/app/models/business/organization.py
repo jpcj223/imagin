@@ -36,6 +36,9 @@ class Organization(Base):
     hidden_secrets = Column(Text, default="")
     active_from_chapter = Column(Integer, nullable=True)
     disbanded_chapter = Column(Integer, nullable=True)
+    # 第四版：层级体系
+    hierarchy_system = Column(String(64), default="")
+    hierarchy_levels = Column(Text, default="[]")
     # 时间戳
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())

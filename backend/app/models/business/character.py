@@ -1,7 +1,7 @@
 """角色表 ORM 模型。"""
 from __future__ import annotations
 
-from sqlalchemy import Column, DateTime, ForeignKey, Integer, String, Text, func
+from sqlalchemy import Boolean, Column, DateTime, ForeignKey, Integer, String, Text, func
 
 from app.db.session import Base
 
@@ -39,6 +39,13 @@ class Character(Base):
     custom_attributes = Column(Text, default="[]")
     org_relations = Column(Text, default="[]")
     character_relations = Column(Text, default="[]")
+    # 第四版：角色状态
+    status = Column(String(32), default="active")
+    # 第五版：内置角色标记（不可删除）
+    is_builtin = Column(Boolean, default=False)
+    # 第六版：分组与排序
+    group_id = Column(Integer, nullable=True)
+    sort_index = Column(Integer, default=0)
     # 时间戳
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())

@@ -10,6 +10,7 @@ from app.models.business.outline import Outline
 from app.models.business.chapter import Chapter
 from app.models.business.chapter_summary import ChapterSummary
 from app.models.business.character import Character
+from app.models.business.character_group import CharacterGroup
 from app.models.business.organization import Organization
 from app.models.business.foreshadowing import Foreshadowing
 from app.models.business.generation_log import GenerationLog
@@ -21,6 +22,7 @@ __all__ = [
     "Chapter",
     "ChapterSummary",
     "Character",
+    "CharacterGroup",
     "Organization",
     "Foreshadowing",
     "GenerationLog",

@@ -217,6 +217,29 @@ export interface ChapterItem {
   status: string
 }
 
+export interface CharacterGroup {
+  /** 分组 ID。 */
+  id: number
+  /** 所属项目 ID。 */
+  project_id: number
+  /** 分组名称。 */
+  name: string
+  /** 分组类型：default 内置默认 / custom 自定义。 */
+  group_type: string
+  /** 对应的角色类型，仅默认分组有值。 */
+  role_type: string | null
+  /** 排序索引。 */
+  sort_index: number
+  /** 分组颜色标识。 */
+  color: string | null
+  /** 是否为内置分组。 */
+  is_builtin: boolean
+  /** 创建时间。 */
+  created_at: string
+  /** 更新时间。 */
+  updated_at: string
+}
+
 export interface CharacterItem {
   /** 角色 ID。 */
   id: number
@@ -226,6 +249,10 @@ export interface CharacterItem {
   name: string
   /** 角色类型：protagonist/supporting/antagonist。 */
   role_type: string
+  /** 所属分组 ID。 */
+  group_id?: number
+  /** 分组内排序索引。 */
+  sort_index?: number
   /** 身份、职业或表层定位。 */
   identity: string
   /** 阵营或所属势力。 */
@@ -268,16 +295,26 @@ export interface CharacterItem {
   character_relations: CharacterRelation[]
   /** 旧版 MBTI 字段，保留用于数据迁移兼容。 */
   mbti: string
+  /** 角色状态：active 启用 / inactive 关闭 / hidden 隐藏。 */
+  status: string
+  /** 是否为内置角色，内置角色不可删除。 */
+  is_builtin: boolean
 }
 
 /** 角色动态属性：用户可自定义的扩展属性，解决"人物扩展难"问题。 */
 export interface CharacterAttribute {
-  /** 属性名称，如"武功"、"宝物"、"职称"。 */
+  /** 属性标识 key，如"kungfu"、"equipment"，用于对应字典。 */
+  key?: string
+  /** 属性标题（显示名），如"武功"、"装备"。 */
+  title?: string
+  /** 属性名称，如"武功"、"宝物"、"职称"。（保留兼容，等同于 title） */
   name: string
   /** 属性值。 */
   value: string
-  /** 当前章节号，记录该属性在剧情哪个时间点的状态，可选。 */
-  chapter_no?: number | null
+  /** 属性描述，说明该属性的含义和用途。 */
+  description?: string
+  /** 章节号或范围，记录该属性在剧情哪个时间点的状态，如 "3" 或 "3-5"，可选。 */
+  chapter_no?: string | null
   /** 变更原因，可选。 */
   change_reason?: string
 }
@@ -351,6 +388,10 @@ export interface OrganizationItem {
   active_from_chapter: number | null
   /** 覆灭/解散章节号，NULL 表示一直有效。 */
   disbanded_chapter: number | null
+  /** 层级体系类型：sect/company/army/family/gang/academy/custom。 */
+  hierarchy_system: string
+  /** 层级列表（JSON 数组），每项 { name, level } 按从高到低排序。 */
+  hierarchy_levels: string
 }
 
 export interface ForeshadowingItem {

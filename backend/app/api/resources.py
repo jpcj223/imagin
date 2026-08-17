@@ -480,6 +480,7 @@ def _resource_table(resource: str) -> str:
         "organizations": "organizations",
         "foreshadowings": "foreshadowings",
         "chapters": "chapters",
+        "character-groups": "character_groups",
     }
     if resource not in mapping:
         raise HTTPException(status_code=404, detail="未知资源")
