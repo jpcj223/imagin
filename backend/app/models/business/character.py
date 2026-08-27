@@ -1,7 +1,7 @@
 """角色表 ORM 模型。"""
 from __future__ import annotations
 
-from sqlalchemy import Boolean, Column, DateTime, ForeignKey, Integer, String, Text, func
+from sqlalchemy import Boolean, Column, DateTime, Float, ForeignKey, Integer, String, Text, func
 
 from app.db.session import Base
 
@@ -46,6 +46,9 @@ class Character(Base):
     # 第六版：分组与排序
     group_id = Column(Integer, nullable=True)
     sort_index = Column(Integer, default=0)
+    # 第七版：图谱坐标
+    graph_x = Column(Float, nullable=True)
+    graph_y = Column(Float, nullable=True)
     # 时间戳
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())

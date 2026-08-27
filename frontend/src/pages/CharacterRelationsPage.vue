@@ -38,45 +38,61 @@
     <!-- 筛选工具栏 -->
     <div class="filter-bar">
       <!-- 视图模式切换 -->
-      <div class="filter-group">
-        <span class="filter-label">视图</span>
-        <n-radio-group v-model:value="viewMode" size="small" @update:value="onViewModeChange">
-          <n-radio-button value="all">全部展示</n-radio-button>
-          <n-radio-button value="focus">聚焦模式</n-radio-button>
-        </n-radio-group>
-      </div>
+      <n-radio-group v-model:value="viewMode" size="small" @update:value="onViewModeChange">
+        <n-radio-button value="all">全部</n-radio-button>
+        <n-radio-button value="focus">聚焦</n-radio-button>
+      </n-radio-group>
 
       <!-- 聚焦模式下的角色选择 -->
-      <div v-if="viewMode === 'focus'" class="filter-group">
-        <span class="filter-label">聚焦角色</span>
-        <n-select
-          v-model:value="focusCharacterId"
-          :options="characterOptions"
-          placeholder="选择聚焦角色"
-          filterable
-          style="width: 160px"
-          @update:value="onFocusCharacterChange"
-        />
-        <n-button size="small" text @click="viewMode = 'all'">
-          ← 返回全局
-        </n-button>
-      </div>
+      <n-select
+        v-if="viewMode === 'focus'"
+        v-model:value="focusCharacterId"
+        :options="characterOptions"
+        placeholder="选择聚焦角色"
+        filterable
+        size="small"
+        style="width: 140px"
+        @update:value="onFocusCharacterChange"
+      />
 
       <div class="filter-divider"></div>
 
-      <!-- 原有筛选 -->
-      <n-select v-model:value="filterRoleType" placeholder="按角色类型筛选" clearable :options="roleTypeOptions" style="width: 140px" />
-      <n-select v-model:value="filterRelationType" placeholder="按关系类型筛选" clearable :options="relationTypeOptions" style="width: 140px" />
-      <n-select v-model:value="filterRelationStatus" placeholder="按关系状态筛选" clearable :options="relationStatusOptions" style="width: 130px" />
-      <n-input v-model:value="searchKeyword" clearable placeholder="搜索角色名" style="width: 200px">
+      <!-- 筛选胶囊标签 -->
+      <FilterTagDropdown
+        v-model="filterRoleType"
+        :options="roleTypeDropdownOptions"
+        placeholder="角色类型"
+        icon="👤"
+        :max-height="260"
+      />
+      <FilterTagDropdown
+        v-model="filterRelationType"
+        :options="relationTypeDropdownOptions"
+        placeholder="关系类型"
+        icon="🔗"
+        :max-height="320"
+        multiple
+      />
+      <FilterTagDropdown
+        v-model="filterRelationStatus"
+        :options="relationStatusDropdownOptions"
+        placeholder="关系状态"
+        icon="●"
+        :max-height="200"
+      />
+
+      <n-input v-model:value="searchKeyword" clearable placeholder="搜索" size="small" style="width: 130px">
         <template #prefix>🔍</template>
       </n-input>
 
       <div class="filter-spacer"></div>
-      <n-button size="small" text @click="toggleGroupPanel">
-        {{ showGroupPanel ? '收起分组' : '展开分组' }}
+
+      <n-button size="small" text @click="toggleGroupPanel" :title="showGroupPanel ? '收起分组' : '展开分组'">
+        <template #icon>☰</template>
       </n-button>
-      <n-button size="small" text @click="refreshData">↻ 刷新</n-button>
+      <n-button size="small" text @click="refreshData" title="刷新">
+        <template #icon>↺</template>
+      </n-button>
     </div>
 
     <!-- 主体：左分组面板 + 中图谱 + 右列表 -->
@@ -141,8 +157,20 @@
             >
               {{ connectMode ? '退出连线' : '连线模式' }}
             </n-button>
-            <n-button size="small" text @click="resetLayout">重置布局</n-button>
-            <n-button size="small" text @click="fitView">适应视图</n-button>
+            <div class="zoom-controls">
+              <n-button size="small" text @click="zoomIn" title="放大">
+                <template #icon>＋</template>
+              </n-button>
+              <n-button size="small" text @click="zoomOut" title="缩小">
+                <template #icon>－</template>
+              </n-button>
+              <n-button size="small" text @click="fitView()" title="适应视图">
+                <template #icon>⤢</template>
+              </n-button>
+              <n-button size="small" text @click="resetLayout" title="重置布局">
+                <template #icon>↺</template>
+              </n-button>
+            </div>
           </div>
         </div>
 
@@ -157,49 +185,68 @@
         </div>
 
         <div class="graph-container">
+          <!-- 2D VueFlow -->
           <VueFlow
             ref="vueFlowRef"
             :nodes="displayNodes"
             :edges="displayEdges"
             :min-zoom="0.2"
             :max-zoom="2"
+            :connect-on-click="connectMode"
             class="vue-flow-container"
             @node-click="onNodeClick"
+            @node-drag-stop="onNodeDragStop"
             @edge-click="onEdgeClick"
             @pane-click="onPaneClick"
+            @connect="onConnect"
             @init="onVueFlowInit"
           >
             <Background :gap="20" :size="1" color="#1e2228" />
-            <Controls :show-fit-view="true" :show-interactive="true" position="bottom-right" />
           </VueFlow>
+
+          <!-- 空状态 -->
+          <div v-if="displayNodes.length === 0" class="graph-empty">
+            <div class="empty-icon">🔍</div>
+            <p>未找到匹配的角色</p>
+            <p class="empty-sub">试试调整筛选条件或搜索关键词</p>
+          </div>
         </div>
 
         <!-- 图例 -->
         <div class="graph-legend">
           <div class="legend-group">
             <span class="legend-title">角色类型</span>
-            <span v-for="(color, type) in nodeColors" :key="type" class="legend-item">
-              <span class="legend-dot" :style="{ background: color }"></span>
-              {{ roleTypeLabelMap[type] || type }}
-            </span>
+            <div class="legend-items">
+              <span v-for="(color, type) in nodeColors" :key="type" class="legend-item">
+                <span class="legend-dot" :style="{ background: color }"></span>
+                {{ roleTypeLabelMap[type] || type }}
+              </span>
+            </div>
           </div>
-          <div class="legend-group">
-            <span class="legend-title">关系类型</span>
-            <span v-for="(color, type) in relationColorMap" :key="type" class="legend-item">
-              <span class="legend-line" :style="{ background: color }"></span>
-              {{ type }}
+          <div class="legend-group" :class="{ expanded: showRelationLegend }">
+            <span class="legend-title" @click="showRelationLegend = !showRelationLegend">
+              关系类型
+              <span class="legend-toggle">{{ showRelationLegend ? '收起' : '展开' }}</span>
             </span>
+            <div v-show="showRelationLegend" class="legend-items relation-items">
+              <span v-for="(color, type) in relationColorMap" :key="type" class="legend-item">
+                <span class="legend-line" :style="{ background: color }"></span>
+                {{ type }}
+              </span>
+            </div>
           </div>
           <div class="legend-group">
             <span class="legend-title">关系状态</span>
-            <span class="legend-item">
-              <span class="legend-line" style="background: #22c55e"></span>
-              生效中
-            </span>
-            <span class="legend-item">
-              <span class="legend-line" style="background: #64748b; background-image: repeating-linear-gradient(90deg, transparent, transparent 3px, #0f1115 3px, #0f1115 5px)"></span>
-              已失效
-            </span>
+            <div class="legend-items">
+              <span class="legend-item">
+                <span class="legend-line" style="background: #22c55e"></span>
+                生效中
+              </span>
+              <span class="legend-item">
+                <span class="legend-line" style="background: #64748b; background-image: repeating-linear-gradient(90deg, transparent, transparent 3px, #0f1115 3px, #0f1115 5px)"></span>
+                已失效
+              </span>
+            </div>
           </div>
         </div>
       </section>
@@ -387,9 +434,9 @@ import { listResource, updateResource } from '@/api/resources'
 import type { CharacterItem, CharacterRelation } from '@/types/domain'
 import { notify } from '@/utils/notify'
 import { useProjectDataLoader } from '@/composables/useProjectDataLoader'
-import { VueFlow } from '@vue-flow/core'
+import { VueFlow, useVueFlow } from '@vue-flow/core'
 import { Background } from '@vue-flow/background'
-import { Controls } from '@vue-flow/controls'
+import FilterTagDropdown from '@/components/FilterTagDropdown.vue'
 import '@vue-flow/core/dist/style.css'
 import '@vue-flow/core/dist/theme-default.css'
 
@@ -399,14 +446,28 @@ const dictStore = useDictStore()
 
 // ==================== 筛选状态 ====================
 const filterRoleType = ref<string | null>(null)
-const filterRelationType = ref<string | null>(null)
+const filterRelationType = ref<string[] | null>(null)
 const filterRelationStatus = ref<string | null>(null) // 'active' | 'expired' | null
 const searchKeyword = ref('')
+
+// 下拉菜单选项
+const roleTypeDropdownOptions = computed(() =>
+  roleTypeOptions.value.map((o: any) => ({ label: o.label, value: o.value, key: o.value }))
+)
+
+const relationTypeDropdownOptions = computed(() =>
+  relationTypeOptions.value.map((o: any) => ({ label: o.label, value: o.value, key: o.value }))
+)
+
+const relationStatusDropdownOptions = computed(() =>
+  relationStatusOptions.map((o: any) => ({ label: o.label, value: o.value, key: o.value }))
+)
 
 // ==================== 视图模式 ====================
 type ViewMode = 'all' | 'focus'
 const viewMode = ref<ViewMode>('focus') // 默认聚焦模式
 const focusCharacterId = ref<number | null>(null)
+
 const activeComponentIndex = ref<number | null>(null)
 
 // ==================== 连线模式 ====================
@@ -414,8 +475,15 @@ const connectMode = ref(false)
 const connectSourceId = ref<number | null>(null)
 const showQuickAddModal = ref(false)
 
+// 连线模式下，源角色已关联的角色 ID 集合（不可再次连线）
+const connectedIdsForConnectMode = computed<Set<number>>(() => {
+  if (connectSourceId.value == null) return new Set()
+  return getRelatedCharacterIds(connectSourceId.value)
+})
+
 // ==================== 分组面板 ====================
 const showGroupPanel = ref(true)
+const showRelationLegend = ref(false)
 
 // ==================== 数据 ====================
 const characters = ref<CharacterItem[]>([])
@@ -424,6 +492,14 @@ const vueFlowRef = ref<any>(null)
 
 function fitView(options?: any) {
   vueFlowRef.value?.fitView?.(options)
+}
+
+function zoomIn() {
+  vueFlowRef.value?.zoomIn?.(0.2)
+}
+
+function zoomOut() {
+  vueFlowRef.value?.zoomOut?.(0.2)
 }
 
 // ==================== 字典 & 选项 ====================
@@ -437,43 +513,177 @@ const roleTypeLabelMap = computed(() => {
   return map
 })
 
-const relationTypeOptions = [
-  { label: '师徒', value: '师徒' },
-  { label: '兄弟', value: '兄弟' },
-  { label: '姐妹', value: '姐妹' },
-  { label: '恋人', value: '恋人' },
-  { label: '夫妻', value: '夫妻' },
-  { label: '父子', value: '父子' },
-  { label: '母女', value: '母女' },
-  { label: '朋友', value: '朋友' },
-  { label: '仇敌', value: '仇敌' },
-  { label: '对手', value: '对手' },
-  { label: '上下级', value: '上下级' },
-  { label: '其他', value: '其他' }
-]
+// 关系类型从字典获取（value 用中文 label，保持向后兼容）
+const relationTypeOptions = computed(() => 
+  dictStore.items('relation_type').map(item => ({
+    label: item.item_label,
+    value: item.item_label,
+  }))
+)
+
+const relationTypeLabelMap = computed(() => {
+  const map: Record<string, string> = {}
+  relationTypeOptions.value.forEach((item) => {
+    map[item.value] = item.label
+  })
+  return map
+})
 
 const relationStatusOptions = [
   { label: '生效中', value: 'active' },
   { label: '已失效', value: 'expired' }
 ]
 
-const nodeColors: Record<string, string> = {
+// 角色类型预设颜色（字典中有的优先用预设，没有的从调色板动态分配）
+const presetNodeColors: Record<string, string> = {
   protagonist: '#6366f1',
   supporting: '#22c55e',
-  antagonist: '#ef4444'
+  antagonist: '#ef4444',
+  mentor: '#f59e0b',
+  love_interest: '#ec4899',
+  npc: '#64748b',
+  extra: '#475569',
 }
 
-const relationColorMap: Record<string, string> = {
-  '师徒': '#f59e0b', '兄弟': '#3b82f6', '姐妹': '#ec4899',
-  '恋人': '#ef4444', '夫妻': '#ef4444', '父子': '#8b5cf6',
-  '母女': '#ec4899', '朋友': '#22c55e', '仇敌': '#dc2626',
-  '对手': '#f97316', '上下级': '#64748b', '其他': '#64748b'
+// 动态调色板（用于未预设的角色类型）
+const nodeColorPalette = [
+  '#8b5cf6', '#06b6d4', '#84cc16', '#f97316',
+  '#14b8a6', '#a855f7', '#eab308', '#22d3ee',
+  '#f43f5e', '#10b981', '#6366f1', '#854d0e',
+]
+
+// 动态分配的角色类型颜色缓存
+const dynamicNodeColors = reactive<Record<string, string>>({})
+let nodeColorIndex = 0
+
+function getNodeColor(roleType: string): string {
+  if (presetNodeColors[roleType]) return presetNodeColors[roleType]
+  if (dynamicNodeColors[roleType]) return dynamicNodeColors[roleType]
+  // 从调色板分配
+  const color = nodeColorPalette[nodeColorIndex % nodeColorPalette.length]
+  nodeColorIndex++
+  dynamicNodeColors[roleType] = color
+  return color
+}
+
+// 所有角色类型颜色（用于图例）
+const nodeColors = computed<Record<string, string>>(() => {
+  const colors: Record<string, string> = {}
+  for (const opt of roleTypeOptions.value) {
+    colors[opt.value] = getNodeColor(opt.value)
+  }
+  return colors
+})
+
+// 关系类型按大类配色（key 为英文 value）
+// 亲情类-暖橙、爱情类-玫红、友情类-天蓝、敌对类-暗红、职场类-青绿、恩仇类-紫色、其他-灰色
+const RELATION_COLORS = {
+  // 亲情类 - 暖橙色
+  family: '#f59e0b',
+  // 爱情类 - 玫红色
+  love: '#ec4899',
+  // 友情类 - 天蓝色
+  friendship: '#3b82f6',
+  // 敌对类 - 暗红色
+  enemy: '#ef4444',
+  // 职场/组织类 - 青绿色
+  work: '#14b8a6',
+  // 恩情/债务类 - 紫色
+  debt: '#8b5cf6',
+  // 其他 - 灰色
+  other: '#6b7280',
+} as const
+
+// 关系类型 → 大类映射
+const RELATION_CATEGORY: Record<string, keyof typeof RELATION_COLORS> = {
+  // 亲情类
+  father_son: 'family',
+  mother_daughter: 'family',
+  father_daughter: 'family',
+  mother_son: 'family',
+  brothers: 'family',
+  sisters: 'family',
+  sibling: 'family',
+  grandparent_grandchild: 'family',
+  uncle_nephew: 'family',
+  adoptive: 'family',
+  // 爱情类
+  lovers: 'love',
+  spouses: 'love',
+  ex: 'love',
+  crush: 'love',
+  unrequited: 'love',
+  ambiguous: 'love',
+  soulmate: 'love',
+  // 友情类
+  best_friend: 'friendship',
+  friend: 'friendship',
+  sworn_sibling: 'friendship',
+  intergenerational_friend: 'friendship',
+  same_school: 'friendship',
+  old_acquaintance: 'friendship',
+  acquaintance: 'friendship',
+  stranger: 'friendship',
+  // 敌对类
+  mortal_enemy: 'enemy',
+  enemy: 'enemy',
+  rival: 'enemy',
+  // 职场/组织类
+  superior_subordinate: 'work',
+  colleague: 'work',
+  master_servant: 'work',
+  master_disciple: 'work',
+  ally: 'work',
+  // 恩情/债务类
+  life_saver: 'debt',
+  family_killer: 'debt',
+  benefactor: 'debt',
+  grudge: 'debt',
+  indebted: 'debt',
+  // 其他
+  other: 'other',
 }
 
 function getRelationColor(type?: string): string {
-  if (!type) return '#64748b'
-  return relationColorMap[type] || '#64748b'
+  if (!type) return RELATION_COLORS.other
+  // 先按英文 value 查
+  const category = RELATION_CATEGORY[type]
+  if (category) return RELATION_COLORS[category]
+  // 再按中文 label 查（兼容旧数据，relation_type 存的是中文）
+  const labelToCategory: Record<string, keyof typeof RELATION_COLORS> = {
+    // 亲情类
+    '父子': 'family', '母女': 'family', '父女': 'family', '母子': 'family',
+    '兄弟': 'family', '姐妹': 'family', '兄妹/姐弟': 'family', '祖孙': 'family',
+    '叔侄/舅甥': 'family', '养父母子女': 'family',
+    // 爱情类
+    '恋人': 'love', '夫妻': 'love', '前任': 'love', '暗恋': 'love',
+    '单恋': 'love', '暧昧': 'love', '知己': 'love',
+    // 友情类
+    '挚友': 'friendship', '朋友': 'friendship', '义兄弟/义姐妹': 'friendship',
+    '忘年交': 'friendship', '同门': 'friendship', '旧识': 'friendship',
+    '熟识': 'friendship', '陌生人': 'friendship',
+    // 敌对类
+    '死敌': 'enemy', '仇敌': 'enemy', '竞争对手': 'enemy',
+    // 职场/组织类
+    '上下级': 'work', '同事': 'work', '主仆': 'work', '师徒': 'work', '盟友': 'work',
+    // 恩情/债务类
+    '救命之恩': 'debt', '杀亲之仇': 'debt', '有恩': 'debt', '有仇': 'debt', '亏欠': 'debt',
+    // 其他
+    '其他': 'other',
+  }
+  const cat = labelToCategory[type]
+  if (cat) return RELATION_COLORS[cat]
+  return RELATION_COLORS.other
 }
+
+// 所有关系类型颜色（用于图例）
+const relationColorMap = computed<Record<string, string>>(() => {
+  const colors: Record<string, string> = {}
+  for (const opt of relationTypeOptions.value) {
+    colors[opt.label] = getRelationColor(opt.value)
+  }
+  return colors
+})
 
 // ==================== 新建关系弹窗 ====================
 const newEdge = reactive({
@@ -737,67 +947,150 @@ const focusNodeIds = computed<Set<number>>(() => {
 const displayNodes = computed(() => {
   const keyword = searchKeyword.value.trim().toLowerCase()
   const roleFilter = filterRoleType.value
+  const relFilter = filterRelationType.value
+  const statusFilter = filterRelationStatus.value
   const focusIds = focusNodeIds.value
 
-  return allNodes.value.filter((node) => {
+  // 先按视图模式和角色类型筛选出基础节点
+  let baseNodes = allNodes.value.filter((node) => {
     const char = characters.value.find((c) => c.id === parseInt(node.id))
     if (!char) return false
-
     // 视图模式筛选
     if (viewMode.value === 'focus' && focusIds.size > 0) {
       if (!focusIds.has(char.id)) return false
     }
-
     // 角色类型筛选
     if (roleFilter && char.role_type !== roleFilter) return false
-
-    // 关键词筛选
-    if (keyword && !char.name.toLowerCase().includes(keyword)) return false
-
     return true
   })
+
+  // 关系类型/状态筛选：只保留有符合条件关系的节点
+  const hasRelationFilter = (relFilter && relFilter.length > 0) || statusFilter
+  if (hasRelationFilter) {
+    const relTypes = Array.isArray(relFilter) ? relFilter : (relFilter ? [relFilter] : [])
+    const matchedNodeIds = new Set<string>()
+
+    allEdges.value.forEach((edge) => {
+      // 检查关系类型（多选，满足其一即可）
+      if (relTypes.length > 0) {
+        const edgeType = edge.data?.relation_type
+        if (!relTypes.includes(edgeType)) return
+      }
+      // 检查关系状态
+      if (statusFilter) {
+        const isExpired = !!edge.data?.expires_at
+        if (statusFilter === 'active' && isExpired) return
+        if (statusFilter === 'expired' && !isExpired) return
+      }
+      // 两端都在基础节点中的话，加入结果
+      const baseIdSet = new Set(baseNodes.map(n => n.id))
+      if (baseIdSet.has(edge.source)) matchedNodeIds.add(edge.source)
+      if (baseIdSet.has(edge.target)) matchedNodeIds.add(edge.target)
+    })
+
+    baseNodes = baseNodes.filter((node) => matchedNodeIds.has(node.id))
+  }
+
+  // 关键词搜索：找到匹配的角色，以及它们的所有关联角色
+  if (keyword) {
+    const matchedIds = new Set<string>()
+    const baseIdSet = new Set(baseNodes.map((n) => n.id))
+
+    // 1. 找出名字匹配的角色
+    const keywordMatched = baseNodes.filter((node) => {
+      const char = characters.value.find((c) => c.id === parseInt(node.id))
+      return char && char.name.toLowerCase().includes(keyword)
+    })
+
+    // 2. 找出这些角色的所有关联角色（在基础筛选范围内）
+    keywordMatched.forEach((node) => {
+      matchedIds.add(node.id)
+      // 从所有边中找出关联的节点
+      allEdges.value.forEach((edge) => {
+        if (edge.source === node.id && baseIdSet.has(edge.target)) {
+          matchedIds.add(edge.target)
+        }
+        if (edge.target === node.id && baseIdSet.has(edge.source)) {
+          matchedIds.add(edge.source)
+        }
+      })
+    })
+
+    return baseNodes.filter((node) => matchedIds.has(node.id))
+  }
+
+  return baseNodes
 })
 
 const displayEdges = computed(() => {
   const relFilter = filterRelationType.value
   const statusFilter = filterRelationStatus.value
   const displayNodeIds = new Set(displayNodes.value.map((n) => n.id))
+  const relTypes = Array.isArray(relFilter) ? relFilter : (relFilter ? [relFilter] : [])
 
-  return allEdges.value.filter((edge) => {
-    // 两端节点都必须在显示节点中
-    if (!displayNodeIds.has(edge.source) || !displayNodeIds.has(edge.target)) return false
+  return allEdges.value
+    .filter((edge) => {
+      // 两端节点都必须在显示节点中
+      if (!displayNodeIds.has(edge.source) || !displayNodeIds.has(edge.target)) return false
 
-    // 关系类型筛选
-    if (relFilter && edge.data?.relation_type !== relFilter) return false
+      // 关系类型筛选（多选，满足其一即可）
+      if (relTypes.length > 0) {
+        const edgeType = edge.data?.relation_type
+        if (!relTypes.includes(edgeType)) return false
+      }
 
-    // 关系状态筛选
-    if (statusFilter) {
-      const isExpired = !!edge.data?.expires_at
-      if (statusFilter === 'active' && isExpired) return false
-      if (statusFilter === 'expired' && !isExpired) return false
-    }
+      // 关系状态筛选
+      if (statusFilter) {
+        const isExpired = !!edge.data?.expires_at
+        if (statusFilter === 'active' && isExpired) return false
+        if (statusFilter === 'expired' && !isExpired) return false
+      }
 
-    return true
-  })
+      return true
+    })
+    .map((edge) => {
+      const isSelected = selectedEdgeId.value === edge.id
+      if (isSelected) {
+        return {
+          ...edge,
+          style: {
+            ...edge.style,
+            strokeWidth: 4,
+            filter: 'drop-shadow(0 0 6px rgba(251, 191, 36, 0.8))',
+          },
+          animated: true,
+          class: 'edge-selected',
+        }
+      }
+      return edge
+    })
 })
 
 // 右侧关系列表使用 displayEdges（与图中显示一致）
 const visibleEdges = computed(() => displayEdges.value)
 
 // ==================== 节点样式构建 ====================
-function buildNodeStyle(roleType: string, isFocusCenter: boolean = false): Record<string, string> {
-  const color = nodeColors[roleType] || '#475569'
+function buildNodeStyle(roleType: string, isFocusCenter: boolean = false, isConnectSource: boolean = false): Record<string, string> {
+  const color = getNodeColor(roleType)
   const style: Record<string, string> = {
     background: color,
     color: '#fff',
-    border: isFocusCenter ? '3px solid #fbbf24' : '2px solid rgba(255,255,255,0.2)',
+    border: isConnectSource
+      ? '3px solid #22d3ee'
+      : isFocusCenter
+      ? '3px solid #fbbf24'
+      : '2px solid rgba(255,255,255,0.2)',
     borderRadius: '20px',
     padding: '6px 14px',
     fontSize: '13px',
     fontWeight: '500',
-    boxShadow: isFocusCenter
+    boxShadow: isConnectSource
+      ? '0 0 20px rgba(34, 211, 238, 0.7), 0 2px 8px rgba(0,0,0,0.3)'
+      : isFocusCenter
       ? '0 0 16px rgba(251, 191, 36, 0.6), 0 2px 8px rgba(0,0,0,0.3)'
-      : '0 2px 8px rgba(0,0,0,0.3)'
+      : '0 2px 8px rgba(0,0,0,0.3)',
+    cursor: 'pointer',
+    transition: 'box-shadow 0.2s, border-color 0.2s',
   }
   return style
 }
@@ -809,39 +1102,62 @@ function buildNodes(): void {
   const cx = w / 2
   const cy = h / 2
 
-  const groups: Record<string, CharacterItem[]> = {
-    protagonist: [],
-    supporting: [],
-    antagonist: []
+  // 按角色类型分组（使用字典中的顺序）
+  const groups: Record<string, CharacterItem[]> = {}
+  for (const opt of roleTypeOptions.value) {
+    groups[opt.value] = []
   }
   characters.value.forEach((c) => {
-    if (groups[c.role_type]) groups[c.role_type].push(c)
-    else groups.supporting.push(c)
+    if (!groups[c.role_type]) {
+      groups[c.role_type] = []
+    }
+    groups[c.role_type].push(c)
   })
 
-  const radii: Record<string, number> = {
-    protagonist: 80,
-    supporting: 200,
-    antagonist: 320
-  }
+  // 为每个角色类型分配圆环半径（主角最内圈，向外扩散）
+  const roleTypes = Object.keys(groups).filter(t => groups[t].length > 0)
+  const radii: Record<string, number> = {}
+  const baseRadius = 80
+  const radiusStep = 100
+
+  // 主角优先放在内圈，然后按字典顺序排列
+  const sortedTypes = [...roleTypes].sort((a, b) => {
+    if (a === 'protagonist') return -1
+    if (b === 'protagonist') return 1
+    if (a === 'supporting') return -1
+    if (b === 'supporting') return 1
+    if (a === 'antagonist') return -1
+    if (b === 'antagonist') return 1
+    return 0
+  })
+
+  sortedTypes.forEach((type, index) => {
+    radii[type] = baseRadius + index * radiusStep
+  })
 
   const newNodes: any[] = []
   Object.entries(groups).forEach(([type, list]) => {
-    const radius = radii[type] || 150
+    const radius = radii[type] || 200
     list.forEach((c, i) => {
       const angle = (i / Math.max(list.length, 1)) * Math.PI * 2 - Math.PI / 2
       const isFocusCenter = focusCharacterId.value === c.id
+      const isConnectSource = connectMode.value && connectSourceId.value === c.id
+      // 优先使用保存的坐标，没有则用同心圆布局
+      const hasSavedPos = c.graph_x != null && c.graph_y != null
+      const posX = hasSavedPos ? c.graph_x! : cx + Math.cos(angle) * radius + (Math.random() - 0.5) * 20
+      const posY = hasSavedPos ? c.graph_y! : cy + Math.sin(angle) * radius + (Math.random() - 0.5) * 20
       newNodes.push({
         id: String(c.id),
         type: 'default',
-        position: {
-          x: cx + Math.cos(angle) * radius + (Math.random() - 0.5) * 20,
-          y: cy + Math.sin(angle) * radius + (Math.random() - 0.5) * 20
-        },
-        data: { label: c.name },
-        style: buildNodeStyle(c.role_type, isFocusCenter),
+        position: { x: posX, y: posY },
+        data: { label: c.name, charId: c.id },
+        style: buildNodeStyle(c.role_type, isFocusCenter, isConnectSource),
         draggable: true,
-        selectable: true
+        selectable: true,
+        class: [
+          connectMode.value ? 'connect-mode-node' : '',
+          isConnectSource ? 'connect-source' : '',
+        ].join(' '),
       })
     })
   })
@@ -851,6 +1167,7 @@ function buildNodes(): void {
 
 // ==================== 构建边 ====================
 function buildEdges(): void {
+  // 用规范化 key（小id在前，大id在后）来去重，a-b 和 b-a 视为同一条边
   const edgeMap = new Map<string, any>()
 
   characters.value.forEach((c) => {
@@ -866,17 +1183,21 @@ function buildEdges(): void {
     relations.forEach((rel) => {
       const sourceId = c.id
       const targetId = rel.target_id
-      const key = `${sourceId}-${targetId}`
+      // 规范化 key：小 id 在前，大 id 在后，确保 a-b 和 b-a 是同一条边
+      const minId = Math.min(sourceId, targetId)
+      const maxId = Math.max(sourceId, targetId)
+      const key = `${minId}-${maxId}`
+      const isForward = sourceId === minId
 
-      // 注意：这里不再跳过反向边，保留所有方向的关系
-      // 这样可以正确显示双向关系（两条边）
-      if (!edgeMap.has(key)) {
+      const existing = edgeMap.get(key)
+      if (!existing) {
+        // 第一条边：正常创建
         const color = getRelationColor(rel.relation_type)
         const isExpired = !!rel.expires_at
         edgeMap.set(key, {
           id: key,
-          source: String(sourceId),
-          target: String(targetId),
+          source: String(minId),
+          target: String(maxId),
           type: 'smoothstep',
           animated: false,
           style: {
@@ -888,15 +1209,42 @@ function buildEdges(): void {
             relation_type: rel.relation_type,
             depth: rel.depth,
             effective_from: rel.effective_from ?? null,
-            expires_at: rel.expires_at ?? null
+            expires_at: rel.expires_at ?? null,
+            // 存储两个方向的关系类型，用于显示和编辑
+            forward_type: isForward ? rel.relation_type : null,
+            backward_type: isForward ? null : rel.relation_type,
+            forward_rel: isForward ? rel : null,
+            backward_rel: isForward ? null : rel,
           },
           label: rel.relation_type,
           labelStyle: { fill: '#cbd5e1', fontSize: 11, fontWeight: 500 },
           labelBgPadding: [6, 3],
           labelBgBorderRadius: 4,
           labelBgStyle: { fill: '#1e2228', fillOpacity: 0.85 },
-          markerEnd: 'arrowclosed'
+          // 单线模式：没有箭头
+          markerEnd: undefined
         })
+      } else {
+        // 已有反向边：合并关系类型
+        const data = existing.data
+        if (isForward) {
+          data.forward_type = rel.relation_type
+          data.forward_rel = rel
+        } else {
+          data.backward_type = rel.relation_type
+          data.backward_rel = rel
+        }
+        // 显示两个方向的关系类型（用 / 分隔）
+        const types: string[] = []
+        if (data.forward_type) types.push(data.forward_type)
+        if (data.backward_type && data.backward_type !== data.forward_type) types.push(data.backward_type)
+        existing.label = types.join(' / ')
+        existing.data.relation_type = types.join(' / ')
+
+        // 深度取较大值
+        const maxDepth = Math.max(data.depth || 0, rel.depth || 0)
+        existing.data.depth = maxDepth
+        existing.style.strokeWidth = maxDepth >= 7 ? 3 : maxDepth >= 4 ? 2 : 1.5
       }
     })
   })
@@ -924,33 +1272,104 @@ function onVueFlowInit(instance: any): void {
   }
 }
 
+// 确保筛选/搜索变化时节点正确同步到 Vue Flow
+watch(
+  () => displayNodes.value.length,
+  () => {
+    const instance = vueFlowRef.value
+    if (!instance) return
+    // 手动同步节点（Vue Flow 受控模式下有时需要主动触发）
+    if (typeof instance.setNodes === 'function') {
+      instance.setNodes(displayNodes.value)
+    }
+    if (typeof instance.setEdges === 'function') {
+      instance.setEdges(displayEdges.value)
+    }
+  }
+)
+
 function resetLayout(): void {
   initGraph()
   message.success('布局已重置')
 }
 
+// ==================== 节点拖拽保存位置 ====================
+const positionSaveTimers = new Map<number, number>()
+
+function onNodeDragStop(event: any): void {
+  const node = event.node
+  const charId = parseInt(node.id)
+  const x = node.position.x
+  const y = node.position.y
+
+  console.log('[拖拽保存] 节点', charId, '位置:', x, y)
+
+  // 同步更新 characters 中的坐标（防止 buildNodes 时被覆盖）
+  const char = characters.value.find(c => c.id === charId)
+  if (char) {
+    char.graph_x = x
+    char.graph_y = y
+  }
+
+  // 同步更新 allNodes 中的位置
+  const nodeInList = allNodes.value.find(n => n.id === node.id)
+  if (nodeInList) {
+    nodeInList.position = { x, y }
+  }
+
+  // 防抖保存
+  if (positionSaveTimers.has(charId)) {
+    clearTimeout(positionSaveTimers.get(charId)!)
+  }
+  const timer = window.setTimeout(async () => {
+    console.log('[拖拽保存] 开始保存节点', charId, '位置:', x, y)
+    try {
+      await updateResource('characters', charId, { graph_x: x, graph_y: y })
+      console.log('[拖拽保存] 保存成功', charId)
+    } catch (e) {
+      console.error('[拖拽保存] 保存失败', e)
+    }
+    positionSaveTimers.delete(charId)
+  }, 500)
+  positionSaveTimers.set(charId, timer)
+}
+
+// ==================== 拖拽连线创建关系 ====================
+function onConnect(event: any): void {
+  const sourceId = parseInt(event.source)
+  const targetId = parseInt(event.target)
+  if (sourceId === targetId) {
+    notify.warning('不能和自己建立关系')
+    return
+  }
+  const relatedIds = getRelatedCharacterIds(sourceId)
+  if (relatedIds.has(targetId)) {
+    notify.warning(`${getCharName(sourceId)} 和 ${getCharName(targetId)} 已存在关系`)
+    return
+  }
+  openQuickAddModal(sourceId, targetId)
+}
+
 // ==================== 节点点击（功能2：切换聚焦 + 功能4：连线模式） ====================
 function onNodeClick(event: any): void {
   const nodeId = parseInt(event.node.id)
+  handleNodeClick(nodeId)
+}
 
-  // 功能4：连线模式下的点击处理
+// 统一的节点点击处理
+function handleNodeClick(nodeId: number): void {
+  // 连线模式下的点击处理
   if (connectMode.value) {
     handleConnectClick(nodeId)
     return
   }
 
-  // 功能2：单击节点切换为聚焦该节点
+  // 单击节点切换为聚焦该节点
   if (viewMode.value === 'focus') {
     focusCharacterId.value = nodeId
     activeComponentIndex.value = null // 清除分组聚焦
-    // 更新节点样式（聚焦高亮）
     updateNodeFocusStyle()
-  } else {
-    // 全部模式下点击节点不切换聚焦，仅清除边选中
-    selectedEdgeId.value = null
   }
-
-  selectedEdgeId.value = null
 }
 
 /**
@@ -1020,44 +1439,66 @@ async function saveEdge(): Promise<void> {
   const sourceId = parseInt(edge.source)
   const targetId = parseInt(edge.target)
   const source = characters.value.find((c) => c.id === sourceId)
-  if (!source) {
-    notify.error('找不到源角色')
+  const target = characters.value.find((c) => c.id === targetId)
+  if (!source || !target) {
+    notify.error('找不到角色')
     return
   }
 
-  let relations: CharacterRelation[] = []
-  try {
-    if (typeof source.character_relations === 'string') {
-      relations = JSON.parse(source.character_relations || '[]')
-    } else if (Array.isArray(source.character_relations)) {
-      relations = [...source.character_relations]
-    }
-  } catch { /* ignore */ }
+  // 单线模式：同时更新双向关系
+  const updateRelations = async (char: CharacterItem, tgtId: number) => {
+    let relations: CharacterRelation[] = []
+    try {
+      if (typeof char.character_relations === 'string') {
+        relations = JSON.parse(char.character_relations || '[]')
+      } else if (Array.isArray(char.character_relations)) {
+        relations = [...char.character_relations]
+      }
+    } catch { /* ignore */ }
 
-  const idx = relations.findIndex((r) => r.target_id === targetId)
-  if (idx >= 0) {
-    relations[idx] = {
-      ...relations[idx],
-      relation_type: editingEdge.relation_type,
-      depth: editingEdge.depth,
-      effective_from: editingEdge.effective_from,
-      expires_at: editingEdge.expires_at
+    const idx = relations.findIndex((r) => r.target_id === tgtId)
+    if (idx >= 0) {
+      relations[idx] = {
+        ...relations[idx],
+        relation_type: editingEdge.relation_type,
+        depth: editingEdge.depth,
+        effective_from: editingEdge.effective_from,
+        expires_at: editingEdge.expires_at
+      }
+    } else {
+      relations.push({
+        target_id: tgtId,
+        relation_type: editingEdge.relation_type,
+        depth: editingEdge.depth,
+        effective_from: editingEdge.effective_from,
+        expires_at: editingEdge.expires_at
+      })
     }
+
+    await updateResource<CharacterItem>('characters', char.id, {
+      character_relations: JSON.stringify(relations)
+    })
+    ;(char.character_relations as any) = JSON.stringify(relations)
+    return relations
   }
 
   try {
-    await updateResource<CharacterItem>('characters', sourceId, {
-      character_relations: JSON.stringify(relations)
-    })
-    ;(source.character_relations as any) = JSON.stringify(relations)
+    await Promise.all([
+      updateRelations(source, targetId),
+      updateRelations(target, sourceId)
+    ])
 
     const color = getRelationColor(editingEdge.relation_type)
     const isExpired = !!editingEdge.expires_at
+    // 更新边的 data，同时更新 forward 和 backward
     edge.data = {
+      ...edge.data,
       relation_type: editingEdge.relation_type,
       depth: editingEdge.depth,
       effective_from: editingEdge.effective_from,
-      expires_at: editingEdge.expires_at
+      expires_at: editingEdge.expires_at,
+      forward_type: editingEdge.relation_type,
+      backward_type: editingEdge.relation_type,
     }
     edge.style = {
       stroke: color,
@@ -1066,7 +1507,7 @@ async function saveEdge(): Promise<void> {
     }
     edge.label = editingEdge.relation_type
 
-    message.success('关系已更新')
+    notify.success('关系已更新')
   } catch {
     notify.error('保存失败')
   }
@@ -1081,27 +1522,35 @@ async function deleteEdge(): Promise<void> {
   const sourceId = parseInt(edge.source)
   const targetId = parseInt(edge.target)
   const source = characters.value.find((c) => c.id === sourceId)
-  if (!source) return
+  const target = characters.value.find((c) => c.id === targetId)
+  if (!source || !target) return
 
-  let relations: CharacterRelation[] = []
-  try {
-    if (typeof source.character_relations === 'string') {
-      relations = JSON.parse(source.character_relations || '[]')
-    } else if (Array.isArray(source.character_relations)) {
-      relations = [...source.character_relations]
-    }
-  } catch { /* ignore */ }
+  // 单线模式：同时删除双向关系
+  const removeRelation = async (char: CharacterItem, tgtId: number) => {
+    let relations: CharacterRelation[] = []
+    try {
+      if (typeof char.character_relations === 'string') {
+        relations = JSON.parse(char.character_relations || '[]')
+      } else if (Array.isArray(char.character_relations)) {
+        relations = [...char.character_relations]
+      }
+    } catch { /* ignore */ }
 
-  const filtered = relations.filter((r) => r.target_id !== targetId)
-
-  try {
-    await updateResource<CharacterItem>('characters', sourceId, {
+    const filtered = relations.filter((r) => r.target_id !== tgtId)
+    await updateResource<CharacterItem>('characters', char.id, {
       character_relations: JSON.stringify(filtered)
     })
-    ;(source.character_relations as any) = JSON.stringify(filtered)
+    ;(char.character_relations as any) = JSON.stringify(filtered)
+  }
+
+  try {
+    await Promise.all([
+      removeRelation(source, targetId),
+      removeRelation(target, sourceId)
+    ])
     allEdges.value = allEdges.value.filter((e) => e.id !== selectedEdgeId.value)
     selectedEdgeId.value = null
-    message.success('关系已删除')
+    notify.success('关系已删除')
   } catch {
     notify.error('删除失败')
   }
@@ -1116,36 +1565,59 @@ async function addRelation(): Promise<void> {
   }
 
   const source = characters.value.find((c) => c.id === newEdge.source_id)
-  if (!source) return
+  const target = characters.value.find((c) => c.id === newEdge.target_id)
+  if (!source || !target) return
 
-  let relations: CharacterRelation[] = []
-  try {
-    if (typeof source.character_relations === 'string') {
-      relations = JSON.parse(source.character_relations || '[]')
-    } else if (Array.isArray(source.character_relations)) {
-      relations = [...source.character_relations]
+  // 单线模式：同时创建双向关系
+  const addRelToChar = async (char: CharacterItem, tgtId: number) => {
+    let relations: CharacterRelation[] = []
+    try {
+      if (typeof char.character_relations === 'string') {
+        relations = JSON.parse(char.character_relations || '[]')
+      } else if (Array.isArray(char.character_relations)) {
+        relations = [...char.character_relations]
+      }
+    } catch { /* ignore */ }
+
+    if (relations.some((r) => r.target_id === tgtId)) {
+      return relations // 已存在就跳过
     }
-  } catch { /* ignore */ }
 
-  if (relations.some((r) => r.target_id === newEdge.target_id)) {
-    notify.warning('该关系已存在')
-    return
-  }
+    relations.push({
+      target_id: tgtId,
+      relation_type: newEdge.relation_type,
+      depth: newEdge.depth,
+      effective_from: newEdge.effective_from,
+      expires_at: newEdge.expires_at
+    })
 
-  relations.push({
-    target_id: newEdge.target_id,
-    relation_type: newEdge.relation_type,
-    depth: newEdge.depth,
-    effective_from: newEdge.effective_from,
-    expires_at: newEdge.expires_at
-  })
-
-  try {
-    await updateResource<CharacterItem>('characters', source.id, {
+    await updateResource<CharacterItem>('characters', char.id, {
       character_relations: JSON.stringify(relations)
     })
-    ;(source.character_relations as any) = JSON.stringify(relations)
-    message.success('关系已创建')
+    ;(char.character_relations as any) = JSON.stringify(relations)
+    return relations
+  }
+
+  try {
+    // 先检查是否已存在
+    let srcRels: any[] = []
+    try {
+      if (typeof source.character_relations === 'string') {
+        srcRels = JSON.parse(source.character_relations || '[]')
+      } else if (Array.isArray(source.character_relations)) {
+        srcRels = source.character_relations as any[]
+      }
+    } catch { /* ignore */ }
+    if (srcRels.some((r) => r.target_id === newEdge.target_id)) {
+      notify.warning('该关系已存在')
+      return
+    }
+
+    await Promise.all([
+      addRelToChar(source, newEdge.target_id),
+      addRelToChar(target, newEdge.source_id)
+    ])
+    notify.success('关系已创建')
     showAddModal.value = false
     initGraph()
   } catch {
@@ -1163,6 +1635,8 @@ function toggleConnectMode(): void {
     connectSourceId.value = null
     showQuickAddModal.value = false
   }
+  // 重建节点以更新视觉样式
+  buildNodes()
 }
 
 /**
@@ -1174,6 +1648,7 @@ function handleConnectClick(nodeId: number): void {
     // 第一次点击：选择源角色
     connectSourceId.value = nodeId
     message.info(`已选择 ${getCharName(nodeId)} 作为起点，点击另一个角色建立关系`)
+    buildNodes() // 更新高亮
   } else {
     // 第二次点击：选择目标角色
     const sourceId = connectSourceId.value
@@ -1190,6 +1665,7 @@ function handleConnectClick(nodeId: number): void {
     if (relatedIds.has(targetId)) {
       notify.warning(`${getCharName(sourceId)} 和 ${getCharName(targetId)} 已存在关系`)
       connectSourceId.value = null
+      buildNodes()
       return
     }
 
@@ -1204,6 +1680,7 @@ function handleConnectClick(nodeId: number): void {
 function cancelConnect(): void {
   connectSourceId.value = null
   connectMode.value = false
+  buildNodes()
 }
 
 // ==================== 功能4：快速建立关系弹窗 ====================
@@ -1224,7 +1701,8 @@ function openQuickAddModal(sourceId: number, targetId: number): void {
   quickAddEdge.target_id = targetId
   quickAddEdge.source_name = getCharName(sourceId)
   quickAddEdge.target_name = getCharName(targetId)
-  quickAddEdge.relation_type = '朋友'
+  // 默认选择字典中第一个关系类型
+  quickAddEdge.relation_type = relationTypeOptions.value[0]?.value || '挚友'
   quickAddEdge.depth = 5
   showQuickAddModal.value = true
 }
@@ -1336,7 +1814,10 @@ async function loadCharacters(): Promise<void> {
   const pid = projectStore.currentProject?.id
   if (!pid) return
   try {
-    await dictStore.load('character_role')
+    await Promise.all([
+      dictStore.load('character_role'),
+      dictStore.load('relation_type'),
+    ])
     const list = await listResource<CharacterItem>(pid, 'characters')
     characters.value = list
     initGraph()
@@ -1450,8 +1931,8 @@ const { loading } = useProjectDataLoader(loadCharacters)
 .filter-bar {
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 10px 14px;
+  gap: 8px;
+  padding: 8px 12px;
   background: var(--n-color-card, #1a1d21);
   border: 1px solid var(--n-border-color, #2a2f3a);
   border-radius: 10px;
@@ -1467,15 +1948,40 @@ const { loading } = useProjectDataLoader(loadCharacters)
 
 .filter-label {
   font-size: 12px;
+  font-weight: 500;
   color: var(--n-text-color-3, #6b7280);
   white-space: nowrap;
+  letter-spacing: 0.3px;
+}
+
+/* 下拉框统一样式 */
+:deep(.filter-bar .n-select .n-input__input-el) {
+  border-radius: 6px !important;
+}
+
+:deep(.filter-bar .n-input__input) {
+  border-radius: 6px !important;
+}
+
+:deep(.filter-bar .n-radio-button) {
+  border-radius: 6px;
+  padding: 0 12px;
+  font-weight: 500;
+  font-size: 12px;
+  transition: all 0.2s ease;
+}
+
+:deep(.filter-bar .n-radio-button--checked) {
+  background: linear-gradient(135deg, #6366f1, #8b5cf6) !important;
+  color: #fff !important;
+  box-shadow: 0 2px 8px rgba(99, 102, 241, 0.35);
 }
 
 .filter-divider {
   width: 1px;
-  height: 24px;
+  height: 18px;
   background: var(--n-border-color, #2a2f3a);
-  margin: 0 4px;
+  margin: 0 2px;
 }
 
 .filter-spacer {
@@ -1538,7 +2044,58 @@ const { loading } = useProjectDataLoader(loadCharacters)
 
 .graph-tools {
   display: flex;
-  gap: 4px;
+  gap: 6px;
+  align-items: center;
+}
+
+/* 工具栏按钮统一样式 */
+.graph-tools .n-button {
+  border-radius: 6px;
+  font-weight: 500;
+  transition: all 0.2s ease;
+}
+
+.graph-tools .n-button--warning-type {
+  background: linear-gradient(135deg, #f59e0b, #f97316);
+  border-color: transparent;
+  box-shadow: 0 2px 8px rgba(249, 115, 22, 0.3);
+}
+
+.graph-tools .n-button--warning-type:hover {
+  box-shadow: 0 4px 12px rgba(249, 115, 22, 0.45);
+  transform: translateY(-1px);
+}
+
+/* 页头主按钮 */
+.header-right .n-button--primary-type {
+  border-radius: 8px;
+  font-weight: 600;
+  background: linear-gradient(135deg, #6366f1, #8b5cf6);
+  border-color: transparent;
+  box-shadow: 0 2px 8px rgba(99, 102, 241, 0.35);
+  transition: all 0.2s ease;
+}
+
+.header-right .n-button--primary-type:hover {
+  box-shadow: 0 4px 16px rgba(99, 102, 241, 0.5);
+  transform: translateY(-1px);
+}
+
+/* 筛选栏按钮 */
+.filter-bar .n-button--text-type {
+  border-radius: 6px;
+  transition: all 0.2s ease;
+}
+
+.filter-bar .n-button--text-type:hover {
+  background: var(--n-color-hover, #23272f);
+}
+
+/* 筛选标签容器 */
+.filter-tags {
+  display: flex;
+  align-items: center;
+  gap: 6px;
 }
 
 /* ===== 连线模式提示条 ===== */
@@ -1655,46 +2212,133 @@ const { loading } = useProjectDataLoader(loadCharacters)
   background: #0f1115;
 }
 
+/* 空状态 */
+.graph-empty {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  text-align: center;
+  color: var(--n-text-color-3, #6b7280);
+  pointer-events: none;
+}
+
+.graph-empty .empty-icon {
+  font-size: 40px;
+  margin-bottom: 10px;
+  opacity: 0.6;
+}
+
+.graph-empty p {
+  margin: 4px 0;
+  font-size: 13px;
+}
+
+.graph-empty .empty-sub {
+  font-size: 11px;
+  opacity: 0.7;
+}
+
+/* 连线模式下的节点交互 */
+:deep(.connect-mode-node .vue-flow__node) {
+  cursor: crosshair !important;
+}
+
+:deep(.connect-source .vue-flow__node) {
+  animation: pulse-glow 1.5s ease-in-out infinite;
+}
+
+@keyframes pulse-glow {
+  0%, 100% {
+    filter: brightness(1);
+  }
+  50% {
+    filter: brightness(1.3);
+  }
+}
+
 .graph-legend {
   display: flex;
-  gap: 24px;
-  padding: 10px 16px;
+  gap: 12px;
+  padding: 8px 14px;
   border-top: 1px solid var(--n-border-color, #2a2f3a);
   background: rgba(0, 0, 0, 0.2);
   flex-wrap: wrap;
+  align-items: flex-start;
 }
 
 .legend-group {
   display: flex;
-  align-items: center;
-  gap: 10px;
-  flex-wrap: wrap;
+  flex-direction: column;
+  gap: 4px;
 }
 
 .legend-title {
   font-size: 11px;
   color: #64748b;
   font-weight: 500;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: default;
+}
+
+.legend-title .legend-toggle {
+  font-size: 10px;
+  color: #60a5fa;
+  opacity: 0.8;
+}
+
+.legend-title:hover .legend-toggle {
+  opacity: 1;
+}
+
+.legend-items {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 10px;
+}
+
+.relation-items {
+  max-height: 80px;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
+.relation-items::-webkit-scrollbar {
+  width: 4px;
+}
+
+.relation-items::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.relation-items::-webkit-scrollbar-thumb {
+  background: #3a3f4b;
+  border-radius: 2px;
 }
 
 .legend-item {
   display: flex;
   align-items: center;
-  gap: 5px;
+  gap: 4px;
   font-size: 11px;
   color: #94a3b8;
+  white-space: nowrap;
 }
 
 .legend-dot {
-  width: 10px;
-  height: 10px;
+  width: 8px;
+  height: 8px;
   border-radius: 50%;
+  flex-shrink: 0;
 }
 
 .legend-line {
-  width: 16px;
+  width: 14px;
   height: 2px;
   border-radius: 1px;
+  flex-shrink: 0;
 }
 
 /* ===== 右侧列表面板 ===== */
@@ -1856,6 +2500,34 @@ const { loading } = useProjectDataLoader(loadCharacters)
   border-top: 1px solid var(--n-border-color, #2a2f3a);
 }
 
+.detail-actions .n-button {
+  border-radius: 8px;
+  font-weight: 500;
+  transition: all 0.2s ease;
+}
+
+.detail-actions .n-button--primary-type {
+  background: linear-gradient(135deg, #6366f1, #8b5cf6);
+  border-color: transparent;
+  box-shadow: 0 2px 6px rgba(99, 102, 241, 0.3);
+}
+
+.detail-actions .n-button--primary-type:hover {
+  box-shadow: 0 4px 12px rgba(99, 102, 241, 0.45);
+  transform: translateY(-1px);
+}
+
+.detail-actions .n-button--error-type {
+  background: linear-gradient(135deg, #ef4444, #f43f5e);
+  border-color: transparent;
+  box-shadow: 0 2px 6px rgba(239, 68, 68, 0.25);
+}
+
+.detail-actions .n-button--error-type:hover {
+  box-shadow: 0 4px 12px rgba(239, 68, 68, 0.4);
+  transform: translateY(-1px);
+}
+
 /* 双向关系提示 */
 .bidir-notice {
   display: flex;
@@ -1910,5 +2582,22 @@ const { loading } = useProjectDataLoader(loadCharacters)
   font-size: 20px;
   font-weight: bold;
   color: var(--n-color-primary, #3b82f6);
+}
+
+/* ===== 顶部缩放按钮 ===== */
+.zoom-controls {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 0 6px;
+  border-left: 1px solid var(--n-border-color, #2a2f3a);
+  margin-left: 4px;
+}
+
+.zoom-controls .n-button {
+  width: 28px;
+  height: 28px;
+  font-size: 16px;
+  font-weight: 600;
 }
 </style>

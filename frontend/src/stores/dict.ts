@@ -9,17 +9,21 @@
  *   await dictStore.loadBatch(['novel_type', 'importance'])  // 批量加载
  */
 import { defineStore } from 'pinia'
-import { fetchDictItems, type DictItem } from '@/api/core'
+import { fetchDictItems, fetchDictionaries, createDictItem, updateDictItem, deleteDictItem, type DictItem } from '@/api/core'
 
 interface DictState {
   itemsMap: Record<string, DictItem[]>
   loadingMap: Record<string, boolean>
+  dictIdMap: Record<string, number>
+  dictIdLoadingMap: Record<string, boolean>
 }
 
 export const useDictStore = defineStore('dict', {
   state: (): DictState => ({
     itemsMap: {},
     loadingMap: {},
+    dictIdMap: {},
+    dictIdLoadingMap: {},
   }),
 
   actions: {
@@ -83,6 +87,66 @@ export const useDictStore = defineStore('dict', {
     async refresh(dictCode: string): Promise<DictItem[]> {
       delete this.itemsMap[dictCode]
       return this.load(dictCode)
+    },
+
+    /** 获取字典 ID */
+    async getDictId(dictCode: string): Promise<number> {
+      if (this.dictIdMap[dictCode]) {
+        return this.dictIdMap[dictCode]
+      }
+      if (this.dictIdLoadingMap[dictCode]) {
+        await new Promise((resolve) => {
+          const check = () => {
+            if (!this.dictIdLoadingMap[dictCode]) {
+              resolve(null)
+            } else {
+              setTimeout(check, 100)
+            }
+          }
+          check()
+        })
+        return this.dictIdMap[dictCode] || 0
+      }
+
+      this.dictIdLoadingMap[dictCode] = true
+      try {
+        const dicts = await fetchDictionaries()
+        const found = dicts.find(d => d.dict_code === dictCode)
+        if (found) {
+          this.dictIdMap[dictCode] = found.id
+          return found.id
+        }
+        return 0
+      } finally {
+        this.dictIdLoadingMap[dictCode] = false
+      }
+    },
+
+    /** 新增字典项 */
+    async addItem(dictCode: string, payload: Partial<DictItem>): Promise<DictItem> {
+      const dictId = await this.getDictId(dictCode)
+      const item = await createDictItem(dictId, payload)
+      // 刷新缓存
+      delete this.itemsMap[dictCode]
+      await this.load(dictCode)
+      return item
+    },
+
+    /** 更新字典项 */
+    async updateItem(dictCode: string, itemId: number, payload: Partial<DictItem>): Promise<DictItem> {
+      const item = await updateDictItem(itemId, payload)
+      // 刷新缓存
+      delete this.itemsMap[dictCode]
+      await this.load(dictCode)
+      return item
+    },
+
+    /** 删除字典项 */
+    async removeItem(dictCode: string, itemId: number): Promise<void> {
+      await deleteDictItem(itemId)
+      // 刷新缓存
+      delete this.itemsMap[dictCode]
+      await this.load(dictCode)
     },
   },
 })

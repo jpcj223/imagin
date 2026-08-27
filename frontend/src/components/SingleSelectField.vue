@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, watch, nextTick } from 'vue'
+import { ref, watch, nextTick, computed } from 'vue'
 import { NSelect, NButton, NInput, NIcon } from 'naive-ui'
 import type { SelectOption } from 'naive-ui'
 
@@ -9,6 +9,10 @@ const props = defineProps<{
   placeholder?: string
   allowCreate?: boolean
   filterable?: boolean
+  /** 自定义值是否保留在下拉列表中，默认 true。
+   *  false 时：用户输入的自定义值不会加入下拉列表（但当前值仍会正常显示）
+   */
+  keepCustomOptions?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -40,39 +44,49 @@ function exitTextMode() {
 // ===== 选择模式 =====
 const selectValue = ref(props.modelValue ?? '')
 
-// 内部维护的 options（包含用户创建的）
-const internalOptions = ref<SelectOption[]>([...props.options])
+// 是否保留自定义选项在下拉列表中
+const shouldKeepCustom = computed(() => props.keepCustomOptions !== false)
 
-// 初始化：如果当前值不在 options 里，加入进去确保能正常显示
+// 持久化的自定义选项（仅 keepCustomOptions=true 时使用）
+const savedCustomOptions = ref<SelectOption[]>([])
+
+// 最终展示的 options
+// - 保留模式：外部 options + 所有自定义值
+// - 不保留模式：仅外部 options（自定义值不出现在下拉列表中）
+const displayOptions = computed<SelectOption[]>(() => {
+  if (!shouldKeepCustom.value) {
+    return props.options
+  }
+  // 保留模式：外部 + 所有持久化自定义值
+  const externalValues = new Set(props.options.map(o => o.value))
+  const custom = savedCustomOptions.value.filter(o => !externalValues.has(o.value))
+  return [...props.options, ...custom]
+})
+
+// 初始化：保留模式下，如果当前值不在外部 options 里，加入持久化列表
 const initVal = props.modelValue ?? ''
-if (initVal && !internalOptions.value.find(o => o.value === initVal)) {
-  internalOptions.value.unshift({ label: initVal, value: initVal })
+if (initVal && shouldKeepCustom.value && !props.options.find(o => o.value === initVal)) {
+  savedCustomOptions.value.unshift({ label: initVal, value: initVal })
 }
 
 function handleCreate(val: string): SelectOption {
   const option = { label: val, value: val }
-  if (!internalOptions.value.find(o => o.value === val)) {
-    internalOptions.value.push(option)
+  if (shouldKeepCustom.value && !savedCustomOptions.value.find(o => o.value === val)) {
+    savedCustomOptions.value.push(option)
   }
   return option
 }
-
-// 外部 options 变化时同步
-watch(() => props.options, (val) => {
-  // 合并外部 options + 内部自定义（去重）
-  const externalValues = new Set(val.map(o => o.value))
-  const custom = internalOptions.value.filter(o => !externalValues.has(o.value))
-  internalOptions.value = [...val, ...custom]
-}, { deep: true })
 
 // 外部值 → 内部同步
 watch(() => props.modelValue, (val) => {
   const strVal = val ?? ''
   if (mode.value === 'select') {
     selectValue.value = strVal
-    // 如果新值不在 options 里，加入进去确保显示
-    if (strVal && !internalOptions.value.find(o => o.value === strVal)) {
-      internalOptions.value.unshift({ label: strVal, value: strVal })
+    // 保留模式下，如果新值不在外部 options 里，加入持久化列表确保显示
+    if (strVal && shouldKeepCustom.value && !props.options.find(o => o.value === strVal)) {
+      if (!savedCustomOptions.value.find(o => o.value === strVal)) {
+        savedCustomOptions.value.unshift({ label: strVal, value: strVal })
+      }
     }
   }
 })
@@ -102,9 +116,11 @@ function handleTextBlur() {
   const val = textInput.value.trim()
   emit('update:modelValue', val)
   selectValue.value = val
-  // 如果是新值，加入内部 options
-  if (val && !internalOptions.value.find(o => o.value === val)) {
-    internalOptions.value.push({ label: val, value: val })
+  // 保留模式下，新值加入持久化列表
+  if (val && shouldKeepCustom.value && !props.options.find(o => o.value === val)) {
+    if (!savedCustomOptions.value.find(o => o.value === val)) {
+      savedCustomOptions.value.push({ label: val, value: val })
+    }
   }
 }
 </script>
@@ -124,7 +140,7 @@ function handleTextBlur() {
     >
       <NSelect
         v-model:value="selectValue"
-        :options="internalOptions"
+        :options="displayOptions"
         :filterable="filterable !== false"
         :allow-create="allowCreate !== false"
         :placeholder="placeholder || '请选择...'"

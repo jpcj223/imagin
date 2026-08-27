@@ -299,6 +299,10 @@ export interface CharacterItem {
   status: string
   /** 是否为内置角色，内置角色不可删除。 */
   is_builtin: boolean
+  /** 图谱 X 坐标（自定义位置）。 */
+  graph_x?: number | null
+  /** 图谱 Y 坐标（自定义位置）。 */
+  graph_y?: number | null
 }
 
 /** 角色动态属性：用户可自定义的扩展属性，解决"人物扩展难"问题。 */
@@ -348,6 +352,8 @@ export interface OrganizationItem {
   id: number
   /** 所属项目 ID。 */
   project_id: number
+  /** 父组织 ID，支持树状层级。 */
+  parent_id: number | null
   /** 组织名称。 */
   name: string
   /** 组织类型，例如宗门、公司、帮派。 */

@@ -131,9 +131,8 @@
 
           <div v-else class="character-groups">
             <draggable
-              v-model="draggableGroups"
+              v-model="localGroupOrder"
               item-key="id"
-              handle=".group-drag-handle"
               animation="200"
               @start="isDraggingGroup = true"
               @end="onGroupDragEnd"
@@ -159,22 +158,12 @@
                     <div
                       class="group-header"
                       :class="{ collapsed: !expandedGroups.has(group.id), 'is-builtin': group.is_builtin }"
+                      @click="toggleGroup(group.id)"
                     >
-                      <span class="drag-handle group-drag-handle" title="拖拽排序">
-                        <svg viewBox="0 0 24 24" fill="currentColor">
-                          <circle cx="9" cy="6" r="1.5" />
-                          <circle cx="15" cy="6" r="1.5" />
-                          <circle cx="9" cy="12" r="1.5" />
-                          <circle cx="15" cy="12" r="1.5" />
-                          <circle cx="9" cy="18" r="1.5" />
-                          <circle cx="15" cy="18" r="1.5" />
-                        </svg>
-                      </span>
                       <n-icon
                         size="12"
                         class="group-arrow"
                         :class="{ expanded: expandedGroups.has(group.id) }"
-                        @click.stop="toggleGroup(group.id)"
                       >
                         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
                           <path d="M6 9l6 6 6-6" />
@@ -190,16 +179,16 @@
                         class="group-rename-input"
                         @keyup.enter="confirmRenameGroup(group)"
                         @keyup.esc="cancelRenameGroup"
-                        @blur="confirmRenameGroup(group)"
+                        @click.stop
                       />
-                      <span v-else class="group-name" @click="toggleGroup(group.id)">
+                      <span v-else class="group-name">
                         {{ groupLabel(group) }}
                       </span>
 
-                      <n-tag size="tiny" type="default">{{ groupCharacters[group.id]?.length || 0 }}</n-tag>
+                      <span class="group-count">{{ groupCharacters[group.id]?.length || 0 }}</span>
 
                       <!-- 自定义分组操作按钮 -->
-                      <div v-if="!group.is_builtin" class="group-actions-right">
+                      <div v-if="!group.is_builtin && !group.is_virtual" class="group-actions-right">
                         <n-button
                           text
                           size="tiny"
@@ -215,7 +204,7 @@
                               🗑️
                             </n-button>
                           </template>
-                          确定删除该分组？分组内的角色将自动回到对应类型的默认分组。
+                          确定删除该分组？有角色的分组不可删除。
                         </n-popconfirm>
                       </div>
                     </div>
@@ -225,7 +214,6 @@
                       <draggable
                         v-model="groupCharacters[group.id]"
                         item-key="id"
-                        handle=".char-drag-handle"
                         group="characters"
                         animation="150"
                         ghost-class="char-ghost"
@@ -246,16 +234,6 @@
                             }"
                             @click="selectCharacter(item)"
                           >
-                            <span class="drag-handle char-drag-handle" title="拖拽排序/移动">
-                              <svg viewBox="0 0 24 24" fill="currentColor">
-                                <circle cx="9" cy="6" r="1.5" />
-                                <circle cx="15" cy="6" r="1.5" />
-                                <circle cx="9" cy="12" r="1.5" />
-                                <circle cx="15" cy="12" r="1.5" />
-                                <circle cx="9" cy="18" r="1.5" />
-                                <circle cx="15" cy="18" r="1.5" />
-                              </svg>
-                            </span>
                             <div class="char-avatar">
                               {{ item.name?.charAt(0) || '?' }}
                               <span v-if="item.is_builtin" class="builtin-badge" title="内置角色">★</span>
@@ -561,7 +539,8 @@
                     <SingleSelectField
                       v-model:model-value="attr.key"
                       :options="attributeNameOptions"
-                      placeholder="属性"
+                      placeholder="属性名"
+                      :keep-custom-options="false"
                       class="attr-name-field"
                       @update:model-value="(val: string) => onAttrKeyChange(index, val)"
                     />
@@ -1070,7 +1049,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, h, nextTick, onMounted, reactive, ref, watch } from 'vue'
+import { computed, h, nextTick, onMounted, reactive, ref, toRaw, watch } from 'vue'
 import { NBadge, NButton, NIcon, NInput, NPopconfirm, NTooltip } from 'naive-ui'
 import draggable from 'vuedraggable'
 import TagSelectField from '@/components/TagSelectField.vue'
@@ -1079,30 +1058,128 @@ import { useDirtySnapshot } from '@/composables/useDirtySnapshot'
 import { createResource, deleteResource, listResource, updateResource } from '@/api/resources'
 import { useProjectStore } from '@/stores/project'
 import { useDictStore } from '@/stores/dict'
+import { useOrganizationStore } from '@/stores/organization'
+import { useCharacterStore } from '@/stores/character'
 import { useProjectDataLoader } from '@/composables/useProjectDataLoader'
 import { notify } from '@/utils/notify'
 import type {
   CharacterAttribute,
-  CharacterGroup,
   CharacterItem,
   CharacterOrgRelation,
   CharacterRelation,
   OrganizationItem,
 } from '@/types/domain'
+import type { DictItem } from '@/api/core'
 
 const projectStore = useProjectStore()
 const dictStore = useDictStore()
+const orgStore = useOrganizationStore()
+const charStore = useCharacterStore()
 const characters = ref<CharacterItem[]>([])
-const organizations = ref<OrganizationItem[]>([])
-const characterGroups = ref<CharacterGroup[]>([])
+// 组织数据从共享 store 读取，自动与组织势力页同步
+const organizations = computed(() => orgStore.organizations)
 const keyword = ref('')
-const groupFilter = ref<number | null>(null)
+const groupFilter = ref<string | null>(null)
 
-// 分组筛选选项：从实际分组动态获取
+// 内置角色类型（不可删除）
+const BUILTIN_ROLE_TYPES = ['protagonist', 'supporting', 'antagonist', 'mentor', 'love_interest']
+
+// 角色类型分组
+interface RoleGroup {
+  id: string        // 用 item_value 作为 ID
+  dictItemId: number // 字典项 ID（0 表示虚拟分组，不在字典中）
+  name: string
+  role_type: string
+  sort_order: number
+  is_builtin: boolean
+  is_virtual: boolean // 是否为虚拟分组（角色存在但字典中没有对应项）
+}
+
+// 本地分组顺序缓存（用于 vuedraggable 拖拽，因为 computed 不能直接被修改）
+const localGroupOrder = ref<RoleGroup[]>([])
+
+// 从字典 + 实际角色数据合并生成分组列表
+const roleGroups = computed<RoleGroup[]>(() => {
+  const dictItems = dictStore.items('character_role')
+  const dictMap = new Map(dictItems.map(i => [i.item_value, i]))
+
+  // 收集所有角色中出现的 role_type
+  const allRoleTypes = new Set<string>()
+  for (const c of characters.value) {
+    if (c.role_type) {
+      allRoleTypes.add(c.role_type)
+    }
+  }
+
+  const groups: RoleGroup[] = []
+
+  // 先加字典中的分组
+  for (const item of dictItems) {
+    groups.push({
+      id: item.item_value,
+      dictItemId: item.id,
+      name: item.item_label,
+      role_type: item.item_value,
+      sort_order: item.sort_order,
+      is_builtin: BUILTIN_ROLE_TYPES.includes(item.item_value),
+      is_virtual: false,
+    })
+    allRoleTypes.delete(item.item_value)
+  }
+
+  // 再加虚拟分组（角色存在但字典中没有的类型，如 npc 等）
+  let virtualSort = dictItems.length
+  for (const roleType of allRoleTypes) {
+    groups.push({
+      id: roleType,
+      dictItemId: 0,
+      name: roleTypeLabel(roleType),
+      role_type: roleType,
+      sort_order: virtualSort++,
+      is_builtin: false,
+      is_virtual: true,
+    })
+  }
+
+  // 按 sort_order 排序
+  groups.sort((a, b) => a.sort_order - b.sort_order)
+
+  return groups
+})
+
+// 同步本地分组顺序（当 roleGroups 变化时）
+function syncLocalGroupOrder() {
+  const serverGroups = roleGroups.value
+  if (localGroupOrder.value.length === 0) {
+    // 初始化
+    localGroupOrder.value = serverGroups.map(g => ({ ...g }))
+  } else {
+    // 合并：保留本地顺序，新增的加到末尾，删除的移除
+    const serverMap = new Map(serverGroups.map(g => [g.id, g]))
+    const localMap = new Map(localGroupOrder.value.map(g => [g.id, g]))
+
+    const result: RoleGroup[] = []
+    // 先按本地顺序加存在的
+    for (const g of localGroupOrder.value) {
+      if (serverMap.has(g.id)) {
+        const serverG = serverMap.get(g.id)!
+        result.push({ ...serverG, sort_order: result.length })
+      }
+    }
+    // 再加新增的
+    for (const g of serverGroups) {
+      if (!localMap.has(g.id)) {
+        result.push({ ...g, sort_order: result.length })
+      }
+    }
+    localGroupOrder.value = result
+  }
+}
+
+// 分组筛选选项
 const groupFilterOptions = computed(() => {
-  const sorted = [...characterGroups.value].sort((a, b) => a.sort_index - b.sort_index)
-  return sorted.map(g => ({
-    label: groupLabel(g),
+  return roleGroups.value.map(g => ({
+    label: g.name,
     value: g.id,
   }))
 })
@@ -1114,36 +1191,26 @@ const activeTab = ref('basic')
 // 分组管理状态
 const isCreatingGroup = ref(false)
 const newGroupName = ref('')
-const renamingGroupId = ref<number | null>(null)
+const renamingGroupId = ref<string | null>(null)
 const renamingGroupName = ref('')
 const isDraggingGroup = ref(false)
 const isDraggingCharacter = ref(false)
 
-// 分组角色映射：groupId -> CharacterItem[]，用于 vuedraggable 拖拽
-const groupCharacters = reactive<Record<number, CharacterItem[]>>({})
+// 分组角色映射：groupValue -> CharacterItem[]，用于 vuedraggable 拖拽
+const groupCharacters = reactive<Record<string, CharacterItem[]>>({})
 
 // 从 characters 重建分组角色映射
 function rebuildGroupCharacters() {
+  // 先同步分组顺序
+  syncLocalGroupOrder()
   // 清空现有映射
   for (const key of Object.keys(groupCharacters)) {
-    delete groupCharacters[Number(key)]
+    delete groupCharacters[key]
   }
-  // 按分组重新构建
-  for (const group of characterGroups.value) {
+  // 按角色类型分组
+  for (const group of localGroupOrder.value) {
     const groupId = group.id
-    const items = characters.value.filter(c => {
-      if (c.group_id != null) return c.group_id === groupId
-      if (group.is_builtin && group.role_type) {
-        if (group.role_type === 'other') {
-          const matchedDefault = characterGroups.value.some(
-            g => g.is_builtin && g.role_type && g.role_type !== 'other' && g.role_type === c.role_type
-          )
-          return !matchedDefault
-        }
-        return c.role_type === group.role_type
-      }
-      return false
-    })
+    const items = characters.value.filter(c => c.role_type === group.role_type)
     items.sort((a, b) => (a.sort_index ?? 9999) - (b.sort_index ?? 9999))
     groupCharacters[groupId] = items
   }
@@ -1182,15 +1249,16 @@ function startResize(e: MouseEvent) {
   document.body.style.userSelect = 'none'
 }
 
-const expandedGroups = ref<Set<number>>(new Set())
+const expandedGroups = ref<Set<string>>(new Set())
 
 // 初始化分组展开状态
 function initExpandedGroups() {
-  expandedGroups.value = new Set(groupedCharacters.value.map(g => g.group.id))
+  // 默认全部折叠
+  expandedGroups.value = new Set()
 }
 
 // 切换分组展开/折叠
-function toggleGroup(groupId: number) {
+function toggleGroup(groupId: string) {
   const next = new Set(expandedGroups.value)
   if (next.has(groupId)) {
     next.delete(groupId)
@@ -1227,7 +1295,7 @@ function toggleAllGroups() {
 }
 
 // 折叠态点击分组图标：展开面板并选中第一个角色
-function quickSelectFirstOfGroup(group: { group: CharacterGroup; items: CharacterItem[] }) {
+function quickSelectFirstOfGroup(group: { group: RoleGroup; items: CharacterItem[] }) {
   leftPanelCollapsed.value = false
   // 确保该分组展开
   const next = new Set(expandedGroups.value)
@@ -1443,19 +1511,44 @@ const relationSummaryOptions = computed(() =>
 const relationTypeOptions = computed(() =>
   dictStore.items('relation_type').map(item => ({ label: item.item_label, value: item.item_label }))
 )
-// 属性名称：item_value 作为 key，item_label 作为显示名称
+// 属性名称：用中文 label 作为 value（直观，用户看到的就是存的）
 const attributeNameOptions = computed(() =>
-  dictStore.items('attribute_name').map(item => ({ label: item.item_label, value: item.item_value }))
+  dictStore.items('attribute_name').map(item => ({ label: item.item_label, value: item.item_label }))
 )
 
-// 获取属性完整信息（通过 key）
-function getAttributeInfo(key: string) {
-  if (!key) return null
+// 字典加载后自动规范化属性名：英文 key → 中文 label（兼容旧数据）
+watch(
+  () => attributeNameOptions.value.length,
+  (len) => {
+    if (len === 0) return
+    let changed = false
+    const dictItems = dictStore.items('attribute_name')
+    form.custom_attributes.forEach((attr) => {
+      if (!attr.key) return
+      // 尝试用 key 反查字典（支持英文 value 和中文 label 两种匹配）
+      const found = dictItems.find(i => i.item_value === attr.key)
+      if (found && found.item_label !== attr.key) {
+        attr.key = found.item_label
+        attr.name = found.item_label
+        attr.title = found.item_label
+        changed = true
+      }
+    })
+    if (changed) {
+      // 旧数据自动规范化，不需要标记脏状态
+    }
+  }
+)
+
+// 获取属性完整信息（通过名称反查字典）
+function getAttributeInfo(name: string) {
+  if (!name) return null
   const items = dictStore.items('attribute_name')
-  const item = items.find(i => i.item_value === key)
+  // 优先按 label 匹配，也支持 value 匹配（兼容旧数据）
+  const item = items.find(i => i.item_label === name) || items.find(i => i.item_value === name)
   if (!item) return null
   return {
-    key: item.item_value,
+    key: item.item_label,      // 统一用中文 label，用户看到的就是存的
     title: item.item_label,
     // remark 字段存储该属性的可选值列表（顿号分隔）
     valueOptions: parseRemarkValues(item.remark)
@@ -1502,9 +1595,9 @@ function parseRemarkValues(remark: string | null | undefined): { label: string; 
     .map(v => ({ label: v, value: v }))
 }
 
-// 根据属性 key 获取对应的可选值列表
-function getAttrValueOptions(key: string): { label: string; value: string }[] {
-  const info = getAttributeInfo(key)
+// 根据属性名获取对应的可选值列表
+function getAttrValueOptions(name: string): { label: string; value: string }[] {
+  const info = getAttributeInfo(name)
   return info?.valueOptions || []
 }
 
@@ -1569,33 +1662,30 @@ function editableOrgOptions(index: number) {
   return organizationOptions.value.filter((o) => !addedIds.has(Number(o.value)))
 }
 
-// 当前选中组织的职位选项（完全来自对应组织的层级体系）
+// 当前选中组织的职位选项（完全来自对应组织的层级体系，第一个是「无」）
 const currentOrgPositionOptions = computed(() => {
   if (!newOrgRelation.org_id) return []
   const org = organizations.value.find((o) => o.id === newOrgRelation.org_id)
   if (!org || !org.hierarchy_levels || org.hierarchy_levels === '[]') {
-    return []
+    return [{ label: '无', value: '' }]
   }
   try {
     const levels = JSON.parse(org.hierarchy_levels)
-    return levels.map((l: { name: string; level: number }) => ({ label: l.name, value: l.name }))
+    const levelOpts = levels.map((l: { name: string; level: number }) => ({ label: l.name, value: l.name }))
+    return [{ label: '无', value: '' }, ...levelOpts]
   } catch {
-    return []
+    return [{ label: '无', value: '' }]
   }
 })
 
-// 组织变化时职位默认为「无」（第一个选项）
+// 组织变化时职位默认为「无」
 watch(() => newOrgRelation.org_id, (newId) => {
   if (!newId) {
     newOrgRelation.position = ''
     return
   }
-  const opts = currentOrgPositionOptions.value
-  if (opts.length > 0) {
-    newOrgRelation.position = opts[0].value
-  } else {
-    newOrgRelation.position = ''
-  }
+  // 职位默认选「无」
+  newOrgRelation.position = ''
 })
 
 const newCharRelation = reactive<{
@@ -1639,56 +1729,21 @@ const filteredCharacters = computed(() => {
 })
 
 // 判断角色是否属于某个分组
-function isCharacterInGroup(char: CharacterItem, groupId: number): boolean {
-  const group = characterGroups.value.find(g => g.id === groupId)
+function isCharacterInGroup(char: CharacterItem, groupId: string): boolean {
+  const group = roleGroups.value.find(g => g.id === groupId)
   if (!group) return false
-  // 有 group_id 直接匹配
-  if (char.group_id != null) {
-    return char.group_id === groupId
-  }
-  // 没有 group_id 的，按 role_type 匹配默认分组
-  if (group.is_builtin && group.role_type) {
-    if (group.role_type === 'other') {
-      const matchedDefault = characterGroups.value.some(
-        g => g.is_builtin && g.role_type && g.role_type !== 'other' && g.role_type === char.role_type
-      )
-      return !matchedDefault
-    }
-    return char.role_type === group.role_type
-  }
-  return false
+  return char.role_type === group.role_type
 }
 
 // 按分组 ID 分组
 const groupedCharacters = computed(() => {
-  const sortedGroups = [...characterGroups.value].sort((a, b) => a.sort_index - b.sort_index)
+  const result: { group: RoleGroup; items: CharacterItem[] }[] = []
 
-  const result: { group: CharacterGroup; items: CharacterItem[] }[] = []
-
-  for (const group of sortedGroups) {
-    const items = filteredCharacters.value.filter(c => {
-      // 如果角色有 group_id，直接匹配
-      if (c.group_id != null) {
-        return c.group_id === group.id
-      }
-      // 没有 group_id 的角色，根据 role_type 分配到默认分组
-      if (group.is_builtin && group.role_type) {
-        if (group.role_type === 'other') {
-          // 其他分组：放所有不能匹配到其他默认分组的角色
-          const matchedDefault = sortedGroups.some(
-            g => g.is_builtin && g.role_type && g.role_type !== 'other' && g.role_type === c.role_type
-          )
-          return !matchedDefault
-        }
-        return c.role_type === group.role_type
-      }
-      return false
-    })
-
+  for (const group of localGroupOrder.value) {
+    const items = filteredCharacters.value.filter(c => c.role_type === group.role_type)
     // 按 sort_index 排序，没有 sort_index 的放后面
     items.sort((a, b) => (a.sort_index ?? 9999) - (b.sort_index ?? 9999))
-
-    // 所有分组都显示（包括空的自定义分组，方便管理）
+    // 所有分组都显示
     result.push({ group, items })
   }
 
@@ -1809,6 +1864,10 @@ function roleTypeIcon(roleType: string): string {
     protagonist: '⭐',
     supporting: '👤',
     antagonist: '💀',
+    mentor: '📚',
+    love_interest: '💕',
+    npc: '🤖',
+    extra: '👥',
     other: '📁'
   }
   return icons[roleType] || '👤'
@@ -1818,7 +1877,11 @@ function roleTagType(roleType: string): 'default' | 'success' | 'info' | 'warnin
   const map: Record<string, 'default' | 'success' | 'info' | 'warning' | 'error'> = {
     protagonist: 'success',
     supporting: 'info',
-    antagonist: 'error'
+    antagonist: 'error',
+    mentor: 'warning',
+    love_interest: 'warning',
+    npc: 'default',
+    extra: 'default',
   }
   return map[roleType] || 'default'
 }
@@ -1843,9 +1906,9 @@ function addEmptyAttribute() {
     change_reason: ''
   })
 }
-function addAttributeFromTemplate(key: string, label: string) {
+function addAttributeFromTemplate(name: string, label: string) {
   form.custom_attributes.push({
-    key,
+    key: label,        // 统一用中文名称，用户看到的就是存的
     name: label,
     title: label,
     value: '',
@@ -1858,18 +1921,20 @@ function removeAttribute(index: number) {
   form.custom_attributes.splice(index, 1)
 }
 
-// 属性 key 变化时，同步更新 name/title
-function onAttrKeyChange(index: number, key: string) {
+// 属性名变化时，同步更新 name/title，并反查字典设置 key
+function onAttrKeyChange(index: number, name: string) {
   const attr = form.custom_attributes[index]
   if (!attr) return
-  const dictItems = dictStore.items('attribute_name')
-  const found = dictItems.find(i => i.item_value === key)
-  if (found) {
-    attr.name = found.item_label
-    attr.title = found.item_label
+  const info = getAttributeInfo(name)
+  if (info) {
+    attr.name = info.title
+    attr.title = info.title
+    attr.key = info.key
   } else {
-    attr.name = key
-    attr.title = key
+    // 自定义属性：key 和 name 都是输入的名称
+    attr.name = name
+    attr.title = name
+    attr.key = name
   }
 }
 
@@ -1933,7 +1998,7 @@ function confirmAddOrgRelation() {
   }
   form.org_relations.push({
     org_id: Number(newOrgRelation.org_id) || 0,
-    position: newOrgRelation.position || '无',
+    position: newOrgRelation.position || '',
     loyalty: Number(newOrgRelation.loyalty) || 5
   })
   form.organization_ids = joinIds(form.org_relations.map((r) => r.org_id))
@@ -1951,7 +2016,8 @@ function startEditOrgRelation(index: number) {
   editingOrgRelationIndex.value = index
   isAddingOrgRelation.value = false
   newOrgRelation.org_id = Number(rel.org_id) || null
-  newOrgRelation.position = rel.position || '无'
+  // 职位为「无」或空时，统一用空字符串匹配下拉选项
+  newOrgRelation.position = rel.position && rel.position !== '无' ? rel.position : ''
   newOrgRelation.loyalty = Number(rel.loyalty) || 5
 }
 
@@ -1962,11 +2028,11 @@ function saveEditOrgRelation() {
     return
   }
   const idx = editingOrgRelationIndex.value
-  form.org_relations[idx] = {
+  form.org_relations.splice(idx, 1, {
     org_id: Number(newOrgRelation.org_id) || 0,
-    position: newOrgRelation.position || '无',
+    position: newOrgRelation.position || '',
     loyalty: Number(newOrgRelation.loyalty) || 5
-  }
+  })
   form.organization_ids = joinIds(form.org_relations.map((r) => r.org_id))
   editingOrgRelationIndex.value = null
   resetNewOrgRelation()
@@ -2068,17 +2134,11 @@ function removeCharRelation(index: number) {
 }
 
 // ===== 分组图标与标签 =====
-function groupIcon(group: CharacterGroup): string {
-  if (group.is_builtin && group.role_type) {
-    return roleTypeIcon(group.role_type)
-  }
-  return '📁'
+function groupIcon(group: RoleGroup): string {
+  return roleTypeIcon(group.role_type)
 }
 
-function groupLabel(group: CharacterGroup): string {
-  if (group.is_builtin && group.role_type) {
-    return roleTypeLabel(group.role_type)
-  }
+function groupLabel(group: RoleGroup): string {
   return group.name
 }
 
@@ -2099,27 +2159,25 @@ async function confirmCreateGroup() {
     notify.warning('请输入分组名称')
     return
   }
-  const projectId = projectStore.currentProject?.id
-  if (!projectId) return
 
-  const maxSort = characterGroups.value.reduce((max, g) => Math.max(max, g.sort_index), 0)
+  // 生成 value（英文小写，用拼音或自定义）
+  const value = `custom_${Date.now()}`
 
-  const newGroup = await createResource<CharacterGroup>('character-groups', {
-    project_id: projectId,
-    name,
-    group_type: 'custom',
-    role_type: null,
-    sort_index: maxSort + 1,
-    color: null,
-    is_builtin: false,
+  const maxSort = roleGroups.value.reduce((max, g) => Math.max(max, g.sort_order), 0)
+
+  // 添加到字典
+  await dictStore.addItem('character_role', {
+    item_label: name,
+    item_value: value,
+    sort_order: maxSort + 1,
+    status: 'active',
   })
 
-  characterGroups.value.push(newGroup)
   // 为新分组初始化空角色列表
-  groupCharacters[newGroup.id] = []
+  rebuildGroupCharacters()
   // 展开新建的分组
   const next = new Set(expandedGroups.value)
-  next.add(newGroup.id)
+  next.add(value)
   expandedGroups.value = next
 
   isCreatingGroup.value = false
@@ -2127,18 +2185,39 @@ async function confirmCreateGroup() {
   notify.success('分组已创建')
 }
 
-function startRenameGroup(group: CharacterGroup) {
-  if (group.is_builtin) return
+// 当前正在重命名的分组引用
+const renamingGroupRef = ref<RoleGroup | null>(null)
+
+function startRenameGroup(group: RoleGroup) {
+  if (group.is_builtin || group.is_virtual) return
   renamingGroupId.value = group.id
   renamingGroupName.value = group.name
+  renamingGroupRef.value = group
+  // 下一个 tick 后添加全局点击监听
+  nextTick(() => {
+    document.addEventListener('click', handleOutsideClick, true)
+  })
 }
 
 function cancelRenameGroup() {
   renamingGroupId.value = null
   renamingGroupName.value = ''
+  renamingGroupRef.value = null
+  document.removeEventListener('click', handleOutsideClick, true)
 }
 
-async function confirmRenameGroup(group: CharacterGroup) {
+// 点击编辑框外部：保存修改
+function handleOutsideClick(e: MouseEvent) {
+  if (!renamingGroupRef.value) return
+  const target = e.target as HTMLElement
+  // 如果点击的是输入框或编辑按钮内部，不处理
+  if (target.closest('.group-rename-input') || target.closest('.group-action-btn')) {
+    return
+  }
+  confirmRenameGroup(renamingGroupRef.value)
+}
+
+async function confirmRenameGroup(group: RoleGroup) {
   const name = renamingGroupName.value.trim()
   if (!name) {
     notify.warning('分组名称不能为空')
@@ -2149,40 +2228,50 @@ async function confirmRenameGroup(group: CharacterGroup) {
     return
   }
 
-  const updated = await updateResource<CharacterGroup>('character-groups', group.id, { name })
-  const idx = characterGroups.value.findIndex(g => g.id === group.id)
-  if (idx !== -1) {
-    characterGroups.value[idx] = updated
-  }
+  await dictStore.updateItem('character_role', group.dictItemId, { item_label: name })
+  rebuildGroupCharacters()
   renamingGroupId.value = null
   renamingGroupName.value = ''
+  renamingGroupRef.value = null
+  document.removeEventListener('click', handleOutsideClick, true)
   notify.success('分组已重命名')
 }
 
-async function deleteGroup(group: CharacterGroup) {
-  if (group.is_builtin) return
-  await deleteResource('character-groups', group.id)
-  characterGroups.value = characterGroups.value.filter(g => g.id !== group.id)
-  // 将该分组的角色的 group_id 置空（它们会自动按 role_type 回到默认分组）
-  characters.value = characters.value.map(c =>
-    c.group_id === group.id ? { ...c, group_id: undefined } : c
-  )
-  // 重建分组角色映射
-  delete groupCharacters[group.id]
+async function deleteGroup(group: RoleGroup) {
+  if (group.is_builtin) {
+    notify.warning('内置角色类型不可删除')
+    return
+  }
+  // 检查分组下是否有角色
+  const charCount = characters.value.filter(c => c.role_type === group.role_type).length
+  if (charCount > 0) {
+    notify.warning('该分组下有角色，无法删除')
+    return
+  }
+
+  await dictStore.removeItem('character_role', group.dictItemId)
   rebuildGroupCharacters()
+  // 从展开状态中移除
+  const next = new Set(expandedGroups.value)
+  next.delete(group.id)
+  expandedGroups.value = next
   notify.success('分组已删除')
 }
 
 // ===== 拖拽排序 - 分组 =====
 async function onGroupDragEnd() {
   isDraggingGroup.value = false
-  // 按当前顺序更新 sort_index
-  const sortedGroups = [...characterGroups.value].sort((a, b) => a.sort_index - b.sort_index)
-  const updates: Promise<CharacterGroup>[] = []
-  sortedGroups.forEach((group, index) => {
-    if (group.sort_index !== index) {
-      group.sort_index = index
-      updates.push(updateResource<CharacterGroup>('character-groups', group.id, { sort_index: index }))
+  // 更新本地 sort_order
+  localGroupOrder.value.forEach((group, index) => {
+    group.sort_order = index
+  })
+  // 按当前顺序更新字典中的 sort_order（只更新非虚拟分组）
+  const updates: Promise<any>[] = []
+  localGroupOrder.value.forEach((group, index) => {
+    if (!group.is_virtual && group.dictItemId > 0) {
+      updates.push(
+        dictStore.updateItem('character_role', group.dictItemId, { sort_order: index })
+      )
     }
   })
   if (updates.length > 0) {
@@ -2190,48 +2279,30 @@ async function onGroupDragEnd() {
   }
 }
 
-// 用于 vuedraggable 的分组列表（响应式，可被拖拽修改顺序）
-const draggableGroups = computed({
-  get: () => {
-    // 返回按 sort_index 排序的分组引用
-    return [...characterGroups.value].sort((a, b) => a.sort_index - b.sort_index)
-  },
-  set: (newList: CharacterGroup[]) => {
-    // 拖拽结束时更新 sort_index
-    newList.forEach((group, index) => {
-      const g = characterGroups.value.find(cg => cg.id === group.id)
-      if (g) {
-        g.sort_index = index
-      }
-    })
-  }
-})
-
 // ===== 拖拽排序 - 角色 =====
 // 角色拖拽结束时的处理：同步所有分组角色顺序到后端
-async function onCharacterDragEnd(_groupId: number) {
+async function onCharacterDragEnd(groupId: string) {
   isDraggingCharacter.value = false
   const updates: Promise<CharacterItem>[] = []
 
-  // 遍历所有分组，更新每个角色的 sort_index 和 group_id
-  for (const group of characterGroups.value) {
+  // 遍历所有分组，更新每个角色的 sort_index 和 role_type
+  for (const group of localGroupOrder.value) {
     const items = groupCharacters[group.id] || []
     items.forEach((item, index) => {
       const originalChar = characters.value.find(c => c.id === item.id)
       if (!originalChar) return
 
-      const newGroupId = group.is_builtin ? null : group.id
       const needsUpdate =
         originalChar.sort_index !== index ||
-        originalChar.group_id !== newGroupId
+        originalChar.role_type !== group.role_type
 
       if (needsUpdate) {
         originalChar.sort_index = index
-        originalChar.group_id = newGroupId ?? undefined
+        originalChar.role_type = group.role_type
         updates.push(
           updateResource<CharacterItem>('characters', item.id, {
             sort_index: index,
-            group_id: newGroupId,
+            role_type: group.role_type,
           })
         )
       }
@@ -2288,42 +2359,25 @@ function fillForm(item?: Partial<CharacterItem>) {
     related_character_ids: item?.related_character_ids ?? '',
     ai_notes: item?.ai_notes ?? '',
     custom_attributes: safeParseArray<CharacterAttribute>(item?.custom_attributes).map((r) => {
-      // 兼容旧数据：如果 key 无效但 name 能匹配字典，反查 key
-      let key = r.key || ''
-      let title = r.title || r.name || ''
-      let name = r.name || r.title || r.key || ''
+      // 属性名统一用中文显示：反查字典获取标准名称
+      const rawKey = r.key || ''
+      const rawName = r.name || r.title || ''
       const dictItems = dictStore.items('attribute_name')
-      const foundByKey = dictItems.find(i => i.item_value === key)
-      if (!foundByKey && name) {
-        // 尝试用 name 反查
-        const foundByName = dictItems.find(i => i.item_label === name || i.item_value === name)
-        if (foundByName) {
-          key = foundByName.item_value
-          title = foundByName.item_label
-          name = foundByName.item_label
-        } else if (!key) {
-          // 自定义属性，没有对应字典，用 name 作 key
-          key = name
-        }
-      } else if (foundByKey) {
-        title = foundByKey.item_label
-        if (!name) name = foundByKey.item_label
-      }
+      // 尝试从字典查找（key 是英文/label 是中文都支持）
+      const found = dictItems.find(i => i.item_value === rawKey || i.item_label === rawKey)
+        || dictItems.find(i => i.item_label === rawName || i.item_value === rawName)
+      const displayName = found ? found.item_label : (rawName || rawKey)
+      const dictKey = found ? found.item_value : (rawKey || displayName)
       return {
-        key,
-        title,
-        name,
+        key: displayName,       // 统一用中文名称（用户看到的就是存的）
+        title: displayName,
+        name: displayName,
         value: r.value || '',
         description: r.description || '',
         chapter_no: r.chapter_no != null && r.chapter_no !== '' ? String(r.chapter_no) : null,
         change_reason: r.change_reason || ''
       }
     }),
-    org_relations: safeParseArray<CharacterOrgRelation>(item?.org_relations).map((r) => ({
-      ...r,
-      org_id: Number(r.org_id) || 0,
-      loyalty: Number(r.loyalty) || 5
-    })),
     character_relations: safeParseArray<CharacterRelation>(item?.character_relations).map((r) => ({
       ...r,
       target_id: Number(r.target_id) || 0,
@@ -2334,6 +2388,16 @@ function fillForm(item?: Partial<CharacterItem>) {
     mbti: item?.mbti ?? '',
     status: item?.status ?? 'active'
   })
+
+  // 单独更新 org_relations 数组，确保响应式更新
+  const parsedOrgRelations = safeParseArray<CharacterOrgRelation>(item?.org_relations).map((r) => ({
+    ...r,
+    org_id: Number(r.org_id) || 0,
+    loyalty: Number(r.loyalty) || 5,
+    // 职位为「无」或空时统一为空字符串
+    position: r.position && r.position !== '无' ? r.position : ''
+  }))
+  form.org_relations.splice(0, form.org_relations.length, ...parsedOrgRelations)
   markClean()
   // 重置编辑状态
   isAddingOrgRelation.value = false
@@ -2388,10 +2452,9 @@ async function load() {
   const projectId = projectStore.currentProject!.id
   loading.value = true
   try {
-    const [characterList, organizationList, groupList] = await Promise.all([
-      listResource<CharacterItem>(projectId, 'characters'),
-      listResource<OrganizationItem>(projectId, 'organizations'),
-      listResource<CharacterGroup>(projectId, 'character-groups'),
+    await Promise.all([
+      charStore.load(projectId),
+      orgStore.load(projectId),
       dictStore.load('character_role'),
       dictStore.load('mbti_type'),
       dictStore.load('character_identity'),
@@ -2409,9 +2472,7 @@ async function load() {
       dictStore.load('ai_notes'),
       dictStore.load('relation_summary'),
     ])
-    characters.value = characterList
-    organizations.value = organizationList
-    characterGroups.value = groupList
+    characters.value = charStore.characters
     rebuildGroupCharacters()
 
     // 初始化分组展开状态（首次加载全部展开）
@@ -2433,6 +2494,21 @@ async function load() {
 // ===== CRUD =====
 async function save() {
   if (!canSave.value) return
+
+  // 保存前自动确认正在新增/编辑的组织关系
+  if (isAddingOrgRelation.value && newOrgRelation.org_id) {
+    confirmAddOrgRelation()
+  } else if (editingOrgRelationIndex.value != null && newOrgRelation.org_id) {
+    saveEditOrgRelation()
+  }
+
+  // 保存前自动确认正在新增/编辑的人物关系
+  if (isAddingRelation.value && newCharRelation.target_id) {
+    confirmAddRelation()
+  } else if (editingRelationIndex.value != null && newCharRelation.target_id) {
+    saveEditRelation()
+  }
+
   const projectId = await ensureProject()
   if (!projectId) return
 
@@ -2447,7 +2523,9 @@ async function save() {
   if (editingId.value) {
     const updated = await updateResource<CharacterItem>('characters', editingId.value, payload)
     notify.success('角色档案已更新')
-    await load()
+    // 同步更新共享 store，组织势力页等其他页面会自动响应
+    charStore.update(updated)
+    characters.value = charStore.characters
     const fresh = characters.value.find((item) => item.id === updated.id)
     if (fresh) {
       fillForm(fresh)
@@ -2458,7 +2536,9 @@ async function save() {
     const created = await createResource<CharacterItem>('characters', { project_id: projectId, ...payload })
     notify.success('角色档案已新增')
     isCreating.value = false
-    await load()
+    // 同步更新共享 store
+    charStore.add(created)
+    characters.value = charStore.characters
     const fresh = characters.value.find((item) => item.id === created.id)
     if (fresh) {
       editingId.value = fresh.id
@@ -2474,6 +2554,9 @@ async function remove() {
   const currentIndex = characters.value.findIndex((item) => item.id === editingId.value)
   await deleteResource('characters', editingId.value)
   notify.success('角色档案已删除')
+  // 同步更新共享 store
+  charStore.remove(editingId.value)
+  characters.value = charStore.characters
   const nextItem = characters.value[currentIndex + 1] || characters.value[currentIndex - 1]
   if (nextItem) {
     editingId.value = nextItem.id
@@ -2483,10 +2566,42 @@ async function remove() {
     isCreating.value = false
     fillForm()
   }
-  await load()
   await nextTick()
   markClean()
 }
+
+// 监听共享 store 中当前编辑角色的变化（组织页面删除组织等操作会触发）
+// 自动同步更新 form 中的组织关系
+watch(
+  () => {
+    if (!editingId.value) return null
+    const char = charStore.characters.find(c => c.id === editingId.value)
+    return char?.org_relations
+  },
+  (newOrgRelations) => {
+    if (!editingId.value || !newOrgRelations) return
+    // 只在用户没有正在编辑组织关系时同步，避免打断用户操作
+    if (isAddingOrgRelation.value || editingOrgRelationIndex.value != null) return
+
+    let relations: any[] = []
+    try {
+      if (typeof newOrgRelations === 'string') {
+        relations = JSON.parse(newOrgRelations)
+      } else if (Array.isArray(newOrgRelations)) {
+        relations = newOrgRelations
+      }
+    } catch { /* ignore */ }
+
+    // 检查是否真的有变化
+    const currentStr = JSON.stringify(form.org_relations)
+    const newStr = JSON.stringify(relations)
+    if (currentStr !== newStr) {
+      form.org_relations.splice(0, form.org_relations.length, ...relations)
+      form.organization_ids = form.org_relations.map((r) => String(r.org_id)).join(',')
+    }
+  },
+  { deep: true }
+)
 
 useProjectDataLoader(load)
 </script>
@@ -2789,9 +2904,9 @@ useProjectDataLoader(load)
 .group-header {
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 10px 8px 6px;
-  font-size: 12px;
+  gap: 8px;
+  padding: 12px 10px;
+  font-size: 13px;
   font-weight: 600;
   color: var(--n-text-color-2, #9ca3af);
   position: sticky;
@@ -2799,54 +2914,27 @@ useProjectDataLoader(load)
   background: var(--n-color-card, #1a1d21);
   z-index: 1;
   cursor: pointer;
-  transition: color 0.2s ease;
+  transition: color 0.2s ease, background 0.2s ease;
   user-select: none;
+  border-radius: 6px;
 }
 
 .group-header:hover {
   color: var(--n-text-color-1, #e5e7eb);
+  background: var(--n-color-hover, #23272f);
 }
 
 .group-header:hover .group-actions-right {
   opacity: 1;
 }
 
-/* 拖拽手柄 */
-.drag-handle {
-  display: flex;
-  align-items: center;
-  justify-content: center;
+/* 分组标题行整行可拖拽 */
+.group-header {
   cursor: grab;
-  color: var(--n-text-color-3, #6b7280);
-  flex-shrink: 0;
-  opacity: 0.5;
-  transition: opacity 0.2s, color 0.2s;
 }
 
-.drag-handle:hover {
-  opacity: 1;
-  color: var(--n-text-color-1, #e5e7eb);
-}
-
-.drag-handle:active {
+.group-header:active {
   cursor: grabbing;
-}
-
-.drag-handle svg {
-  width: 14px;
-  height: 14px;
-}
-
-.group-drag-handle {
-  width: 16px;
-  height: 16px;
-}
-
-.char-drag-handle {
-  width: 14px;
-  height: 14px;
-  align-self: center;
-  margin-right: 2px;
 }
 
 /* 分组右侧操作按钮 */
@@ -2854,7 +2942,7 @@ useProjectDataLoader(load)
   display: flex;
   align-items: center;
   gap: 2px;
-  margin-left: auto;
+  margin-left: 6px;
   opacity: 0;
   transition: opacity 0.2s;
 }
@@ -2962,6 +3050,42 @@ useProjectDataLoader(load)
 
 .group-name {
   flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.group-name.editable {
+  cursor: text;
+}
+
+.group-name.editable:hover {
+  text-decoration: underline;
+  text-decoration-style: dotted;
+  text-underline-offset: 2px;
+}
+
+/* 角色数量 - 右对齐设计 */
+.group-count {
+  flex-shrink: 0;
+  min-width: 28px;
+  padding: 2px 8px;
+  font-size: 12px;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+  color: var(--n-text-color-3, #6b7280);
+  background: var(--n-color, #23272f);
+  border-radius: 999px;
+  line-height: 18px;
+  margin-left: auto;
+  font-family: 'SF Mono', 'Menlo', 'Consolas', monospace;
+}
+
+.group-header:hover .group-count {
+  color: var(--n-text-color-2, #9ca3af);
+  background: var(--n-color-hover-pressed, #2a2f37);
 }
 
 .group-items {
@@ -2976,9 +3100,13 @@ useProjectDataLoader(load)
   gap: 10px;
   padding: 10px 12px;
   border-radius: 8px;
-  cursor: pointer;
+  cursor: grab;
   transition: all 0.15s;
   border: 1px solid transparent;
+}
+
+.character-item:active {
+  cursor: grabbing;
 }
 
 .character-item:hover {

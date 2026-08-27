@@ -153,25 +153,6 @@ function handleTextBlur() {
           </div>
         </template>
       </NSelect>
-      <!-- 编辑按钮：hover 时显示 -->
-      <NButton
-        v-if="isHovering"
-        text
-        size="tiny"
-        class="edit-btn"
-        @click="enterTextMode"
-        title="自由编辑"
-      >
-        <template #icon>
-          <NIcon size="14">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
-              <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
-            </svg>
-          </NIcon>
-        </template>
-        编辑
-      </NButton>
     </div>
 
     <!-- 文本模式 -->
@@ -212,17 +193,6 @@ function handleTextBlur() {
   min-width: 0;
 }
 
-.edit-btn {
-  flex-shrink: 0;
-  margin-top: 4px;
-  opacity: 0.7;
-  transition: opacity 0.2s;
-}
-
-.edit-btn:hover {
-  opacity: 1;
-}
-
 .text-mode-wrapper {
   width: 100%;
   position: relative;
@@ -253,14 +223,61 @@ function handleTextBlur() {
   color: rgba(255, 255, 255, 0.45);
 }
 
-/* 去掉选中标签的边框，只保留 × 关闭按钮 */
+/* 去掉整个选择框的边框 */
+:deep(.n-base-selection) {
+  border: none !important;
+  box-shadow: none !important;
+}
+
+:deep(.n-base-selection:hover) {
+  border: none !important;
+  box-shadow: none !important;
+}
+
+:deep(.n-base-selection--focused) {
+  border: none !important;
+  box-shadow: none !important;
+}
+
+/* 去掉文本输入框的边框 */
+:deep(.n-input) {
+  border: none !important;
+  box-shadow: none !important;
+}
+
+:deep(.n-input:hover) {
+  border: none !important;
+  box-shadow: none !important;
+}
+
+:deep(.n-input--focus) {
+  border: none !important;
+  box-shadow: none !important;
+}
+
+/* 去掉选中标签的边框，背景透明与选择框融为一体 */
 :deep(.n-base-selection .n-tag) {
   border: none !important;
-  background-color: rgba(255, 255, 255, 0.08);
+  border-color: transparent !important;
+  box-shadow: none !important;
+  background-color: transparent !important;
+  --n-border: none !important;
+  --n-border-color: transparent !important;
+  --n-color: transparent !important;
+  --n-color-hover: transparent !important;
 }
 
 :deep(.n-base-selection .n-tag:hover) {
-  background-color: rgba(255, 255, 255, 0.12);
+  border: none !important;
+  border-color: transparent !important;
+  box-shadow: none !important;
+  background-color: rgba(255, 255, 255, 0.06) !important;
+  --n-border: none !important;
+  --n-border-color: transparent !important;
+}
+
+:deep(.n-base-selection .n-tag .n-tag__border) {
+  display: none !important;
 }
 
 :deep(.n-base-selection .n-tag__close) {

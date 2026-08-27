@@ -249,6 +249,7 @@
 import { computed, nextTick, onMounted, reactive, ref } from 'vue'
 import { createResource, deleteResource, listResource, updateResource } from '@/api/resources'
 import { useDictStore } from '@/stores/dict'
+import { useForeshadowingStore } from '@/stores/foreshadowing'
 import { useProjectStore } from '@/stores/project'
 import { useProjectDataLoader } from '@/composables/useProjectDataLoader'
 import { useDirtySnapshot } from '@/composables/useDirtySnapshot'
@@ -257,7 +258,9 @@ import type { CharacterItem, ChapterItem, ForeshadowingItem, OrganizationItem, O
 
 const projectStore = useProjectStore()
 const dictStore = useDictStore()
-const foreshadowings = ref<ForeshadowingItem[]>([])
+const foreshadowStore = useForeshadowingStore()
+// 伏笔数据从共享 store 读取，跨页面自动同步
+const foreshadowings = computed(() => foreshadowStore.foreshadowings)
 const chapters = ref<ChapterItem[]>([])
 const characters = ref<CharacterItem[]>([])
 const organizations = ref<OrganizationItem[]>([])
@@ -482,14 +485,13 @@ async function load() {
   loading.value = true
   try {
     await dictStore.load('importance')
-    const [foreshadowingList, chapterList, characterList, organizationList, outlineList] = await Promise.all([
-      listResource<ForeshadowingItem>(projectId, 'foreshadowings'),
+    const [, chapterList, characterList, organizationList, outlineList] = await Promise.all([
+      foreshadowStore.load(projectId),
       listResource<ChapterItem>(projectId, 'chapters'),
       listResource<CharacterItem>(projectId, 'characters'),
       listResource<OrganizationItem>(projectId, 'organizations'),
       listResource<OutlineItem>(projectId, 'outlines')
     ])
-    foreshadowings.value = foreshadowingList
     chapters.value = chapterList
     characters.value = characterList
     organizations.value = organizationList
@@ -513,7 +515,8 @@ async function save() {
   if (editingId.value) {
     const updated = await updateResource<ForeshadowingItem>('foreshadowings', editingId.value, { ...form })
     notify.success('伏笔已更新')
-    await load()
+    // 同步更新共享 store，其他页面会自动响应
+    foreshadowStore.update(updated)
     const fresh = foreshadowings.value.find((item) => item.id === updated.id)
     if (fresh) {
       fillForm(fresh)
@@ -523,7 +526,8 @@ async function save() {
   } else {
     const created = await createResource<ForeshadowingItem>('foreshadowings', { project_id: projectId, ...form })
     notify.success('伏笔已添加')
-    await load()
+    // 同步更新共享 store
+    foreshadowStore.add(created)
     const fresh = foreshadowings.value.find((item) => item.id === created.id)
     if (fresh) {
       editingId.value = fresh.id
@@ -540,6 +544,8 @@ async function remove() {
   const currentIndex = foreshadowings.value.findIndex((item) => item.id === editingId.value)
   await deleteResource('foreshadowings', editingId.value)
   notify.success('伏笔已删除')
+  // 同步更新共享 store
+  foreshadowStore.remove(editingId.value)
   const nextItem = foreshadowings.value[currentIndex + 1] || foreshadowings.value[currentIndex - 1]
   if (nextItem) {
     editingId.value = nextItem.id
@@ -549,7 +555,6 @@ async function remove() {
     isCreating.value = false
     fillForm()
   }
-  await load()
   await nextTick()
   markClean()
 }

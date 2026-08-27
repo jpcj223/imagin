@@ -13,6 +13,7 @@ class Organization(Base):
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     project_id = Column(Integer, ForeignKey("projects.id", ondelete="CASCADE"), nullable=False)
+    parent_id = Column(Integer, nullable=True)  # 父组织 ID，支持树状层级
     # 基础字段（第一版）
     name = Column(String(255), nullable=False, default="")
     org_type = Column(String(64), default="")
