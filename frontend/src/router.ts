@@ -9,6 +9,7 @@ import CharacterPage from '@/pages/CharacterPage.vue'
 import OrganizationPage from '@/pages/OrganizationPage.vue'
 import ForeshadowingPage from '@/pages/ForeshadowingPage.vue'
 import MemoryCenterPage from '@/pages/MemoryCenterPage.vue'
+import SettingCoPage from '@/pages/SettingCoPage.vue'
 import CharacterRelationsPage from '@/pages/CharacterRelationsPage.vue'
 import UserManagePage from '@/pages/system/UserManagePage.vue'
 import MenuManagePage from '@/pages/system/MenuManagePage.vue'
@@ -31,6 +32,7 @@ const router = createRouter({
         {path: '/organizations', component: OrganizationPage, meta: {title: '组织势力', icon: '🏛️'}},
         {path: '/foreshadowings', component: ForeshadowingPage, meta: {title: '伏笔看板', icon: '🎭'}},
         {path: '/memory', component: MemoryCenterPage, meta: {title: '长期记忆', icon: '🧠'}},
+        {path: '/setting-co', component: SettingCoPage, meta: {title: '设定共创', icon: '💬'}},
         // 系统管理
         {path: '/system/users', component: UserManagePage, meta: {title: '用户管理', icon: '👥'}},
         {path: '/system/menus', component: MenuManagePage, meta: {title: '菜单管理', icon: '📋'}},

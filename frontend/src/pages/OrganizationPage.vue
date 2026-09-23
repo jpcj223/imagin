@@ -613,6 +613,7 @@ interface HierarchyLevel {
 
 const HIERARCHY_SYSTEMS: Record<string, { name: string; levels: HierarchyLevel[] }> = {
   none: { name: '无', levels: [] },
+  // —— 修仙武侠类 ——
   sect: {
     name: '门派',
     levels: [
@@ -628,18 +629,45 @@ const HIERARCHY_SYSTEMS: Record<string, { name: string; levels: HierarchyLevel[]
       { name: '杂役', level: 10 }
     ]
   },
-  company: {
-    name: '公司',
+  clan: {
+    name: '家族/世家',
     levels: [
-      { name: '董事长', level: 1 },
-      { name: 'CEO/总裁', level: 2 },
-      { name: '副总裁', level: 3 },
-      { name: '总监', level: 4 },
-      { name: '经理', level: 5 },
-      { name: '主管', level: 6 },
-      { name: '高级员工', level: 7 },
-      { name: '正式员工', level: 8 },
-      { name: '实习生', level: 9 }
+      { name: '家主/族长', level: 1 },
+      { name: '大长老', level: 2 },
+      { name: '长老', level: 3 },
+      { name: '嫡系子弟', level: 4 },
+      { name: '旁系子弟', level: 5 },
+      { name: '管家', level: 6 },
+      { name: '仆役', level: 7 }
+    ]
+  },
+  gang: {
+    name: '帮派/帮会',
+    levels: [
+      { name: '帮主/龙头', level: 1 },
+      { name: '副帮主/二把手', level: 2 },
+      { name: '堂主/香主', level: 3 },
+      { name: '护法', level: 4 },
+      { name: '执事', level: 5 },
+      { name: '核心成员', level: 6 },
+      { name: '普通成员', level: 7 },
+      { name: '外围成员', level: 8 }
+    ]
+  },
+  // —— 官府军事类 ——
+  official: {
+    name: '官府/朝廷',
+    levels: [
+      { name: '皇帝/天子', level: 1 },
+      { name: '宰相/首辅', level: 2 },
+      { name: '六部尚书', level: 3 },
+      { name: '侍郎', level: 4 },
+      { name: '郎中', level: 5 },
+      { name: '主事', level: 6 },
+      { name: '地方总督/巡抚', level: 7 },
+      { name: '知府', level: 8 },
+      { name: '知县', level: 9 },
+      { name: '差役', level: 10 }
     ]
   },
   army: {
@@ -656,33 +684,36 @@ const HIERARCHY_SYSTEMS: Record<string, { name: string; levels: HierarchyLevel[]
       { name: '列兵', level: 9 }
     ]
   },
-  family: {
-    name: '家族',
+  secret_service: {
+    name: '情报/特务机构',
     levels: [
-      { name: '家主/族长', level: 1 },
-      { name: '大长老', level: 2 },
-      { name: '长老', level: 3 },
-      { name: '嫡系子弟', level: 4 },
-      { name: '旁系子弟', level: 5 },
-      { name: '管家', level: 6 },
-      { name: '仆役', level: 7 }
+      { name: '指挥使/局座', level: 1 },
+      { name: '副使/副局长', level: 2 },
+      { name: '行动处长', level: 3 },
+      { name: '情报科长', level: 4 },
+      { name: '高级特工', level: 5 },
+      { name: '普通特工', level: 6 },
+      { name: '线人/卧底', level: 7 },
+      { name: '外围联络', level: 8 }
     ]
   },
-  gang: {
-    name: '黑帮/社团',
+  // —— 现代都市类 ——
+  company: {
+    name: '公司/企业',
     levels: [
-      { name: '老大/龙头', level: 1 },
-      { name: '二把手/副帮主', level: 2 },
-      { name: '堂主/香主', level: 3 },
-      { name: '护法', level: 4 },
-      { name: '执事', level: 5 },
-      { name: '核心成员', level: 6 },
-      { name: '普通成员', level: 7 },
-      { name: '外围成员', level: 8 }
+      { name: '董事长', level: 1 },
+      { name: 'CEO/总裁', level: 2 },
+      { name: '副总裁', level: 3 },
+      { name: '总监', level: 4 },
+      { name: '经理', level: 5 },
+      { name: '主管', level: 6 },
+      { name: '高级员工', level: 7 },
+      { name: '正式员工', level: 8 },
+      { name: '实习生', level: 9 }
     ]
   },
   academy: {
-    name: '学院',
+    name: '学院/学校',
     levels: [
       { name: '院长', level: 1 },
       { name: '副院长', level: 2 },
@@ -693,6 +724,93 @@ const HIERARCHY_SYSTEMS: Record<string, { name: string; levels: HierarchyLevel[]
       { name: '助教', level: 7 },
       { name: '研究生', level: 8 },
       { name: '本科生', level: 9 }
+    ]
+  },
+  mafia: {
+    name: '黑帮/社团',
+    levels: [
+      { name: '老大/龙头', level: 1 },
+      { name: '二把手/军师', level: 2 },
+      { name: '堂主/大哥', level: 3 },
+      { name: '二哥/干部', level: 4 },
+      { name: '小弟/马仔', level: 5 },
+      { name: '外围', level: 6 }
+    ]
+  },
+  // —— 奇幻西方类 ——
+  kingdom: {
+    name: '王国/帝国',
+    levels: [
+      { name: '国王/皇帝', level: 1 },
+      { name: '亲王/公爵', level: 2 },
+      { name: '侯爵/伯爵', level: 3 },
+      { name: '子爵/男爵', level: 4 },
+      { name: '骑士', level: 5 },
+      { name: '贵族侍从', level: 6 },
+      { name: '平民/自由民', level: 7 },
+      { name: '农奴', level: 8 }
+    ]
+  },
+  knight_order: {
+    name: '骑士团',
+    levels: [
+      { name: '大团长', level: 1 },
+      { name: '副团长', level: 2 },
+      { name: '圣骑士', level: 3 },
+      { name: '正式骑士', level: 4 },
+      { name: '见习骑士', level: 5 },
+      { name: '侍从', level: 6 },
+      { name: '团兵', level: 7 }
+    ]
+  },
+  mage_guild: {
+    name: '魔法公会',
+    levels: [
+      { name: '议长/大魔导师', level: 1 },
+      { name: '长老/魔导师', level: 2 },
+      { name: '大法师', level: 3 },
+      { name: '魔法师', level: 4 },
+      { name: '中级法师', level: 5 },
+      { name: '初级法师', level: 6 },
+      { name: '魔法学徒', level: 7 }
+    ]
+  },
+  church: {
+    name: '教会/教廷',
+    levels: [
+      { name: '教皇/教宗', level: 1 },
+      { name: '枢机主教', level: 2 },
+      { name: '大主教', level: 3 },
+      { name: '主教', level: 4 },
+      { name: '神父/司铎', level: 5 },
+      { name: '执事', level: 6 },
+      { name: '修道士/修女', level: 7 },
+      { name: '信徒', level: 8 }
+    ]
+  },
+  adventurer: {
+    name: '冒险者公会',
+    levels: [
+      { name: '公会长', level: 1 },
+      { name: '副会长', level: 2 },
+      { name: 'S级冒险者', level: 3 },
+      { name: 'A级冒险者', level: 4 },
+      { name: 'B级冒险者', level: 5 },
+      { name: 'C级冒险者', level: 6 },
+      { name: 'D级冒险者', level: 7 },
+      { name: '见习冒险者', level: 8 }
+    ]
+  },
+  // —— 其他 ——
+  tribe: {
+    name: '部落/氏族',
+    levels: [
+      { name: '酋长/族长', level: 1 },
+      { name: '大萨满/长老', level: 2 },
+      { name: '萨满/战士长', level: 3 },
+      { name: '勇士', level: 4 },
+      { name: '族民', level: 5 },
+      { name: '奴隶', level: 6 }
     ]
   },
   custom: { name: '自定义', levels: [] }

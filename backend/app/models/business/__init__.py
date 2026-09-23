@@ -14,6 +14,14 @@ from app.models.business.character_group import CharacterGroup
 from app.models.business.organization import Organization
 from app.models.business.foreshadowing import Foreshadowing
 from app.models.business.generation_log import GenerationLog
+from app.models.business.workflow_memory import (
+    WorkflowRun,
+    WorkflowStepRecord,
+    GenerationVersion,
+    UserPreference,
+    MemoryItem,
+)
+from app.models.business.setting_chat import SettingChatSession, SettingChatMessage
 
 __all__ = [
     "Project",
@@ -26,4 +34,11 @@ __all__ = [
     "Organization",
     "Foreshadowing",
     "GenerationLog",
+    "WorkflowRun",
+    "WorkflowStepRecord",
+    "GenerationVersion",
+    "UserPreference",
+    "MemoryItem",
+    "SettingChatSession",
+    "SettingChatMessage",
 ]

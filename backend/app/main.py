@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api import agents, models, projects, resources
+from app.api import agents, agents_v3, models, projects, resources, setting_co
 from app.api.core import (
     auth_router,
     dictionaries_router,
@@ -51,6 +51,8 @@ app.include_router(projects.router, prefix="/api/projects", tags=["projects"])
 app.include_router(models.router, prefix="/api/models", tags=["models"])  # 兼容旧路径
 app.include_router(resources.router, prefix="/api/resources", tags=["resources"])
 app.include_router(agents.router, prefix="/api/agents", tags=["agents"])
+app.include_router(agents_v3.router, prefix="/api/agents/v3", tags=["agents-v3"])
+app.include_router(setting_co.router, prefix="/api/setting-co", tags=["setting-co"])
 
 # ---------------------------------------------------------------------------
 # 核心库 API（系统管理相关）
