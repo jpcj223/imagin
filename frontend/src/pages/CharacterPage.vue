@@ -552,10 +552,13 @@
                     />
                     <div class="attr-chapter-box" :class="{ 'has-range': parseChapterRange(attr.chapter_no).end != null, 'is-filled': parseChapterRange(attr.chapter_no).start != null }">
                       <span class="attr-chapter-label">第</span>
+                      <!-- 关闭步进按钮，给章数文本留出空间，直接点击即可输入。 -->
                       <n-input-number
                         :value="parseChapterRange(attr.chapter_no).start"
-                        placeholder="-"
-                        :min="0"
+                        placeholder="章数"
+                        :min="1"
+                        :precision="0"
+                        :show-button="false"
                         class="attr-chapter-num"
                         @update:value="(val: number | null) => onChapterChange(index, 'start', val)"
                       />
@@ -571,14 +574,16 @@
                       <n-input-number
                         v-if="parseChapterRange(attr.chapter_no).end != null"
                         :value="parseChapterRange(attr.chapter_no).end"
-                        placeholder="-"
-                        :min="0"
+                        placeholder="章数"
+                        :min="1"
+                        :precision="0"
+                        :show-button="false"
                         class="attr-chapter-num"
                         @update:value="(val: number | null) => onChapterChange(index, 'end', val)"
                       />
                       <span class="attr-chapter-label">章</span>
                     </div>
-                    <n-button text type="error" @click="removeAttribute(index)">移除</n-button>
+                    <n-button class="attr-remove-btn" text type="error" @click="removeAttribute(index)">移除</n-button>
                   </div>
                   <div class="attr-sub-row">
                     <n-input
@@ -1954,15 +1959,30 @@ function parseChapterRange(chapterNo: string | null | undefined): { start: numbe
 function onChapterChange(index: number, field: 'start' | 'end', val: number | null) {
   const attr = form.custom_attributes[index]
   if (!attr) return
+
+  // 步骤1：解析已有章节值，保留另一端的范围数据。
   const current = parseChapterRange(attr.chapter_no)
   if (field === 'start') {
     current.start = val
+    // 起始章超过结束章时顺延结束章，避免范围模式被意外改成单章。
+    if (val != null && current.end != null && current.end <= val) {
+      current.end = val + 1
+    }
   } else {
     current.end = val
+    // 结束章早于或等于起始章时，向前调整起始章；最小章节为第1章。
+    if (val != null && current.start != null && current.start >= val) {
+      current.start = Math.max(1, val - 1)
+      if (current.start >= val) current.end = current.start + 1
+    }
   }
-  // 序列化回字符串
+
+  // 步骤2：将单章或范围按统一格式写回角色属性。
   if (current.start != null && current.end != null && current.end > current.start) {
     attr.chapter_no = `${current.start}-${current.end}`
+  } else if (current.start == null && current.end != null) {
+    // 步骤3：起始章暂时为空时仍保留范围模式和已输入的结束章。
+    attr.chapter_no = `-${current.end}`
   } else if (current.start != null) {
     attr.chapter_no = String(current.start)
   } else {
@@ -3818,12 +3838,14 @@ useProjectDataLoader(load)
 .attr-row {
   display: flex;
   gap: 10px;
-  align-items: flex-start;
+  align-items: center;
   margin-bottom: 8px;
+  flex-wrap: wrap;
 }
 
 .attr-name-field {
   width: 130px;
+  min-width: 110px;
   flex-shrink: 0;
 }
 
@@ -3832,13 +3854,17 @@ useProjectDataLoader(load)
   min-width: 0;
 }
 
+.attr-remove-btn {
+  margin-left: auto;
+}
+
 .attr-chapter-box {
   flex-shrink: 0;
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: 6px;
   padding: 4px 10px;
-  height: 34px;
+  min-height: 34px;
   background: rgba(255, 255, 255, 0.04);
   border: 1px solid var(--n-border-color, #2a2f3a);
   border-radius: 8px;
@@ -3868,7 +3894,8 @@ useProjectDataLoader(load)
 }
 
 .attr-chapter-num {
-  width: 50px;
+  width: 72px;
+  flex: 0 0 72px;
   --n-padding-left: 4px;
   --n-padding-right: 4px;
 }
@@ -3902,6 +3929,8 @@ useProjectDataLoader(load)
 
 .attr-chapter-mode :deep(.n-radio) {
   font-size: 11px;
+  white-space: nowrap;
+  margin-right: 4px;
 }
 
 .attr-chapter-mode :deep(.n-radio__dot) {
