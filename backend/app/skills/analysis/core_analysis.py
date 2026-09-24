@@ -183,7 +183,7 @@ def _parse_structured_analysis(text: str) -> ChapterAnalysis | None:
         return None
     try:
         # 步骤 2：只取第一个完整 JSON 对象，忽略模型意外附加的尾部文字。
-        parsed: Any, _ = json.JSONDecoder().raw_decode(candidate[start:])
+        parsed, _ = json.JSONDecoder().raw_decode(candidate[start:])
         # 步骤 3：通过 Pydantic 契约检查字段类型并填入可选字段默认值。
         return ChapterAnalysis.model_validate(parsed)
     except (json.JSONDecodeError, ValidationError, TypeError):
