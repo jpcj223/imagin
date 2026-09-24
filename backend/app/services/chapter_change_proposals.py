@@ -21,6 +21,10 @@ from app.models.business import (
     WorldSetting,
     WorkflowRun,
 )
+from app.services.organization_history import (
+    capture_organization_snapshot,
+    record_organization_history,
+)
 
 
 # 模型输出只能修改显式列出的业务字段，身份、归属和时间戳由服务管理。
@@ -732,6 +736,8 @@ def review_proposal(
     if proposal.status != "pending":
         raise ValueError(f"提案当前状态为 {proposal.status}，不能重复审核")
 
+    organization_before_snapshot: dict[str, Any] | None = None
+
     proposal.reviewed_at = datetime.utcnow()
     proposal.review_note = review_note
     if decision == "reject":
@@ -792,6 +798,10 @@ def review_proposal(
             proposal.review_note = review_note or "提案目标已删除或不属于当前项目，需重新确认。"
             return {"proposal": _serialize_proposal(proposal), "idempotent": False, "conflict": True}
 
+        if proposal.entity_type == "organization":
+            # 在应用审核值之前保留完整档案快照，供历史页还原本次变化。
+            organization_before_snapshot = capture_organization_snapshot(entity)
+
         before_value = _json_load(proposal.before_value, {})
         if proposal.entity_type == "relationship":
             current_relations = _current_field("relationship", entity, "character_relations") or []
@@ -834,6 +844,22 @@ def review_proposal(
                     raise ValueError("父组织不存在或不属于当前项目")
             for field_name, value in values.items():
                 setattr(entity, field_name, _encode_entity_field(proposal.entity_type, field_name, value))
+
+    if proposal.entity_type == "organization":
+        # 步骤 5：审核通过的组织变化与提案状态在同一事务中写入历史。
+        after_snapshot = capture_organization_snapshot(entity)
+        record_organization_history(
+            db=db,
+            organization=entity,
+            source_type="chapter_analysis",
+            operation=proposal.operation,
+            before_snapshot=organization_before_snapshot or {},
+            after_snapshot=after_snapshot,
+            chapter_id=chapter_id,
+            proposal_id=proposal.proposal_id,
+            rationale=proposal.rationale or "",
+            evidence=proposal.evidence or "",
+        )
 
     proposal.status = "applied"
     proposal.applied_at = datetime.utcnow()

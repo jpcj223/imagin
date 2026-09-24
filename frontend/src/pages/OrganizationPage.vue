@@ -563,6 +563,47 @@
           </template>
         </div>
 
+        <!-- 组织变更历史 -->
+        <div class="insight-card">
+          <div class="card-header">
+            <span class="card-icon">🕘</span>
+            <span class="card-title">档案变更记录</span>
+            <span class="history-count">{{ organizationHistory.length }}</span>
+          </div>
+          <div v-if="historyLoading" class="relation-empty-tip">正在读取变更记录…</div>
+          <div v-else-if="!organizationHistory.length" class="relation-empty-tip">
+            保存组织资料或确认章节变化后，记录会显示在这里
+          </div>
+          <div v-else class="organization-history-list">
+            <article v-for="record in organizationHistory" :key="record.id" class="organization-history-item">
+              <div class="organization-history-heading">
+                <n-tag :type="record.source_type === 'chapter_analysis' ? 'info' : 'default'" size="tiny">
+                  {{ record.source_type === 'chapter_analysis' ? '章节分析' : '手动编辑' }}
+                </n-tag>
+                <strong>{{ record.operation === 'create' ? '创建档案' : '更新档案' }}</strong>
+              </div>
+              <div class="organization-history-meta">
+                <span v-if="record.chapter_no">第 {{ record.chapter_no }} 章{{ record.chapter_title ? ` · ${record.chapter_title}` : '' }}</span>
+                <span v-else>未关联章节</span>
+                <span>{{ formatHistoryTime(record.created_at) }}</span>
+              </div>
+              <div v-if="record.operation !== 'create' && record.changed_fields.length" class="organization-history-fields">
+                {{ record.changed_fields.map(historyFieldLabel).join('、') }}
+              </div>
+              <details class="organization-history-details">
+                <summary>查看前后变化</summary>
+                <div v-for="change in getHistoryFieldChanges(record)" :key="change.field" class="history-field-change">
+                  <strong>{{ change.label }}</strong>
+                  <div class="history-value-row"><span>之前</span><p>{{ change.before }}</p></div>
+                  <div class="history-value-row"><span>之后</span><p>{{ change.after }}</p></div>
+                </div>
+                <div v-if="record.rationale" class="history-rationale">变化说明：{{ record.rationale }}</div>
+                <div v-if="record.evidence" class="history-rationale">章节依据：{{ record.evidence }}</div>
+              </details>
+            </article>
+          </div>
+        </div>
+
         <!-- 剧情影响 -->
         <div class="insight-card">
           <div class="card-header">
@@ -607,6 +648,7 @@ import {
   createResource,
   deleteOrganizationRelation,
   deleteResource,
+  listOrganizationHistory,
   listOrganizationRelations,
   listResource,
   saveOrganizationRelation as persistOrganizationRelation,
@@ -622,7 +664,13 @@ import { notify } from '@/utils/notify'
 import TagSelectField from '@/components/TagSelectField.vue'
 import SingleSelectField from '@/components/SingleSelectField.vue'
 import type { SelectOption } from 'naive-ui'
-import type { CharacterItem, OrganizationItem, OrganizationRelation, CharacterOrgRelation } from '@/types/domain'
+import type {
+  CharacterItem,
+  OrganizationHistory,
+  OrganizationItem,
+  OrganizationRelation,
+  CharacterOrgRelation
+} from '@/types/domain'
 
 const projectStore = useProjectStore()
 const dictStore = useDictStore()
@@ -640,6 +688,8 @@ const deletingOrgName = ref('')
 const loading = ref(false)
 const expandedIds = ref<Set<number>>(new Set())
 const organizationRelations = ref<OrganizationRelation[]>([])
+const organizationHistory = ref<OrganizationHistory[]>([])
+const historyLoading = ref(false)
 const editingRelationId = ref<number | null>(null)
 const relationSaving = ref(false)
 const relationDraft = reactive({
@@ -1533,6 +1583,7 @@ async function startCreate() {
   isCreating.value = true
   form.parent_id = null
   organizationRelations.value = []
+  organizationHistory.value = []
   resetOrganizationRelationDraft()
   fillForm()
   await nextTick()
@@ -1545,6 +1596,7 @@ async function startCreateChild() {
   editingId.value = null
   isCreating.value = true
   organizationRelations.value = []
+  organizationHistory.value = []
   resetOrganizationRelationDraft()
   fillForm()
   form.parent_id = parent?.id || null
@@ -1560,7 +1612,10 @@ async function selectOrganization(item: OrganizationItem) {
   editingId.value = item.id
   isCreating.value = false
   fillForm(item)
-  await loadOrganizationRelations(item.id)
+  await Promise.all([
+    loadOrganizationRelations(item.id),
+    loadOrganizationHistory(item.id)
+  ])
   await nextTick()
   markClean()
 }
@@ -1594,6 +1649,76 @@ async function loadOrganizationRelations(organizationId: number) {
     organizationRelations.value = []
   }
   resetOrganizationRelationDraft()
+}
+
+async function loadOrganizationHistory(organizationId: number) {
+  // 步骤 1：限定当前项目和组织；步骤 2：读取最近历史；步骤 3：失败时清空旧组织记录。
+  const projectId = await ensureProject()
+  if (!projectId) return
+  historyLoading.value = true
+  try {
+    organizationHistory.value = await listOrganizationHistory(projectId, organizationId, 30)
+  } catch {
+    organizationHistory.value = []
+  } finally {
+    historyLoading.value = false
+  }
+}
+
+const organizationHistoryFieldLabels: Record<string, string> = {
+  parent_id: '上级组织',
+  name: '组织名称',
+  org_type: '组织类型',
+  location: '所在地',
+  slogan: '宗旨口号',
+  description: '组织背景',
+  level: '组织层级',
+  power_level: '实力等级',
+  member_count: '成员规模',
+  status: '组织状态',
+  hierarchy: '层级说明',
+  hierarchy_system: '层级体系',
+  hierarchy_levels: '职位层级',
+  hierarchy_templates: '层级模板',
+  resources: '核心资源',
+  goal: '组织目标',
+  core_members: '核心成员',
+  allies: '盟友文本',
+  enemies: '敌对文本',
+  impact: '剧情影响',
+  risk_notes: '风险提示',
+  hidden_secrets: '隐藏设定',
+  active_from_chapter: '活跃起始章节',
+  disbanded_chapter: '解散章节'
+}
+
+function historyFieldLabel(field: string) {
+  // 步骤 1：优先显示中文字段名；步骤 2：未知字段保留原始标识。
+  return organizationHistoryFieldLabels[field] || field
+}
+
+function formatHistoryValue(value: unknown) {
+  // 步骤 1：把空值显示为统一占位；步骤 2：序列化复杂值并限制单项长度。
+  if (value === null || value === undefined || value === '') return '（空）'
+  const text = typeof value === 'string' ? value : JSON.stringify(value) ?? String(value)
+  return text.length > 180 ? `${text.slice(0, 180)}…` : text
+}
+
+function getHistoryFieldChanges(record: OrganizationHistory) {
+  // 步骤 1：读取记录标注的变更字段；步骤 2：组合中文名称和前后显示值。
+  return record.changed_fields.map((field) => ({
+    field,
+    label: historyFieldLabel(field),
+    before: formatHistoryValue(record.before_snapshot[field]),
+    after: formatHistoryValue(record.after_snapshot[field])
+  }))
+}
+
+function formatHistoryTime(value: string | null) {
+  // 步骤 1：处理缺失时间；步骤 2：转成本地时间，无法解析时保留原值。
+  if (!value) return '时间未知'
+  const date = new Date(value)
+  return Number.isNaN(date.getTime()) ? value : date.toLocaleString()
 }
 
 function resetOrganizationRelationDraft() {
@@ -1693,9 +1818,13 @@ async function load() {
       markClean()
     }
     if (editingId.value && !isCreating.value) {
-      await loadOrganizationRelations(editingId.value)
+      await Promise.all([
+        loadOrganizationRelations(editingId.value),
+        loadOrganizationHistory(editingId.value)
+      ])
     } else {
       organizationRelations.value = []
+      organizationHistory.value = []
       resetOrganizationRelationDraft()
     }
   } finally {
@@ -2648,5 +2777,100 @@ useProjectDataLoader(load)
 .organization-relation-editor-actions {
   justify-content: flex-end;
   gap: 7px;
+}
+
+/* ===== 组织档案变更记录 ===== */
+.history-count {
+  min-width: 22px;
+  padding: 2px 7px;
+  border-radius: 12px;
+  background: rgba(59, 130, 246, 0.16);
+  color: #93c5fd;
+  font-size: 11px;
+  text-align: center;
+}
+
+.organization-history-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 420px;
+  overflow-y: auto;
+}
+
+.organization-history-item {
+  padding: 9px 10px;
+  border: 1px solid var(--n-border-color, #2a2f3a);
+  border-radius: 7px;
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.organization-history-heading,
+.organization-history-meta,
+.history-value-row {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.organization-history-heading strong {
+  color: var(--n-text-color-1, #e5e7eb);
+  font-size: 12px;
+}
+
+.organization-history-meta {
+  justify-content: space-between;
+  margin-top: 6px;
+  color: var(--n-text-color-3, #8b93a1);
+  font-size: 10px;
+}
+
+.organization-history-fields,
+.history-rationale {
+  margin-top: 6px;
+  color: var(--n-text-color-2, #b7bfcc);
+  font-size: 11px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.organization-history-details {
+  margin-top: 7px;
+  color: var(--n-text-color-3, #8b93a1);
+  font-size: 11px;
+}
+
+.organization-history-details summary {
+  cursor: pointer;
+  user-select: none;
+}
+
+.history-field-change {
+  margin-top: 7px;
+  padding-top: 7px;
+  border-top: 1px solid var(--n-border-color, #2a2f3a);
+}
+
+.history-field-change > strong {
+  color: var(--n-text-color-1, #e5e7eb);
+}
+
+.history-value-row {
+  align-items: flex-start;
+  margin-top: 4px;
+}
+
+.history-value-row span {
+  flex: 0 0 28px;
+  color: var(--n-text-color-3, #8b93a1);
+}
+
+.history-value-row p {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  color: var(--n-text-color-2, #b7bfcc);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 </style>

@@ -1,16 +1,17 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
-from app.db.repository import delete_row, fetch_all, insert_row, update_row
+from app.db.repository import delete_row, fetch_all, insert_row, row_to_dict, update_row
 from app.db.session import get_business_db
 from app.models.business import (
     Chapter,
     Character,
     Foreshadowing,
     Organization,
+    OrganizationHistory,
     OrganizationRelation,
     Outline,
     WorldSetting,
@@ -23,6 +24,11 @@ from app.schemas.models import (
     OrganizationRelationSave,
     OutlineSave,
     WorldSettingSave,
+)
+from app.services.organization_history import (
+    capture_organization_snapshot,
+    parse_history_json,
+    record_organization_history,
 )
 
 
@@ -144,8 +150,89 @@ def save_character(payload: CharacterSave) -> dict:
 
 @router.post("/organizations")
 def save_organization(payload: OrganizationSave) -> dict:
-    """新增组织势力。"""
-    return insert_row("organizations", payload.model_dump())
+    """新增组织势力。
+
+    步骤 1：创建组织并取得数据库 ID。
+    步骤 2：用创建后的档案生成首条历史快照。
+    步骤 3：在同一事务中提交组织和历史记录。
+    """
+    with get_business_db() as db:
+        organization = Organization(**payload.model_dump())
+        db.add(organization)
+        db.flush()
+        record_organization_history(
+            db=db,
+            organization=organization,
+            source_type="manual",
+            operation="create",
+            before_snapshot={},
+            after_snapshot=capture_organization_snapshot(organization),
+        )
+        db.commit()
+        db.refresh(organization)
+        result = row_to_dict(organization)
+    return result
+
+
+@router.get("/{project_id}/organizations/{organization_id}/history")
+def list_organization_history(
+    project_id: int,
+    organization_id: int,
+    limit: int = Query(default=30, ge=1, le=100),
+) -> dict:
+    """读取组织档案变更历史及章节来源。
+
+    步骤 1：验证组织属于当前项目。
+    步骤 2：统计历史总数并读取最近记录。
+    步骤 3：补充章节标题并解析前后快照后返回。
+    """
+    with get_business_db() as db:
+        organization = db.query(Organization).filter(
+            Organization.id == organization_id,
+            Organization.project_id == project_id,
+        ).first()
+        if not organization:
+            raise HTTPException(status_code=404, detail="组织不存在或不属于当前项目")
+
+        total = db.query(func.count(OrganizationHistory.id)).filter(
+            OrganizationHistory.project_id == project_id,
+            OrganizationHistory.organization_id == organization_id,
+        ).scalar() or 0
+        rows = db.query(
+            OrganizationHistory,
+            Chapter.chapter_no,
+            Chapter.title,
+        ).outerjoin(
+            Chapter, Chapter.id == OrganizationHistory.chapter_id
+        ).filter(
+            OrganizationHistory.project_id == project_id,
+            OrganizationHistory.organization_id == organization_id,
+        ).order_by(
+            OrganizationHistory.created_at.desc(),
+            OrganizationHistory.id.desc(),
+        ).limit(limit).all()
+
+    items = [
+        {
+            "id": history.id,
+            "project_id": history.project_id,
+            "organization_id": history.organization_id,
+            "chapter_id": history.chapter_id,
+            "chapter_no": chapter_no,
+            "chapter_title": chapter_title or "",
+            "proposal_id": history.proposal_id,
+            "source_type": history.source_type,
+            "operation": history.operation,
+            "changed_fields": parse_history_json(history.changed_fields, []),
+            "before_snapshot": parse_history_json(history.before_snapshot, {}),
+            "after_snapshot": parse_history_json(history.after_snapshot, {}),
+            "rationale": history.rationale or "",
+            "evidence": history.evidence or "",
+            "created_at": history.created_at.isoformat() if history.created_at else None,
+        }
+        for history, chapter_no, chapter_title in rows
+    ]
+    return {"items": items, "total": total}
 
 
 @router.get("/{project_id}/organizations/{organization_id}/relations")
@@ -613,10 +700,43 @@ def update_resource(resource: str, item_id: int, payload: dict) -> dict:
     resource 先经过白名单映射，payload 只包含前端提交的业务字段。
     """
     table = _resource_table(resource)
+    if table == "organizations":
+        # 组织卡片更新和历史快照共用一个事务，防止只保存一半。
+        return _update_organization_with_history(item_id, payload)
     updated = update_row(table, item_id, payload)
     if not updated:
         raise HTTPException(status_code=404, detail="资源不存在")
     return updated
+
+
+def _update_organization_with_history(item_id: int, payload: dict) -> dict:
+    """保存组织字段，并在同一个数据库事务中记录变化前后快照。"""
+    with get_business_db() as db:
+        organization = db.query(Organization).filter(Organization.id == item_id).first()
+        if not organization:
+            raise HTTPException(status_code=404, detail="资源不存在")
+
+        # 步骤 1：只接纳 ORM 实际映射的业务字段，忽略主键和时间戳。
+        before_snapshot = capture_organization_snapshot(organization)
+        allowed_fields = {column.key for column in Organization.__mapper__.column_attrs}
+        protected_fields = {"id", "project_id", "created_at", "updated_at"}
+        for field_name, value in payload.items():
+            if field_name in allowed_fields and field_name not in protected_fields:
+                setattr(organization, field_name, value)
+
+        # 步骤 2：字段有实际变化时写入历史；步骤 3：与资料修改一起提交。
+        after_snapshot = capture_organization_snapshot(organization)
+        record_organization_history(
+            db=db,
+            organization=organization,
+            source_type="manual",
+            operation="update",
+            before_snapshot=before_snapshot,
+            after_snapshot=after_snapshot,
+        )
+        db.commit()
+        db.refresh(organization)
+        return row_to_dict(organization)
 
 
 @router.delete("/{resource}/{item_id}")

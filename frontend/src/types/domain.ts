@@ -425,6 +425,25 @@ export interface OrganizationRelation {
   updated_at: string | null
 }
 
+/** 组织档案的一次手动或章节分析变更。 */
+export interface OrganizationHistory {
+  id: number
+  project_id: number
+  organization_id: number
+  chapter_id: number | null
+  chapter_no: number | null
+  chapter_title: string
+  proposal_id: string | null
+  source_type: 'manual' | 'chapter_analysis' | string
+  operation: 'create' | 'update' | string
+  changed_fields: string[]
+  before_snapshot: Record<string, unknown>
+  after_snapshot: Record<string, unknown>
+  rationale: string
+  evidence: string
+  created_at: string | null
+}
+
 export interface ForeshadowingItem {
   /** 伏笔 ID。 */
   id: number

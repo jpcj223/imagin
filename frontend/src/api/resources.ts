@@ -1,5 +1,5 @@
 import { apiClient } from './client'
-import type { DashboardData, OrganizationRelation } from '@/types/domain'
+import type { DashboardData, OrganizationHistory, OrganizationRelation } from '@/types/domain'
 
 export interface OrganizationRelationPayload {
   target_org_id: number
@@ -37,6 +37,15 @@ export async function deleteOrganizationRelation(projectId: number, organization
     `/resources/${projectId}/organizations/${organizationId}/relations/${relationId}`
   )
   return data
+}
+
+export async function listOrganizationHistory(projectId: number, organizationId: number, limit = 30) {
+  // 历史接口返回章节来源、变更字段和完整前后快照，供组织卡片回溯。
+  const { data } = await apiClient.get<{ items: OrganizationHistory[]; total: number }>(
+    `/resources/${projectId}/organizations/${organizationId}/history`,
+    { params: { limit } }
+  )
+  return data.items
 }
 
 export async function getDashboard(projectId: number) {
