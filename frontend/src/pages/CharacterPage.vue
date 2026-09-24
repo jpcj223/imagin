@@ -856,26 +856,33 @@
                       <div v-if="isAddingChapterRange" class="chapter-add-panel">
                         <div class="chapter-add-inputs">
                           <span class="chapter-add-label">第</span>
+                          <!-- 数字框只保留文字输入，单章和范围共用同一阅读顺序。 -->
                           <n-input-number
                             v-model:value="newChapterRange.start"
-                            placeholder="起始章"
-                            :min="0"
-                            class="chapter-add-num"
+                            placeholder=""
+                            :min="1"
+                            :precision="0"
+                            :show-button="false"
+                            title="起始章节"
+                            class="chapter-add-num attr-chapter-num"
                           />
-                          <n-radio-group v-model:value="newChapterRange.mode" size="small" class="chapter-mode-toggle">
-                            <n-radio value="single">单章</n-radio>
-                            <n-radio value="range">范围</n-radio>
-                          </n-radio-group>
                           <template v-if="newChapterRange.mode === 'range'">
-                            <span class="chapter-add-label">至</span>
+                            <span class="chapter-add-label">章 - 第</span>
                             <n-input-number
                               v-model:value="newChapterRange.end"
-                              placeholder="结束章"
-                              :min="0"
-                              class="chapter-add-num"
+                              placeholder=""
+                              :min="1"
+                              :precision="0"
+                              :show-button="false"
+                              title="结束章节"
+                              class="chapter-add-num attr-chapter-num"
                             />
                           </template>
                           <span class="chapter-add-label">章</span>
+                          <n-radio-group v-model:value="newChapterRange.mode" size="tiny" class="chapter-mode-toggle">
+                            <n-radio value="single">单章</n-radio>
+                            <n-radio value="range">范围</n-radio>
+                          </n-radio-group>
                         </div>
                         <div class="chapter-add-actions">
                           <n-button size="small" @click="cancelAddChapterRange">取消</n-button>
@@ -3736,7 +3743,7 @@ useProjectDataLoader(load)
 .chapter-add-inputs {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 4px;
   flex-wrap: wrap;
   margin-bottom: 12px;
 }
@@ -3748,12 +3755,20 @@ useProjectDataLoader(load)
 }
 
 .chapter-add-num {
-  width: 80px;
+  width: 40px;
+  flex: 0 0 40px;
   flex-shrink: 0;
 }
 
 .chapter-mode-toggle {
   flex-shrink: 0;
+  margin: 0 2px 0 6px;
+}
+
+.chapter-mode-toggle :deep(.n-radio) {
+  font-size: 11px;
+  white-space: nowrap;
+  margin-right: 4px;
 }
 
 .chapter-add-actions {
