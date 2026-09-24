@@ -241,7 +241,7 @@ function handleRestart(e: Event, stepId: string) {
   background: linear-gradient(180deg, #0f172a 0%, #1e293b 100%);
   border: 1px solid rgba(99, 102, 241, 0.2);
   border-radius: 12px;
-  padding: 16px 20px 24px;
+  padding: 12px 18px 16px;
   position: relative;
   overflow: hidden;
 }
@@ -266,7 +266,7 @@ function handleRestart(e: Event, stepId: string) {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  margin-bottom: 20px;
+  margin-bottom: 10px;
 }
 
 .pipeline-title {
@@ -327,14 +327,14 @@ function handleRestart(e: Event, stepId: string) {
   position: relative;
   display: flex;
   justify-content: space-between;
-  padding: 20px 8px 0;
-  min-height: 140px;
+  padding: 10px 8px 0;
+  min-height: 110px;
 }
 
 /* 连接线 */
 .track-connector {
   position: absolute;
-  top: 38px;
+  top: 28px;
   left: 40px;
   right: 40px;
   height: 2px;
@@ -386,7 +386,7 @@ function handleRestart(e: Event, stepId: string) {
   align-items: center;
   justify-content: center;
   position: relative;
-  margin-bottom: 10px;
+  margin-bottom: 8px;
   font-size: 14px;
   color: #64748b;
   transition: all 0.3s ease;
@@ -443,7 +443,7 @@ function handleRestart(e: Event, stepId: string) {
   background: rgba(30, 41, 59, 0.7);
   border: 1px solid rgba(255, 255, 255, 0.06);
   border-radius: 8px;
-  padding: 10px 12px;
+  padding: 8px 10px;
   width: 100%;
   backdrop-filter: blur(8px);
   transition: all 0.3s ease;

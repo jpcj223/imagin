@@ -350,6 +350,7 @@
             type="textarea"
             class="chapter-textarea"
             :autosize="{ minRows: 20 }"
+            :bordered="false"
             placeholder="在这里写你的小说正文...
 
 提示：
@@ -2866,8 +2867,27 @@ watch(
   border-radius: 12px;
   display: flex;
   flex-direction: column;
-  overflow: hidden;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
   backdrop-filter: blur(10px);
+}
+
+.left-panel::-webkit-scrollbar {
+  width: 4px;
+}
+
+.left-panel::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.left-panel::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 2px;
+}
+
+.left-panel::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.2);
 }
 
 .memory-section {
@@ -2930,7 +2950,7 @@ watch(
 
 /* ===== 资源 Tab 浏览器 ===== */
 .resource-tabs {
-  flex: 1;
+  flex: 1 0 220px;
   display: flex;
   flex-direction: column;
   min-height: 0;
@@ -3425,21 +3445,44 @@ watch(
   flex: 1;
   min-height: 0;
   padding: 16px;
-  overflow: hidden;
+  overflow-x: hidden;
+  overflow-y: auto;
+}
+
+.editor-container::-webkit-scrollbar {
+  width: 6px;
+}
+
+.editor-container::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.editor-container::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.12);
+  border-radius: 3px;
+}
+
+.editor-container::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.2);
 }
 
 .chapter-textarea {
-  height: 100%;
+  min-height: 100%;
+  background: transparent !important;
 }
 
 .chapter-textarea :deep(textarea) {
-  min-height: 100% !important;
-  height: 100% !important;
   line-height: 1.9;
   font-size: 15px;
   padding: 16px !important;
   color: var(--text-primary) !important;
-  background: rgba(255, 255, 255, 0.02) !important;
+  background: transparent !important;
+  overflow-y: hidden !important;
+  scrollbar-width: none;
+}
+
+.chapter-textarea :deep(textarea)::-webkit-scrollbar {
+  display: none;
 }
 
 /* 精修对比面板 */
@@ -3498,12 +3541,14 @@ watch(
   border-radius: 12px;
   display: flex;
   flex-direction: column;
+  min-height: 0;
   overflow: hidden;
   backdrop-filter: blur(10px);
 }
 
 .side-tabs {
   flex: 1;
+  min-height: 0;
   display: flex;
   flex-direction: column;
 }
@@ -3525,28 +3570,35 @@ watch(
   color: #c7d2fe !important;
 }
 
-.side-tabs :deep(.n-tabs-panels) {
+.side-tabs :deep(.n-tabs-pane-wrapper) {
   flex: 1;
   min-height: 0;
+  display: flex;
+  flex-direction: column;
   overflow: hidden;
 }
 
-.side-tabs :deep(.n-tabs-panel) {
+.side-tabs :deep(.n-tab-pane) {
+  flex: 1;
+  min-height: 0;
   height: 100%;
   overflow-y: auto;
   padding: 0 !important;
 }
 
 /* 右侧面板滚动条 */
-.side-tabs :deep(.n-tabs-panel)::-webkit-scrollbar {
+.side-tabs :deep(.n-tab-pane)::-webkit-scrollbar {
   width: 4px;
 }
-.side-tabs :deep(.n-tabs-panel)::-webkit-scrollbar-track {
+.side-tabs :deep(.n-tab-pane)::-webkit-scrollbar-track {
   background: transparent;
 }
-.side-tabs :deep(.n-tabs-panel)::-webkit-scrollbar-thumb {
+.side-tabs :deep(.n-tab-pane)::-webkit-scrollbar-thumb {
   background: rgba(255, 255, 255, 0.1);
   border-radius: 2px;
+}
+.side-tabs :deep(.n-tab-pane)::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.2);
 }
 
 .tab-content {

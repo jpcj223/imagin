@@ -221,15 +221,24 @@ def _insert_menus(db: Session) -> None:
         # 分组4：配置
         (0, "配置", "", "🔌", "", 4, "dir", "", 1),
         (14, "API 配置", "/api-config", "🔌", "ApiConfig", 1, "menu", "", 1),
-        # 系统管理（隐藏，预留管理后台页面）
-        (0, "系统管理", "/system", "🛠️", "SystemManagement", 99, "dir", "", 0),
-        (99, "用户管理", "/system/users", "👥", "UserManagement", 1, "menu", "system:user", 0),
-        (99, "菜单管理", "/system/menus", "📋", "MenuManagement", 2, "menu", "system:menu", 0),
-        (99, "字典管理", "/system/dictionaries", "📚", "DictionaryManagement", 3, "menu", "system:dict", 0),
-        (99, "系统配置", "/system/configs", "🔧", "SystemConfig", 4, "menu", "system:config", 0),
+        (7, "设定共创", "/setting-co", "💬", "SettingCo", 7, "menu", "", 1),
+        # 系统管理
+        (0, "系统管理", "/system", "🛠️", "SystemManagement", 99, "dir", "", 1),
+        ("系统管理", "用户管理", "/system/users", "👥", "UserManagement", 1, "menu", "system:user", 1),
+        ("系统管理", "菜单管理", "/system/menus", "📋", "MenuManagement", 2, "menu", "system:menu", 1),
+        ("系统管理", "字典管理", "/system/dictionaries", "📚", "DictionaryManagement", 3, "menu", "system:dict", 1),
+        ("系统管理", "系统配置", "/system/configs", "🔧", "SystemConfig", 4, "menu", "system:config", 1),
     ]
 
     for parent_id, name, path, icon, component, sort_order, menu_type, permission, is_visible in menus:
+        if isinstance(parent_id, str):
+            parent = db.execute(
+                text("SELECT id FROM sys_menus WHERE parent_id = 0 AND name = :name"),
+                {"name": parent_id},
+            ).fetchone()
+            if not parent:
+                continue
+            parent_id = parent[0]
         db.execute(text("""
             INSERT INTO sys_menus (parent_id, name, path, icon, component, sort_order, menu_type, permission, is_visible)
             VALUES (:parent_id, :name, :path, :icon, :component, :sort_order, :menu_type, :permission, :is_visible)
