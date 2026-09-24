@@ -2798,13 +2798,24 @@ useProjectDataLoader(load)
   color: var(--n-text-color-1, #e5e7eb);
 }
 
+/* 角色总数徽标固定高度并居中数字，避免两位数挤压标题。 */
 .list-panel-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 34px;
+  height: 26px;
+  box-sizing: border-box;
   font-size: 12px;
   color: var(--n-text-color-3, #6b7280);
   background: var(--n-color-2, #2a2f3a);
-  padding: 2px 8px;
-  border-radius: 10px;
+  padding: 0 8px;
+  border-radius: 999px;
   font-weight: 500;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 
 /* 分组操作栏 */
@@ -2901,8 +2912,11 @@ useProjectDataLoader(load)
   gap: 4px;
 }
 
+/* 分组行占满列表宽度，确保不同分组的计数徽标使用同一右侧基准。 */
 .group-header {
   display: flex;
+  width: 100%;
+  box-sizing: border-box;
   align-items: center;
   gap: 8px;
   padding: 12px 10px;
@@ -3067,20 +3081,27 @@ useProjectDataLoader(load)
 }
 
 /* 角色数量 - 右对齐设计 */
+/* 计数徽标固定宽度并使用等宽数字，保证单/双位数视觉对齐。 */
 .group-count {
-  flex-shrink: 0;
-  min-width: 28px;
-  padding: 2px 8px;
+  display: inline-flex;
+  flex: 0 0 34px;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  min-width: 34px;
+  height: 22px;
+  box-sizing: border-box;
+  padding: 0;
   font-size: 12px;
   font-weight: 500;
   font-variant-numeric: tabular-nums;
-  text-align: center;
   color: var(--n-text-color-3, #6b7280);
   background: var(--n-color, #23272f);
   border-radius: 999px;
-  line-height: 18px;
+  line-height: 1;
   margin-left: auto;
   font-family: 'SF Mono', 'Menlo', 'Consolas', monospace;
+  white-space: nowrap;
 }
 
 .group-header:hover .group-count {
