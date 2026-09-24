@@ -119,7 +119,7 @@
             <span class="list-count">{{ filteredList.length }} 条</span>
           </div>
           <div class="list-tools">
-            <n-input v-model:value="keyword" clearable placeholder="搜索..." size="small" style="width: 160px">
+            <n-input v-model:value="keyword" clearable placeholder="搜索..." size="small" style="width: 120px">
               <template #prefix>🔍</template>
             </n-input>
             <n-button type="primary" size="small" @click="startCreate">
@@ -1053,7 +1053,7 @@ useProjectDataLoader(load)
 /* ===== 响应式 ===== */
 @media (max-width: 1400px) {
   .workbench {
-    grid-template-columns: 200px 320px minmax(0, 1fr);
+    grid-template-columns: 200px 340px minmax(0, 1fr);
   }
   .form-grid-3 {
     grid-template-columns: 1fr 1fr;
