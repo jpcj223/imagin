@@ -11,9 +11,11 @@ from app.schemas.core.menus import (
 from app.schemas.core.dictionaries import (
     DictionaryCreate,
     DictionaryUpdate,
+    DictionaryReorderRequest,
     DictionaryResponse,
     DictItemCreate,
     DictItemUpdate,
+    DictItemReorderRequest,
     DictItemResponse,
 )
 from app.schemas.core.auth import (
@@ -41,9 +43,11 @@ __all__ = [
     # Dictionaries
     "DictionaryCreate",
     "DictionaryUpdate",
+    "DictionaryReorderRequest",
     "DictionaryResponse",
     "DictItemCreate",
     "DictItemUpdate",
+    "DictItemReorderRequest",
     "DictItemResponse",
     # Auth
     "LoginRequest",

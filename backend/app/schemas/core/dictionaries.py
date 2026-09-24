@@ -34,6 +34,12 @@ class DictionaryUpdate(BaseModel):
     status: Optional[str] = Field(default=None, max_length=16, description="状态")
 
 
+class DictionaryReorderRequest(BaseModel):
+    """字典排序请求，ids 按目标顺序排列。"""
+
+    ids: list[int] = Field(description="按目标顺序排列的字典 ID")
+
+
 class DictionaryResponse(DictionaryBase):
     """字典响应。"""
 
@@ -70,6 +76,12 @@ class DictItemUpdate(BaseModel):
     sort_order: Optional[int] = Field(default=None, description="排序")
     status: Optional[str] = Field(default=None, max_length=16, description="状态")
     remark: Optional[str] = Field(default=None, max_length=255, description="备注")
+
+
+class DictItemReorderRequest(BaseModel):
+    """字典项排序请求，限定在单个字典内调整顺序。"""
+
+    ids: list[int] = Field(description="按目标顺序排列的字典项 ID")
 
 
 class DictItemResponse(DictItemBase):

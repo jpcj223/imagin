@@ -28,62 +28,128 @@
       </div>
     </div>
 
-    <!-- 字典列表 + 字典项详情 -->
+    <!-- 主体：左侧可排序字典，右侧以卡片管理字典标签 -->
     <div class="dict-layout">
-      <!-- 左侧字典列表 -->
-      <div class="dict-list-panel">
-        <div class="panel-title">字典列表</div>
-        <div class="dict-list">
-          <div
-            v-for="dict in dictionaries"
-            :key="dict.id"
-            class="dict-item"
-            :class="{ active: selectedDictId === dict.id }"
-            @click="selectDict(dict)"
-          >
-            <div class="dict-main">
-              <div class="dict-name">{{ dict.dict_name }}</div>
-              <div class="dict-code">{{ dict.dict_code }}</div>
-            </div>
-            <span :class="['dict-status', dict.status]" :title="dict.status">
-              {{ dict.status === 'active' ? '●' : '○' }}
-            </span>
-          </div>
-          <div v-if="dictionaries.length === 0" class="list-empty">
-            <p>暂无字典</p>
-          </div>
-        </div>
-      </div>
-
-      <!-- 右侧字典项管理 -->
-      <div class="dict-items-panel">
-        <div class="panel-head">
+      <aside class="dict-list-panel">
+        <div class="dict-list-head">
           <div>
-            <div class="panel-title">{{ selectedDict?.dict_name || '字典项' }}</div>
-            <div class="panel-sub" v-if="selectedDict">{{ selectedDict.description }}</div>
+            <div class="panel-title">字典列表</div>
+            <div class="panel-sub">{{ dictionaries.length }} 个字典 · 拖动排序</div>
           </div>
-          <div v-if="selectedDict" style="display: flex; gap: 8px">
+          <span class="dict-total-badge">{{ dictionaries.length }}</span>
+        </div>
+
+        <draggable
+          v-model="dictionaries"
+          item-key="id"
+          handle=".dict-drag-handle"
+          :animation="180"
+          :disabled="dictionaryOrderSaving"
+          ghost-class="dict-ghost"
+          chosen-class="dict-chosen"
+          class="dict-list"
+          @end="saveDictionaryOrder"
+        >
+          <template #item="{ element: dict }">
+            <div
+              class="dict-item"
+              :class="{ active: selectedDictId === dict.id, inactive: dict.status !== 'active' }"
+              @click="selectDict(dict)"
+            >
+              <span class="dict-drag-handle" title="拖动调整字典顺序" aria-label="拖动排序">⠿</span>
+              <div class="dict-main">
+                <div class="dict-name">{{ dict.dict_name }}</div>
+                <div class="dict-code">{{ dict.dict_code }}</div>
+              </div>
+              <span :class="['dict-status', dict.status]">
+                {{ dict.status === 'active' ? '启用' : '停用' }}
+              </span>
+            </div>
+          </template>
+        </draggable>
+
+        <div v-if="dictionaries.length === 0" class="list-empty">
+          <div class="empty-icon">📚</div>
+          <p>暂无字典</p>
+          <p class="empty-sub">点击右上角「新增字典」创建</p>
+        </div>
+      </aside>
+
+      <section class="dict-items-panel">
+        <div class="panel-head">
+          <div class="items-title-group">
+            <div class="items-title-row">
+              <div class="panel-title">{{ selectedDict?.dict_name || '字典标签' }}</div>
+              <span v-if="selectedDict" class="item-total-badge">{{ dictItems.length }} 项</span>
+            </div>
+            <div class="panel-sub" v-if="selectedDict">
+              {{ selectedDict.description || selectedDict.dict_code }} · 拖动标签卡片调整顺序
+            </div>
+          </div>
+          <div v-if="selectedDict" class="panel-actions">
             <n-button size="small" @click="openDictEdit">编辑字典</n-button>
             <n-button size="small" type="primary" @click="openItemCreate">
               <template #icon>＋</template>
-              新增字典项
+              新增标签
             </n-button>
           </div>
         </div>
 
-        <n-data-table
-          v-if="selectedDict"
-          :columns="itemColumns"
-          :data="dictItems"
-          :loading="itemsLoading"
-          :bordered="false"
-          size="small"
-        />
-        <div v-else class="items-empty">
+        <div v-if="!selectedDict" class="items-empty">
           <div class="empty-icon">📖</div>
-          <p>请选择左侧字典查看详情</p>
+          <p>请选择左侧字典查看标签</p>
         </div>
-      </div>
+        <div v-else-if="itemsLoading" class="items-loading">
+          <n-spin size="medium" />
+          <span>正在加载字典标签…</span>
+        </div>
+        <draggable
+          v-else-if="dictItems.length > 0"
+          v-model="dictItems"
+          item-key="id"
+          handle=".item-drag-handle"
+          :animation="180"
+          :disabled="itemOrderSaving"
+          ghost-class="item-ghost"
+          chosen-class="item-chosen"
+          class="item-grid"
+          @end="saveItemOrder"
+        >
+          <template #item="{ element: item, index }">
+            <article class="item-card" :class="{ 'item-card-inactive': item.status !== 'active' }">
+              <div class="item-card-head">
+                <span class="item-drag-handle" title="拖动调整标签顺序" aria-label="拖动排序">⠿</span>
+                <div class="item-card-title">{{ item.item_label }}</div>
+                <span :class="['item-status', item.status]">{{ item.status === 'active' ? '启用' : '停用' }}</span>
+              </div>
+              <div class="item-value-row">
+                <span class="item-field-label">枚举值</span>
+                <code>{{ item.item_value }}</code>
+              </div>
+              <p class="item-remark" :class="{ empty: !item.remark }">
+                {{ item.remark || '暂无备注' }}
+              </p>
+              <div class="item-card-footer">
+                <span class="item-order">{{ String(index + 1).padStart(2, '0') }} <span>排序</span></span>
+                <div class="item-actions">
+                  <n-button size="tiny" text type="primary" @click.stop="openItemEdit(item)">编辑</n-button>
+                  <n-popconfirm @positive-click="handleItemDelete(item.id)">
+                    <template #trigger>
+                      <n-button size="tiny" text type="error" @click.stop>删除</n-button>
+                    </template>
+                    确认删除这个字典标签？
+                  </n-popconfirm>
+                </div>
+              </div>
+            </article>
+          </template>
+        </draggable>
+        <div v-else class="items-empty items-empty-card">
+          <div class="empty-icon">🏷️</div>
+          <p>这个字典还没有标签</p>
+          <n-button size="small" type="primary" ghost @click="openItemCreate">新增第一个标签</n-button>
+        </div>
+      </section>
     </div>
 
     <!-- 字典编辑弹窗 -->
@@ -144,8 +210,9 @@
 </template>
 
 <script setup lang="ts">
-import { computed, h, onMounted, reactive, ref } from 'vue'
-import { NButton, NPopconfirm, useMessage } from 'naive-ui'
+import { computed, onMounted, reactive, ref } from 'vue'
+import draggable from 'vuedraggable'
+import { useMessage } from 'naive-ui'
 import {
   createDictItem,
   createDictionary,
@@ -153,6 +220,8 @@ import {
   deleteDictionary,
   fetchDictionaries,
   fetchDictItems,
+  reorderDictItems,
+  reorderDictionaries,
   updateDictItem,
   updateDictionary,
   type DictItem,
@@ -162,6 +231,8 @@ import {
 const message = useMessage()
 const loading = ref(false)
 const itemsLoading = ref(false)
+const dictionaryOrderSaving = ref(false)
+const itemOrderSaving = ref(false)
 const dictionaries = ref<Dictionary[]>([])
 const dictItems = ref<DictItem[]>([])
 const selectedDictId = ref(0)
@@ -197,38 +268,6 @@ const statusOptions = [
 const selectedDict = computed(() => dictionaries.value.find((d) => d.id === selectedDictId.value))
 const activeDictCount = computed(() => dictionaries.value.filter((d) => d.status === 'active').length)
 
-const itemColumns = [
-  { title: '标签', key: 'item_label', width: 140 },
-  { title: '值', key: 'item_value', width: 140 },
-  { title: '排序', key: 'sort_order', width: 70 },
-  {
-    title: '状态',
-    key: 'status',
-    width: 80,
-    render: (row: DictItem) =>
-      h(
-        'span',
-        { class: row.status === 'active' ? 'item-status active' : 'item-status inactive' },
-        row.status === 'active' ? '启用' : '停用'
-      ),
-  },
-  { title: '备注', key: 'remark' },
-  {
-    title: '操作',
-    key: 'actions',
-    width: 140,
-    render: (row: DictItem) =>
-      h('div', { style: 'display: flex; gap: 8px' }, [
-        h(NButton, { size: 'small', text: true, onClick: () => openItemEdit(row) }, () => '编辑'),
-        h(
-          NPopconfirm,
-          { onPositiveClick: () => handleItemDelete(row.id) },
-          { default: () => '确认删除？', trigger: () => h(NButton, { size: 'small', text: true, type: 'error' }, () => '删除') }
-        ),
-      ]),
-  },
-]
-
 async function loadDicts() {
   loading.value = true
   try {
@@ -236,6 +275,8 @@ async function loadDicts() {
     if (dictionaries.value.length > 0 && !selectedDictId.value) {
       selectDict(dictionaries.value[0])
     }
+  } catch (e: any) {
+    message.error(e?.response?.data?.detail || '字典列表加载失败')
   } finally {
     loading.value = false
   }
@@ -245,9 +286,43 @@ async function selectDict(dict: Dictionary) {
   selectedDictId.value = dict.id
   itemsLoading.value = true
   try {
-    dictItems.value = await fetchDictItems(dict.dict_code)
+    // 管理页同时读取启用和停用标签，保证停用数据也能编辑与参与排序。
+    dictItems.value = await fetchDictItems(dict.dict_code, true)
+  } catch (e: any) {
+    message.error(e?.response?.data?.detail || '字典标签加载失败')
   } finally {
     itemsLoading.value = false
+  }
+}
+
+// 字典列表拖动结束后，将完整顺序一次性保存到核心库。
+async function saveDictionaryOrder() {
+  if (dictionaryOrderSaving.value || dictionaries.value.length < 2) return
+  dictionaryOrderSaving.value = true
+  try {
+    dictionaries.value = await reorderDictionaries(dictionaries.value.map((dict) => dict.id))
+    message.success('字典顺序已保存')
+  } catch (e: any) {
+    message.error(e?.response?.data?.detail || '字典排序保存失败，正在恢复原顺序')
+    dictionaries.value = await fetchDictionaries()
+  } finally {
+    dictionaryOrderSaving.value = false
+  }
+}
+
+// 当前字典的标签卡片拖动结束后，仅保存本字典内的完整顺序。
+async function saveItemOrder() {
+  const dict = selectedDict.value
+  if (!dict || itemOrderSaving.value || dictItems.value.length < 2) return
+  itemOrderSaving.value = true
+  try {
+    dictItems.value = await reorderDictItems(dict.id, dictItems.value.map((item) => item.id))
+    message.success('标签顺序已保存')
+  } catch (e: any) {
+    message.error(e?.response?.data?.detail || '标签排序保存失败，正在恢复原顺序')
+    await selectDict(dict)
+  } finally {
+    itemOrderSaving.value = false
   }
 }
 
@@ -259,7 +334,7 @@ function openDictCreate() {
     dict_code: '',
     dict_name: '',
     description: '',
-    sort_order: 1,
+    sort_order: Math.max(0, ...dictionaries.value.map((dict) => dict.sort_order)) + 10,
     status: 'active',
   })
   dictModal.value = true
@@ -323,7 +398,7 @@ function openItemCreate() {
   Object.assign(itemForm, {
     item_label: '',
     item_value: '',
-    sort_order: 1,
+    sort_order: Math.max(0, ...dictItems.value.map((item) => item.sort_order)) + 10,
     status: 'active',
     remark: '',
   })
@@ -385,87 +460,342 @@ onMounted(loadDicts)
 }
 
 .dict-layout {
+  /* 左侧固定管理字典，右侧将当前字典项按卡片网格展开。 */
   display: grid;
-  grid-template-columns: 260px 1fr;
+  grid-template-columns: minmax(270px, 310px) minmax(0, 1fr);
   gap: 16px;
+  align-items: stretch;
+  min-height: 560px;
 }
 
-.dict-list-panel {
-  background: #1c1f23;
-  border: 1px solid #2c3035;
-  border-radius: 8px;
-  padding: 16px;
+.dict-list-panel,
+.dict-items-panel {
+  min-width: 0;
+  min-height: 560px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--n-color-card, #1a1d21);
+  border: 1px solid var(--n-border-color, #2a2f3a);
+  border-radius: 12px;
 }
 
 .panel-title {
   font-size: 14px;
   font-weight: 600;
-  color: #e5e7eb;
-  margin-bottom: 4px;
+  color: var(--n-text-color-1, #e5e7eb);
 }
 
 .panel-sub {
   font-size: 12px;
-  color: #9ca3af;
+  color: var(--n-text-color-3, #6b7280);
+  margin-top: 4px;
+}
+
+.dict-list-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 16px;
+  border-bottom: 1px solid var(--n-border-color, #2a2f3a);
+  flex-shrink: 0;
+}
+
+.dict-total-badge,
+.item-total-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 30px;
+  height: 26px;
+  padding: 0 8px;
+  box-sizing: border-box;
+  border-radius: 999px;
+  background: var(--n-color, #23272f);
+  color: var(--n-text-color-2, #9ca3af);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }
 
 .dict-list {
-  margin-top: 12px;
+  /* 让大量字典在左栏内部滚动，不挤压右侧标签卡片区域。 */
+  min-height: 0;
+  flex: 1;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px;
 }
 
 .dict-item {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  padding: 10px 12px;
-  border-radius: 6px;
+  gap: 10px;
+  min-height: 64px;
+  padding: 10px;
+  border: 1px solid transparent;
+  border-radius: 10px;
   cursor: pointer;
-  margin-bottom: 4px;
-  transition: background 0.15s;
+  transition: background 0.15s, border-color 0.15s, transform 0.15s;
+  box-sizing: border-box;
 }
+
 .dict-item:hover {
-  background: #24282d;
+  background: var(--n-color-hover, #23272f);
+  border-color: var(--n-border-color, #2a2f3a);
 }
+
 .dict-item.active {
-  background: #22262b;
-  border-left: 3px solid #3b82f6;
-  padding-left: 9px;
+  background: rgba(59, 130, 246, 0.12);
+  border-color: rgba(59, 130, 246, 0.35);
+  box-shadow: inset 3px 0 0 var(--n-primary-color, #3b82f6);
+}
+
+.dict-item.inactive .dict-main {
+  opacity: 0.65;
+}
+
+.dict-drag-handle,
+.item-drag-handle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 22px;
+  width: 22px;
+  height: 26px;
+  color: var(--n-text-color-3, #6b7280);
+  font-size: 19px;
+  line-height: 1;
+  letter-spacing: -3px;
+  cursor: grab;
+  user-select: none;
+}
+
+.dict-drag-handle:hover,
+.item-drag-handle:hover {
+  color: var(--n-primary-color, #3b82f6);
+}
+
+.dict-drag-handle:active,
+.item-drag-handle:active {
+  cursor: grabbing;
 }
 
 .dict-name {
   font-size: 13px;
-  color: #e5e7eb;
+  color: var(--n-text-color-1, #e5e7eb);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
+
 .dict-code {
   font-size: 11px;
-  color: #6b7280;
+  color: var(--n-text-color-3, #6b7280);
   margin-top: 2px;
   font-family: monospace;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .dict-status {
-  font-size: 10px;
-}
-.dict-status.active {
-  color: #4ade80;
-}
-.dict-status.inactive {
-  color: #6b7280;
+  flex-shrink: 0;
+  padding: 3px 8px;
+  border-radius: 999px;
+  font-size: 11px;
 }
 
-.dict-items-panel {
-  background: #1c1f23;
-  border: 1px solid #2c3035;
-  border-radius: 8px;
-  padding: 16px;
-  min-height: 400px;
+.dict-status.active {
+  color: #4ade80;
+  background: rgba(34, 197, 94, 0.12);
+}
+
+.dict-status.inactive {
+  color: #6b7280;
+  background: rgba(107, 114, 128, 0.14);
 }
 
 .panel-head {
   display: flex;
   justify-content: space-between;
-  align-items: flex-start;
-  margin-bottom: 16px;
+  align-items: center;
+  gap: 16px;
+  padding: 18px 20px;
+  border-bottom: 1px solid var(--n-border-color, #2a2f3a);
+  flex-shrink: 0;
+}
+
+.items-title-group {
+  min-width: 0;
+}
+
+.items-title-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.item-total-badge {
+  min-width: 48px;
+  height: 24px;
+  background: rgba(59, 130, 246, 0.14);
+  color: var(--n-primary-color, #60a5fa);
+}
+
+.panel-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.item-grid {
+  /* 卡片自动适配可用宽度，拖动时保持网格布局。 */
+  min-height: 0;
+  flex: 1;
+  overflow-y: auto;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 250px), 1fr));
+  align-content: start;
+  gap: 12px;
+  padding: 18px;
+}
+
+.item-card {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 14px;
+  background: var(--n-color, #202329);
+  border: 1px solid var(--n-border-color, #2a2f3a);
+  border-radius: 12px;
+  transition: transform 0.16s ease, border-color 0.16s ease, box-shadow 0.16s ease;
+}
+
+.item-card:hover {
+  transform: translateY(-2px);
+  border-color: rgba(99, 102, 241, 0.45);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18);
+}
+
+.item-card-inactive {
+  opacity: 0.72;
+}
+
+.item-card-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.item-drag-handle {
+  flex-basis: 20px;
+  width: 20px;
+  height: 24px;
+}
+
+.item-card-title {
+  min-width: 0;
+  flex: 1;
+  color: var(--n-text-color-1, #e5e7eb);
+  font-size: 14px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.item-status {
+  flex-shrink: 0;
+  padding: 3px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.item-status.active {
+  background: rgba(34, 197, 94, 0.12);
+  color: #4ade80;
+}
+
+.item-status.inactive {
+  background: rgba(156, 163, 175, 0.14);
+  color: #9ca3af;
+}
+
+.item-value-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.item-field-label {
+  flex-shrink: 0;
+  color: var(--n-text-color-3, #6b7280);
+  font-size: 11px;
+}
+
+.item-value-row code {
+  min-width: 0;
+  padding: 4px 7px;
+  color: #a5b4fc;
+  background: rgba(99, 102, 241, 0.12);
+  border-radius: 5px;
+  font-family: 'SFMono-Regular', Consolas, monospace;
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.item-remark {
+  min-height: 38px;
+  margin: 0;
+  color: var(--n-text-color-2, #9ca3af);
+  font-size: 12px;
+  line-height: 1.6;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+}
+
+.item-remark.empty {
+  color: var(--n-text-color-3, #6b7280);
+}
+
+.item-card-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: auto;
+  padding-top: 10px;
+  border-top: 1px solid var(--n-border-color, #2a2f3a);
+}
+
+.item-order {
+  color: var(--n-primary-color, #60a5fa);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.item-order span {
+  color: var(--n-text-color-3, #6b7280);
+  margin-left: 4px;
+}
+
+.item-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 
 .items-empty {
@@ -473,33 +803,102 @@ onMounted(loadDicts)
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  height: 300px;
-  color: #6b7280;
+  flex: 1;
+  min-height: 300px;
+  gap: 8px;
+  color: var(--n-text-color-3, #6b7280);
 }
+
+.items-empty-card {
+  margin: 18px;
+  border: 1px dashed var(--n-border-color, #2a2f3a);
+  border-radius: 12px;
+}
+
 .empty-icon {
   font-size: 40px;
   margin-bottom: 12px;
 }
 
-.item-status {
-  display: inline-block;
-  padding: 2px 10px;
-  border-radius: 10px;
-  font-size: 12px;
-}
-.item-status.active {
-  background: rgba(34, 197, 94, 0.15);
-  color: #4ade80;
-}
-.item-status.inactive {
-  background: rgba(156, 163, 175, 0.15);
-  color: #9ca3af;
+.items-loading {
+  display: flex;
+  flex: 1;
+  min-height: 300px;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  color: var(--n-text-color-3, #6b7280);
 }
 
 .list-empty {
   text-align: center;
-  color: #6b7280;
+  color: var(--n-text-color-3, #6b7280);
   padding: 40px 0;
   font-size: 13px;
+}
+
+.list-empty .empty-icon {
+  margin: 0 0 8px;
+}
+
+.list-empty p {
+  margin: 0;
+}
+
+.list-empty .empty-sub {
+  margin-top: 5px;
+  font-size: 12px;
+}
+
+.dict-ghost,
+.item-ghost {
+  opacity: 0.4;
+  background: rgba(59, 130, 246, 0.12) !important;
+  border: 1px dashed var(--n-primary-color, #3b82f6) !important;
+}
+
+.dict-chosen,
+.item-chosen {
+  cursor: grabbing;
+}
+
+@media (max-width: 1000px) {
+  .dict-manage-page {
+    padding: 20px;
+  }
+
+  .dict-layout {
+    grid-template-columns: minmax(230px, 280px) minmax(0, 1fr);
+  }
+
+  .item-grid {
+    grid-template-columns: repeat(auto-fill, minmax(min(100%, 220px), 1fr));
+    padding: 14px;
+  }
+}
+
+@media (max-width: 760px) {
+  .dict-layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .dict-list-panel {
+    min-height: 0;
+    max-height: 360px;
+  }
+
+  .dict-items-panel {
+    min-height: 480px;
+  }
+
+  .panel-head {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .panel-actions {
+    width: 100%;
+    justify-content: flex-end;
+  }
 }
 </style>

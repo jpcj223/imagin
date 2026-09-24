@@ -71,8 +71,10 @@ export function fetchDictionaries(): Promise<Dictionary[]> {
 }
 
 /** 获取某个字典的所有项 */
-export function fetchDictItems(dictCode: string): Promise<DictItem[]> {
-  return apiClient.get(`/core/dictionaries/${dictCode}/items`).then((res) => res.data)
+export function fetchDictItems(dictCode: string, includeInactive = false): Promise<DictItem[]> {
+  return apiClient
+    .get(`/core/dictionaries/${dictCode}/items`, { params: { include_inactive: includeInactive } })
+    .then((res) => res.data)
 }
 
 /** 新增字典 */
@@ -83,6 +85,11 @@ export function createDictionary(payload: Partial<Dictionary>): Promise<Dictiona
 /** 更新字典 */
 export function updateDictionary(id: number, payload: Partial<Dictionary>): Promise<Dictionary> {
   return apiClient.put(`/core/dictionaries/${id}`, payload).then((res) => res.data)
+}
+
+/** 按拖动后的完整顺序保存字典列表 */
+export function reorderDictionaries(ids: number[]): Promise<Dictionary[]> {
+  return apiClient.post('/core/dictionaries/reorder', { ids }).then((res) => res.data)
 }
 
 /** 删除字典 */
@@ -98,6 +105,11 @@ export function createDictItem(dictId: number, payload: Partial<DictItem>): Prom
 /** 更新字典项 */
 export function updateDictItem(itemId: number, payload: Partial<DictItem>): Promise<DictItem> {
   return apiClient.put(`/core/dictionaries/dict-items/${itemId}`, payload).then((res) => res.data)
+}
+
+/** 按拖动后的完整顺序保存单个字典下的标签 */
+export function reorderDictItems(dictId: number, ids: number[]): Promise<DictItem[]> {
+  return apiClient.post(`/core/dictionaries/${dictId}/items/reorder`, { ids }).then((res) => res.data)
 }
 
 /** 删除字典项 */
