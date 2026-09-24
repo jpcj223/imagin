@@ -131,6 +131,7 @@ class OrganizationSave(BaseModel):
     hierarchy: str = Field(default="", description="组织层级、职级或内部结构（旧字段，保留兼容）")
     hierarchy_system: str = Field(default="", description="层级体系类型，如宗门制、军衔制等")
     hierarchy_levels: str = Field(default="[]", description="层级列表，JSON 数组格式 [{name, level}]")
+    hierarchy_templates: str = Field(default="{}", description="该组织按体系保存的层级模板副本，JSON 对象格式")
     resources: str = Field(default="", description="核心资源、人脉、资产或能力")
     goal: str = Field(default="", description="组织目标或当前战略")
     level: int = Field(default=1, description="组织层级，1-10")

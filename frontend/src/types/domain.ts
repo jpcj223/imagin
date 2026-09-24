@@ -400,6 +400,8 @@ export interface OrganizationItem {
   hierarchy_system: string
   /** 层级列表（JSON 数组），每项 { name, level } 按从高到低排序。 */
   hierarchy_levels: string
+  /** 各体系的组织级层级副本（JSON 对象），不覆盖内置默认模板。 */
+  hierarchy_templates?: string
 }
 
 export interface ForeshadowingItem {

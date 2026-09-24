@@ -40,6 +40,8 @@ class Organization(Base):
     # 第四版：层级体系
     hierarchy_system = Column(String(64), default="")
     hierarchy_levels = Column(Text, default="[]")
+    # 各体系的组织级副本；修改组织层级时不影响内置默认模板。
+    hierarchy_templates = Column(Text, nullable=False, default="{}")
     # 时间戳
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())

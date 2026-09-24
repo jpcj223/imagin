@@ -249,16 +249,29 @@
             <div class="form-section">
               <div class="section-title">
                 层级体系
-                <span class="section-hint">组织内部的等级结构</span>
+                <span class="section-hint">各体系独立保存，修改只影响当前组织</span>
               </div>
               <div class="hierarchy-system-row">
                 <n-form-item label="体系类型" style="margin-bottom: 0; flex: 0 0 200px">
                   <n-select
                     v-model:value="form.hierarchy_system"
                     :options="hierarchySystemOptions"
-                    placeholder="选择内置体系"
-                    clearable
+                    placeholder="选择层级体系"
                     @update:value="onHierarchySystemChange"
+                  />
+                </n-form-item>
+                <n-form-item
+                  v-if="form.hierarchy_system === 'custom'"
+                  label="套用默认模板"
+                  style="margin-bottom: 0; flex: 0 1 260px; margin-left: 12px"
+                >
+                  <n-select
+                    v-model:value="customTemplateSource"
+                    :options="customHierarchyTemplateOptions"
+                    placeholder="选择模板作为起点"
+                    clearable
+                    filterable
+                    @update:value="applyCustomHierarchyTemplate"
                   />
                 </n-form-item>
                 <n-button
@@ -607,7 +620,8 @@ const form = reactive({
   disbanded_chapter: null as number | null,
   hidden_secrets: '',
   hierarchy_system: 'none',
-  hierarchy_levels: [] as { name: string; level: number }[]
+  hierarchy_levels: [] as HierarchyLevel[],
+  hierarchy_templates: {} as Record<string, HierarchyLevel[]>
 })
 
 const { isDirty, markClean, confirmIfDirty } = useDirtySnapshot(form, '当前势力档案有未保存的修改，确定要离开吗？')
@@ -842,6 +856,10 @@ const hierarchySystemOptions = Object.entries(HIERARCHY_SYSTEMS).map(([key, val]
   label: val.name,
   value: key
 }))
+const customHierarchyTemplateOptions = Object.entries(HIERARCHY_SYSTEMS)
+  .filter(([key, value]) => key !== 'none' && key !== 'custom' && value.levels.length > 0)
+  .map(([key, value]) => ({ label: value.name, value: key }))
+const customTemplateSource = ref<string | null>(null)
 
 // ===== 组织树数据（扁平化） =====
 interface FlatTreeNode {
@@ -1138,11 +1156,11 @@ const secretTemplates = computed(() => {
 })
 
 // ===== 组织类型切换联动 =====
-function onOrgTypeChange(newType: string | null) {
+function onOrgTypeChange(_newType: string | null) {
   // 切换组织类型时，只重置层级体系（因为体系与类型强关联）
   // 其他字段保留用户已编辑的内容，不清空
-  form.hierarchy_system = 'none'
-  form.hierarchy_levels = []
+  // 通过统一切换逻辑先保存当前体系副本，避免类型切换时覆盖用户修改。
+  onHierarchySystemChange('none')
 }
 
 const orgNameOptions = computed(() =>
@@ -1220,8 +1238,8 @@ function appendSecretTemplate(label: string | null) {
 }
 
 // ===== 层级体系操作 =====
-// 自定义层级缓存：按组织 id 缓存用户编辑的自定义层级，切换体系后不丢失
-const customLevelsCache = new Map<number | 'new', HierarchyLevel[]>()
+// 记录当前正在编辑的体系，用于切换时先保存当前体系的组织级副本。
+const activeHierarchySystem = ref('none')
 
 // 拖拽状态
 const dragIndex = ref<number | null>(null)
@@ -1238,25 +1256,67 @@ const displayHierarchyLevels = computed<DisplayHierarchyLevel[]>(() => {
   return [noneItem, ...realLevels]
 })
 
-function onHierarchySystemChange(system: string) {
-  if (!system) return
+function cloneHierarchyLevels(levels: HierarchyLevel[]): HierarchyLevel[] {
+  // 拷贝每个层级对象，防止编辑组织副本时改动内置模板。
+  return levels.map((level) => ({ ...level }))
+}
 
-  const sys = HIERARCHY_SYSTEMS[system]
-  if (system === 'custom') {
-    // 切到自定义：从缓存恢复，没有缓存则为空
-    const cacheKey = editingId.value || 'new'
-    const cached = customLevelsCache.get(cacheKey)
-    if (cached && cached.length > 0) {
-      form.hierarchy_levels = cached.map(l => ({ ...l }))
-    } else {
-      form.hierarchy_levels = []
-    }
-  } else if (sys && sys.levels.length > 0) {
-    // 切到内置体系：直接用预设
-    form.hierarchy_levels = sys.levels.map((l) => ({ ...l }))
-  } else {
-    form.hierarchy_levels = []
+function safeParseHierarchyTemplates(value: unknown): Record<string, HierarchyLevel[]> {
+  // 兼容 API 返回对象、JSON 字符串和旧记录空值三种数据形态。
+  if (value && typeof value === 'object' && !Array.isArray(value)) {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>)
+        .filter(([, levels]) => Array.isArray(levels))
+        .map(([system, levels]) => [system, cloneHierarchyLevels(levels as HierarchyLevel[])])
+    )
   }
+  if (typeof value === 'string') {
+    try {
+      return safeParseHierarchyTemplates(JSON.parse(value))
+    } catch {
+      return {}
+    }
+  }
+  return {}
+}
+
+// 切换体系前保存当前副本；再次切回时优先恢复组织自己的修改。
+function onHierarchySystemChange(system: string | null) {
+  const nextSystem = system || 'none'
+  const previousSystem = activeHierarchySystem.value
+
+  if (previousSystem !== 'none') {
+    form.hierarchy_templates[previousSystem] = cloneHierarchyLevels(form.hierarchy_levels)
+  }
+
+  form.hierarchy_system = nextSystem
+  activeHierarchySystem.value = nextSystem
+  customTemplateSource.value = null
+
+  if (nextSystem === 'none') {
+    form.hierarchy_levels = []
+    return
+  }
+
+  const savedLevels = form.hierarchy_templates[nextSystem]
+  const defaultLevels = HIERARCHY_SYSTEMS[nextSystem]?.levels || []
+  form.hierarchy_levels = cloneHierarchyLevels(savedLevels ?? defaultLevels)
+}
+
+// 自定义体系从内置模板复制一份，后续编辑只保存到当前组织的自定义副本。
+function applyCustomHierarchyTemplate(system: string | null) {
+  if (!system || form.hierarchy_system !== 'custom') return
+  const template = HIERARCHY_SYSTEMS[system]
+  if (!template) return
+
+  form.hierarchy_levels = cloneHierarchyLevels(template.levels)
+  syncActiveHierarchyProfile()
+}
+
+// 将当前编辑结果写入组织自己的体系映射，保存或切换时均可恢复。
+function syncActiveHierarchyProfile() {
+  if (form.hierarchy_system === 'none') return
+  form.hierarchy_templates[form.hierarchy_system] = cloneHierarchyLevels(form.hierarchy_levels)
 }
 
 function addHierarchyLevel() {
@@ -1265,12 +1325,7 @@ function addHierarchyLevel() {
     : 1
   form.hierarchy_levels.push({ name: '新层级', level: nextLevel })
   _reindexLevels()
-
-  // 自定义模式下更新缓存
-  if (form.hierarchy_system === 'custom') {
-    const cacheKey = editingId.value || 'new'
-    customLevelsCache.set(cacheKey, form.hierarchy_levels.map(l => ({ ...l })))
-  }
+  syncActiveHierarchyProfile()
 }
 
 function updateLevelName(displayIndex: number, name: string) {
@@ -1278,12 +1333,7 @@ function updateLevelName(displayIndex: number, name: string) {
   const realIndex = displayIndex - 1
   if (realIndex < 0 || realIndex >= form.hierarchy_levels.length) return
   form.hierarchy_levels[realIndex].name = name
-
-  // 自定义模式下更新缓存
-  if (form.hierarchy_system === 'custom') {
-    const cacheKey = editingId.value || 'new'
-    customLevelsCache.set(cacheKey, form.hierarchy_levels.map(l => ({ ...l })))
-  }
+  syncActiveHierarchyProfile()
 }
 
 function removeHierarchyLevel(displayIndex: number) {
@@ -1292,12 +1342,7 @@ function removeHierarchyLevel(displayIndex: number) {
   if (realIndex < 0 || realIndex >= form.hierarchy_levels.length) return
   form.hierarchy_levels.splice(realIndex, 1)
   _reindexLevels()
-
-  // 自定义模式下更新缓存
-  if (form.hierarchy_system === 'custom') {
-    const cacheKey = editingId.value || 'new'
-    customLevelsCache.set(cacheKey, form.hierarchy_levels.map(l => ({ ...l })))
-  }
+  syncActiveHierarchyProfile()
 }
 
 // ===== 拖拽排序 =====
@@ -1334,12 +1379,7 @@ function onDrop(index: number, e: DragEvent) {
   form.hierarchy_levels.splice(toRealIdx, 0, item)
   _reindexLevels()
   dragIndex.value = null
-
-  // 自定义模式下更新缓存
-  if (form.hierarchy_system === 'custom') {
-    const cacheKey = editingId.value || 'new'
-    customLevelsCache.set(cacheKey, form.hierarchy_levels.map(l => ({ ...l })))
-  }
+  syncActiveHierarchyProfile()
 }
 
 function onDragEnd() {
@@ -1367,6 +1407,16 @@ function fillForm(item?: Partial<OrganizationItem>) {
     return []
   }
 
+  // 读取旧记录时以当前层级字段为准，兼容尚无独立模板映射的数据。
+  const hierarchySystem = item?.hierarchy_system || 'none'
+  const hierarchyLevels = safeParseLevels(item?.hierarchy_levels)
+  const hierarchyTemplates = safeParseHierarchyTemplates(item?.hierarchy_templates)
+  if (hierarchySystem !== 'none') {
+    hierarchyTemplates[hierarchySystem] = cloneHierarchyLevels(hierarchyLevels)
+  }
+  activeHierarchySystem.value = hierarchySystem
+  customTemplateSource.value = null
+
   Object.assign(form, {
     name: item?.name ?? '新组织',
     parent_id: item?.parent_id ?? null,
@@ -1389,8 +1439,9 @@ function fillForm(item?: Partial<OrganizationItem>) {
     active_from_chapter: item?.active_from_chapter ?? null,
     disbanded_chapter: item?.disbanded_chapter ?? null,
     hidden_secrets: item?.hidden_secrets ?? '',
-    hierarchy_system: item?.hierarchy_system || 'none',
-    hierarchy_levels: safeParseLevels(item?.hierarchy_levels)
+    hierarchy_system: hierarchySystem,
+    hierarchy_levels: hierarchyLevels,
+    hierarchy_templates: hierarchyTemplates
   })
 }
 
@@ -1484,9 +1535,13 @@ async function save() {
   const projectId = await ensureProject()
   if (!projectId) return
 
+  // 保存前同步当前体系，确保当前页编辑内容与体系副本一致。
+  syncActiveHierarchyProfile()
+
   const payload = {
     ...form,
-    hierarchy_levels: JSON.stringify(form.hierarchy_levels)
+    hierarchy_levels: JSON.stringify(form.hierarchy_levels),
+    hierarchy_templates: JSON.stringify(form.hierarchy_templates)
   }
 
   if (editingId.value) {
