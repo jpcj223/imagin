@@ -539,15 +539,19 @@ async function save() {
   if (!projectId) return
 
   try {
+    // 1. 将当前项目 ID 与设定表单合并，满足后端世界观保存请求的必填字段。
+    const payload = { ...form, project_id: projectId }
+    // 2. 根据是否已有记录 ID，分别执行更新或新增。
     if (editingId.value) {
-      await updateResource('world', editingId.value, { ...form })
+      await updateResource('world', editingId.value, payload)
       notify.success('已保存')
     } else {
-      const created = await createResource<WorldSetting>('world', { ...form })
+      const created = await createResource<WorldSetting>('world', payload)
       editingId.value = created.id
       isCreating.value = false
       notify.success('已创建')
     }
+    // 3. 标记表单为已保存状态，并刷新设定列表与统计数据。
     markClean()
     loadWorlds()
   } catch (e) {

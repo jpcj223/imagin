@@ -11,7 +11,7 @@ from typing import Any
 from app.core.llm import chat_completion
 from app.memory.manager import MemoryManager
 from app.db.session import get_business_db
-from app.models.business import Character, SettingChatMessage
+from app.models.business import Character, SettingChatMessage, WorldSetting
 from app.db.repository import row_to_dict
 
 
@@ -34,11 +34,10 @@ SETTING_FIELD_TEMPLATES: dict[str, list[dict[str, Any]]] = {
     "world": [
         {"key": "name", "label": "世界名称", "category": "基础", "priority": 1},
         {"key": "era", "label": "时代背景", "category": "基础", "priority": 1},
-        {"key": "geography", "label": "地理环境", "category": "地理", "priority": 2},
         {"key": "power_system", "label": "力量体系", "category": "体系", "priority": 1},
-        {"key": "factions", "label": "势力分布", "category": "势力", "priority": 2},
-        {"key": "culture", "label": "文化风俗", "category": "文化", "priority": 3},
-        {"key": "history", "label": "重要历史", "category": "历史", "priority": 3},
+        {"key": "atmosphere", "label": "整体基调", "category": "氛围", "priority": 2},
+        {"key": "synopsis", "label": "世界观简介", "category": "概览", "priority": 2},
+        {"key": "core_rules", "label": "核心规则", "category": "规则", "priority": 2},
     ],
     "foreshadowing": [
         {"key": "main_plot", "label": "主线伏笔", "category": "主线", "priority": 1},
@@ -120,10 +119,17 @@ class SettingCoAgent:
 
         # 构建问题列表（HTML）
         if first_batch_labels:
-            questions_items = "".join(
-                f"<li>他/她的<strong>{label}</strong>具体是什么样的？{'有没有标志性的细节？' if i == 0 else ''}</li>\n"
-                for i, label in enumerate(first_batch_labels)
-            )
+            if target_type == "world":
+                questions_items = "".join(
+                    f"<li>这个世界的<strong>{label}</strong>你希望设定成什么样？"
+                    f"{'有没有能体现世界特色的细节？' if i == 0 else ''}</li>\n"
+                    for i, label in enumerate(first_batch_labels)
+                )
+            else:
+                questions_items = "".join(
+                    f"<li>他/她的<strong>{label}</strong>具体是什么样的？{'有没有标志性的细节？' if i == 0 else ''}</li>\n"
+                    for i, label in enumerate(first_batch_labels)
+                )
             questions_html = f"""<div class="question-highlight">
               我发现以下几个方面还需要补充，想先和你聊聊：
             </div>
@@ -207,7 +213,25 @@ class SettingCoAgent:
         memory_written = False
         if extracted and target_id:
             self._apply_extracted_fields(target_type, target_id, extracted)
-            memory_written = True
+            # 步骤 1：将本轮确认提取出的事实实际写入项目记忆，再向界面报告成功。
+            memory_content = "\n".join(
+                f"{field.get('label') or field.get('key')}：{field.get('value')}"
+                for field in extracted
+            )
+            try:
+                self.memory.store_memory(
+                    memory_type="setting",
+                    title=f"{target_name or '设定'}设定补充",
+                    content=memory_content,
+                    importance=75,
+                    source_type="setting_co",
+                    source_ref=session_id,
+                    metadata={"target_type": target_type, "target_id": target_id},
+                )
+                memory_written = True
+            except Exception as exc:
+                # 步骤 2：记忆写入失败不回滚已保存的设定字段，也不伪报成功。
+                print(f"[SettingCoAgent] 写入项目记忆失败: {exc}")
 
         # 3. 生成回复
         reply_result = self._generate_reply(
@@ -439,30 +463,66 @@ highlights 是可选的，如果提取的内容有特殊价值（如伏笔潜力
         extracted: list[dict[str, Any]],
     ) -> None:
         """将提取到的字段写入数据库。"""
-        if target_type != "character":
-            # 目前先支持角色，后续扩展
+        if target_type not in {"character", "world"}:
             return
 
         with get_business_db() as db:
-            character = db.query(Character).filter(Character.id == target_id).first()
-            if not character:
+            if target_type == "character":
+                target = db.query(Character).filter(Character.id == target_id).first()
+                field_mapping = {field["key"]: field["key"] for field in SETTING_FIELD_TEMPLATES["character"]}
+                replace_fields = {"name"}
+            else:
+                target = (
+                    db.query(WorldSetting)
+                    .filter(
+                        WorldSetting.id == target_id,
+                        WorldSetting.project_id == self.project_id,
+                    )
+                    .first()
+                )
+                # 步骤 1：世界共创字段映射到世界观总览现有列，和页面保存结构保持一致。
+                field_mapping = {
+                    "name": "title",
+                    "era": "era",
+                    "power_system": "geography",
+                    "atmosphere": "atmosphere",
+                    "synopsis": "rules",
+                    "core_rules": "extra",
+                }
+                replace_fields = {"name", "era", "power_system", "atmosphere"}
+
+            if not target:
                 return
 
             for field in extracted:
                 key = field["key"]
                 value = field["value"]
+                column = field_mapping.get(key)
+                if not column or not hasattr(target, column):
+                    continue
 
-                # 特殊处理：追加到已有内容而不是覆盖
-                if hasattr(character, key):
-                    current = getattr(character, "")
-                    current_val = getattr(character, key) or ""
-                    if current_val and value not in current_val:
-                        new_val = current_val + "\n" + value if current_val else value
-                    else:
-                        new_val = value
-                    setattr(character, key, new_val)
+                # 步骤 2：名称和概要字段采用最新明确回答；长文本字段保留已记录的补充事实。
+                current_value = getattr(target, column) or ""
+                if key in replace_fields or not current_value or value in current_value:
+                    merged_value = value
+                else:
+                    merged_value = f"{current_value}\n{value}"
+                setattr(target, column, merged_value)
 
             db.commit()
+
+    @staticmethod
+    def _world_data_from_row(world: WorldSetting) -> dict[str, Any]:
+        """将世界观总览数据库列映射为共创 Agent 使用的字段。"""
+        return {
+            "id": world.id,
+            "name": world.title or "",
+            "era": world.era or "",
+            "power_system": world.geography or "",
+            "atmosphere": world.atmosphere or "",
+            "synopsis": world.rules or "",
+            "core_rules": world.extra or "",
+        }
 
     # ------------------------------------------------------------------
     # 计算设定完整度
@@ -505,5 +565,20 @@ highlights 是可选的，如果提取的内容有特殊价值（如伏笔潜力
                 # 计算完整度
                 completeness = self.calculate_completeness("character", data)
                 data["completeness"] = completeness
+                return data
+        if target_type == "world":
+            with get_business_db() as db:
+                world = (
+                    db.query(WorldSetting)
+                    .filter(
+                        WorldSetting.id == target_id,
+                        WorldSetting.project_id == self.project_id,
+                    )
+                    .first()
+                )
+                if not world:
+                    return {}
+                data = self._world_data_from_row(world)
+                data["completeness"] = self.calculate_completeness("world", data)
                 return data
         return {}

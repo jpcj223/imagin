@@ -51,6 +51,8 @@ export interface SettingIndexResponse {
   character_count: number
   character_completeness: number
   world: {
+    target_id: number | null
+    name: string
     completeness: number
     items: { key: string; label: string; status: string }[]
   }

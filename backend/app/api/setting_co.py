@@ -19,6 +19,7 @@ from app.models.business import (
     SettingChatSession,
     SettingChatMessage,
     Character,
+    WorldSetting,
 )
 from app.db.repository import row_to_dict, rows_to_dicts
 from app.agents_v3.setting_co_agent import SettingCoAgent, SETTING_FIELD_TEMPLATES
@@ -39,7 +40,6 @@ class CreateSessionRequest(BaseModel):
 
 
 class SendMessageRequest(BaseModel):
-    session_id: str
     message: str
 
 
@@ -69,22 +69,52 @@ def list_sessions(project_id: int, target_type: str | None = None):
 def create_session(req: CreateSessionRequest):
     """创建新的设定共创会话。"""
     session_id = f"sc_{uuid.uuid4().hex[:16]}"
-
-    # 根据 target 类型获取名称
+    target_id = req.target_id
     target_name = req.target_name
-    if req.target_type == "character" and req.target_id and not target_name:
-        with get_business_db() as db:
-            char = db.query(Character).filter(Character.id == req.target_id).first()
+
+    with get_business_db() as db:
+        # 步骤 1：世界观共创始终绑定总览记录；不存在时在本项目内创建空记录。
+        if req.target_type == "world":
+            world_query = db.query(WorldSetting).filter(
+                WorldSetting.project_id == req.project_id
+            )
+            world = (
+                world_query.filter(WorldSetting.id == target_id).first()
+                if target_id
+                else world_query.filter(
+                    (WorldSetting.category == "overview")
+                    | (WorldSetting.title == "世界观总览")
+                ).order_by(WorldSetting.id.asc()).first()
+            )
+            if target_id and not world:
+                raise HTTPException(status_code=404, detail="世界观总览不存在")
+            if not world:
+                world = WorldSetting(
+                    project_id=req.project_id,
+                    title=target_name or "世界观总览",
+                    category="overview",
+                    importance="high",
+                )
+                db.add(world)
+                db.flush()
+            target_id = world.id
+            target_name = target_name or world.title or "世界观总览"
+        elif req.target_type == "character" and target_id and not target_name:
+            char = (
+                db.query(Character)
+                .filter(Character.id == target_id, Character.project_id == req.project_id)
+                .first()
+            )
             if char:
                 target_name = char.name
 
-    with get_business_db() as db:
+        # 步骤 2：创建会话并保留目标记录 ID，后续回答才能准确写回。
         session = SettingChatSession(
             session_id=session_id,
             project_id=req.project_id,
             title=f"{target_name or '新设定'}的对话",
             target_type=req.target_type,
-            target_id=req.target_id,
+            target_id=target_id,
             target_name=target_name,
             status="active",
             completeness=0,
@@ -97,10 +127,12 @@ def create_session(req: CreateSessionRequest):
         # 生成开场白
         agent = SettingCoAgent(req.project_id)
         existing_data = {}
-        if req.target_type == "character" and req.target_id:
-            char = db.query(Character).filter(Character.id == req.target_id).first()
+        if req.target_type == "character" and target_id:
+            char = db.query(Character).filter(Character.id == target_id).first()
             if char:
                 existing_data = row_to_dict(char)
+        elif req.target_type == "world" and target_id:
+            existing_data = agent.get_setting_detail("world", target_id)
 
         opening = agent.generate_opening(
             target_type=req.target_type,
@@ -196,6 +228,8 @@ def send_message(session_id: str, req: SendMessageRequest):
         )
         db.add(user_msg)
         db.flush()
+        # 步骤 1：先提交用户消息，释放 SQLite 写锁，供 Agent 独立事务更新设定和记忆。
+        db.commit()
 
         # 调用 Agent 处理
         agent = SettingCoAgent(session.project_id)
@@ -232,15 +266,10 @@ def send_message(session_id: str, req: SendMessageRequest):
         )
         db.add(assistant_msg)
 
-        # 更新完整度
-        if session.target_type == "character" and session.target_id:
-            char = db.query(Character).filter(Character.id == session.target_id).first()
-            if char:
-                char_data = row_to_dict(char)
-                completeness = agent.calculate_completeness(
-                    session.target_type, char_data
-                )
-                session.completeness = completeness
+        # 步骤 1：根据已写回的目标资料刷新会话完整度。
+        if session.target_type in {"character", "world"} and session.target_id:
+            detail = agent.get_setting_detail(session.target_type, session.target_id)
+            session.completeness = detail.get("completeness", session.completeness)
 
         session.title = f"{session.target_name}的对话"  # 更新标题
         db.commit()
@@ -248,10 +277,10 @@ def send_message(session_id: str, req: SendMessageRequest):
 
         # 返回最新的设定数据（供右侧卡片更新）
         setting_detail = {}
-        if session.target_type == "character" and session.target_id:
-            char = db.query(Character).filter(Character.id == session.target_id).first()
-            if char:
-                setting_detail = agent.get_setting_detail("character", session.target_id)
+        if session.target_type in {"character", "world"} and session.target_id:
+            setting_detail = agent.get_setting_detail(
+                session.target_type, session.target_id
+            )
 
         return {
             "reply": {
@@ -333,15 +362,37 @@ def get_setting_index(project_id: int):
             if char_list else 0
         )
 
-    # 世界观（简化）
-    result["world"] = {
-        "completeness": 40,
-        "items": [
-            {"key": "power_system", "label": "修炼体系", "status": "partial"},
-            {"key": "factions", "label": "势力分布", "status": "partial"},
-            {"key": "geography", "label": "地理环境", "status": "empty"},
-        ],
-    }
+    # 步骤 1：读取本项目的世界观总览，左侧状态与实际资料同步。
+    with get_business_db() as db:
+        world = (
+            db.query(WorldSetting)
+            .filter(
+                WorldSetting.project_id == project_id,
+                (WorldSetting.category == "overview")
+                | (WorldSetting.title == "世界观总览"),
+            )
+            .order_by(WorldSetting.id.asc())
+            .first()
+        )
+        world_detail = (
+            agent._world_data_from_row(world)
+            if world
+            else {field["key"]: "" for field in SETTING_FIELD_TEMPLATES["world"]}
+        )
+        world_completeness = agent.calculate_completeness("world", world_detail)
+        result["world"] = {
+            "target_id": world.id if world else None,
+            "name": world.title if world and world.title else "世界观总览",
+            "completeness": world_completeness,
+            "items": [
+                {
+                    "key": field["key"],
+                    "label": field["label"],
+                    "status": "complete" if world_detail.get(field["key"]) else "empty",
+                }
+                for field in SETTING_FIELD_TEMPLATES["world"]
+            ],
+        }
 
     # 伏笔
     result["foreshadowing"] = {

@@ -50,7 +50,9 @@
               <div
                 v-for="item in settingIndex?.world?.items || []"
                 :key="item.key"
-                class="setting-item disabled"
+                class="setting-item"
+                :class="{ active: activeTargetType === 'world' && activeTargetId === settingIndex?.world?.target_id }"
+                @click="startChat('world', settingIndex?.world?.target_id || 0, settingIndex?.world?.name || '世界观总览')"
               >
                 <span class="item-status" :class="item.status"></span>
                 <span class="item-name">{{ item.label }}</span>
@@ -226,12 +228,44 @@
           实时设定卡片
         </div>
         <div class="right-subtitle">
-          {{ settingDetail?.name || '选择角色查看' }}
+          {{ settingDetail?.name || '选择角色或世界观查看' }}
         </div>
       </div>
 
       <div class="right-body">
-        <template v-if="settingDetail">
+        <template v-if="settingDetail && currentSession?.target_type === 'world'">
+          <div class="completeness">
+            <div class="completeness-header">
+              <span class="completeness-label">世界观完整度</span>
+              <span class="completeness-value">{{ settingDetail.completeness || 0 }}%</span>
+            </div>
+            <div class="completeness-bar">
+              <div class="completeness-fill" :style="{ width: (settingDetail.completeness || 0) + '%' }"></div>
+            </div>
+          </div>
+          <div
+            v-for="field in worldDetailFields"
+            :key="field.key"
+            class="setting-card"
+            :class="{ 'just-updated': lastUpdatedField === field.key }"
+          >
+            <div class="card-header">
+              <span class="card-icon">{{ field.icon }}</span>
+              <span class="card-title">{{ field.label }}</span>
+              <span v-if="lastUpdatedField === field.key" class="card-badge">刚更新</span>
+            </div>
+            <div class="card-field">
+              <div class="field-value" :class="{ partial: !settingDetail[field.key] }">
+                {{ settingDetail[field.key] || '待补充...' }}
+              </div>
+            </div>
+          </div>
+          <div class="card-footer-badge">
+            <span class="memory-level-badge l3">📁 L3 项目记忆</span>
+          </div>
+        </template>
+
+        <template v-else-if="settingDetail">
           <!-- 完整度 -->
           <div class="completeness">
             <div class="completeness-header">
@@ -338,7 +372,7 @@
 
         <div v-else class="right-empty">
           <div class="right-empty-icon">📋</div>
-          <div>选择左侧角色查看设定</div>
+          <div>选择左侧角色或世界观查看设定</div>
         </div>
       </div>
     </div>
@@ -382,6 +416,14 @@ const expandedGroups = ref({
 
 const messagesRef = ref<HTMLElement | null>(null)
 const textareaRef = ref<HTMLTextAreaElement | null>(null)
+const worldDetailFields = [
+  { key: 'name', label: '世界名称', icon: '🌍' },
+  { key: 'era', label: '时代背景', icon: '📜' },
+  { key: 'power_system', label: '核心力量体系', icon: '⚡' },
+  { key: 'atmosphere', label: '整体基调', icon: '🎭' },
+  { key: 'synopsis', label: '世界观简介', icon: '🗺️' },
+  { key: 'core_rules', label: '核心规则', icon: '📏' },
+]
 
 // 加载设定目录
 async function loadSettingIndex() {
@@ -407,6 +449,7 @@ async function startChat(targetType: string, targetId: number, targetName: strin
     })
 
     currentSession.value = result.session
+    activeTargetId.value = result.session.target_id
     messages.value = [
       {
         id: 0,
