@@ -555,13 +555,28 @@
                       <!-- 关闭步进按钮，给章数文本留出空间，直接点击即可输入。 -->
                       <n-input-number
                         :value="parseChapterRange(attr.chapter_no).start"
-                        placeholder="章数"
+                        placeholder=""
                         :min="1"
                         :precision="0"
                         :show-button="false"
+                        title="起始章节"
                         class="attr-chapter-num"
                         @update:value="(val: number | null) => onChapterChange(index, 'start', val)"
                       />
+                      <template v-if="parseChapterRange(attr.chapter_no).end != null">
+                        <span class="attr-chapter-label">章 - 第</span>
+                        <n-input-number
+                          :value="parseChapterRange(attr.chapter_no).end"
+                          placeholder=""
+                          :min="1"
+                          :precision="0"
+                          :show-button="false"
+                          title="结束章节"
+                          class="attr-chapter-num"
+                          @update:value="(val: number | null) => onChapterChange(index, 'end', val)"
+                        />
+                      </template>
+                      <span class="attr-chapter-label">章</span>
                       <n-radio-group
                         :value="parseChapterRange(attr.chapter_no).end != null ? 'range' : 'single'"
                         size="tiny"
@@ -571,17 +586,6 @@
                         <n-radio value="single">单章</n-radio>
                         <n-radio value="range">范围</n-radio>
                       </n-radio-group>
-                      <n-input-number
-                        v-if="parseChapterRange(attr.chapter_no).end != null"
-                        :value="parseChapterRange(attr.chapter_no).end"
-                        placeholder="章数"
-                        :min="1"
-                        :precision="0"
-                        :show-button="false"
-                        class="attr-chapter-num"
-                        @update:value="(val: number | null) => onChapterChange(index, 'end', val)"
-                      />
-                      <span class="attr-chapter-label">章</span>
                     </div>
                     <n-button class="attr-remove-btn" text type="error" @click="removeAttribute(index)">移除</n-button>
                   </div>
@@ -3862,7 +3866,7 @@ useProjectDataLoader(load)
   flex-shrink: 0;
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 4px;
   padding: 4px 10px;
   min-height: 34px;
   background: rgba(255, 255, 255, 0.04);
@@ -3894,8 +3898,8 @@ useProjectDataLoader(load)
 }
 
 .attr-chapter-num {
-  width: 72px;
-  flex: 0 0 72px;
+  width: 40px;
+  flex: 0 0 40px;
   --n-padding-left: 4px;
   --n-padding-right: 4px;
 }
@@ -3903,11 +3907,20 @@ useProjectDataLoader(load)
 .attr-chapter-num :deep(.n-input) {
   background: transparent;
   border: none;
+  box-shadow: none;
   height: 26px;
+  padding: 0;
 }
 
-.attr-chapter-num :deep(.n-input__border) {
+.attr-chapter-num :deep(.n-input__border),
+.attr-chapter-num :deep(.n-input__state-border) {
   display: none;
+}
+
+.attr-chapter-num :deep(.n-input.n-input--focus),
+.attr-chapter-num :deep(.n-input:hover) {
+  background: transparent;
+  box-shadow: none;
 }
 
 .attr-chapter-num :deep(.n-input__input-el) {
@@ -3924,7 +3937,7 @@ useProjectDataLoader(load)
 
 .attr-chapter-mode {
   flex-shrink: 0;
-  margin: 0 2px;
+  margin: 0 2px 0 6px;
 }
 
 .attr-chapter-mode :deep(.n-radio) {
