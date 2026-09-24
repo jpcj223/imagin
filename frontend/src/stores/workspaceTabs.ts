@@ -21,6 +21,7 @@ const KNOWN_TAB_PATHS = new Set([
   '/organizations',
   '/foreshadowings',
   '/memory',
+  '/setting-co',
   '/project-config',
   '/api-config',
   // 系统管理
