@@ -6,11 +6,25 @@ from collections.abc import Iterator
 from app.agents.context import build_chapter_context
 from app.core.llm import LLMError, chat_completion, chat_completion_stream
 from app.db.session import get_business_db
-from app.models.business import Chapter, ChapterSummary, GenerationLog, Outline
+from app.models.business import (
+    Chapter,
+    ChapterSummary,
+    GenerationLog,
+    GenerationVersion,
+    Outline,
+)
 
 
 def _format_context(context: dict) -> str:
     """把结构化上下文压缩成模型容易理解的写作资料包。"""
+    # 步骤 1：只取已沉淀记忆的标题与摘要，避免旧版写作链路漏读已审核事实。
+    memories = context.get("long_term_memories", [])
+    memory_lines = [
+        f"- {item.get('title', '')}：{(item.get('content_summary') or item.get('content', ''))[:120]}"
+        for item in memories[:8]
+        if item.get("title") or item.get("content_summary") or item.get("content")
+    ]
+    memory_text = "\n".join(memory_lines) if memory_lines else "暂无"
     return f"""
 项目：{context.get("project", {})}
 世界观：{context.get("world", {})}
@@ -19,6 +33,7 @@ def _format_context(context: dict) -> str:
 组织：{context.get("organizations", [])}
 待处理伏笔：{context.get("foreshadowings", [])}
 最近章节摘要：{context.get("recent_summaries", [])}
+已确认长期记忆：{memory_text}
 """.strip()
 
 
@@ -259,73 +274,112 @@ def draft_chapter_stream(
 
 
 def analyze_chapter(project_id: int, chapter_id: int, content: str) -> dict:
-    """分析章节正文并写入章节摘要表。
+    """用统一的分析 Agent 保存摘要并创建待审核变化提案。
 
-    第一版先把模型输出整体保存到 summary；后续可以继续拆分到人物变化、伏笔、时间线字段。
+    步骤 1：验证章节归属并读取章节号、版本来源和项目资料上下文。
+    步骤 2：调用 V3 共用分析器，产出结构化章节变化。
+    步骤 3：将自然语言实体名解析为本项目 ID，生成字段受限的提案。
+    步骤 4：在一个业务库事务内更新摘要、写入提案和记录分析日志。
     """
-    messages = [
-        {
-            "role": "system",
-            "content": "你是臆想创作的章节分析 Agent，负责把正文拆成可沉淀的长期记忆。",
-        },
-        {
-            "role": "user",
-            "content": f"""
-请分析下面章节，输出四段：
-【章节摘要】
-【人物变化】
-【世界观变化】
-【新增伏笔】
-【时间线事件】
-
-章节正文：
-{content}
-""".strip(),
-        },
-    ]
-
-    try:
-        analysis = chat_completion(messages, temperature=0.2)
-    except LLMError:
-        analysis = (
-            "【章节摘要】开发模式摘要：本章内容已保存，等待配置模型后重新分析。\n"
-            "【人物变化】暂无。\n"
-            "【世界观变化】暂无。\n"
-            "【新增伏笔】暂无。\n"
-            "【时间线事件】暂无。"
-        )
-
-    # 分析结果同时保存完整文本和拆分字段；右侧工作台可直接读取结构化长期记忆。
-    sections = {
-        "summary": _extract_section(analysis, "章节摘要") or analysis,
-        "character_changes": _extract_section(analysis, "人物变化"),
-        "world_changes": _extract_section(analysis, "世界观变化"),
-        "new_foreshadowings": _extract_section(analysis, "新增伏笔"),
-        "timeline_events": _extract_section(analysis, "时间线事件"),
-    }
+    from app.agents_v3.presets import get_agent
+    from app.services.chapter_change_proposals import (
+        build_proposal_drafts,
+        create_proposals,
+        load_entity_catalog,
+    )
 
     with get_business_db() as db:
-        summary = ChapterSummary(
-            chapter_id=chapter_id,
-            summary=sections["summary"],
-            character_changes=sections["character_changes"],
-            world_changes=sections["world_changes"],
-            new_foreshadowings=sections["new_foreshadowings"],
-            timeline_events=sections["timeline_events"],
-        )
-        db.add(summary)
+        chapter = db.query(Chapter).filter(
+            Chapter.id == chapter_id,
+            Chapter.project_id == project_id,
+        ).first()
+        if not chapter:
+            raise LookupError("章节不存在或不属于当前项目")
+        chapter_no = chapter.chapter_no
+        outline_id = chapter.outline_id
+        # 步骤 1：只有正文与当前正式章节正文一致时，才把提案关联到当前版本。
+        # 编辑器可能提交未保存草稿；误挂到旧版本会制造错误的来源追踪。
+        version = db.query(GenerationVersion).filter(
+            GenerationVersion.chapter_id == chapter_id,
+            GenerationVersion.is_current == 1,
+        ).order_by(GenerationVersion.id.desc()).first()
+        version_id = version.version_id if version and (chapter.content or "") == content else None
 
-        log = GenerationLog(
+    # 步骤 1：复用项目上下文，避免手动分析只看到正文却无法识别角色/组织。
+    analysis_context = build_chapter_context(project_id, chapter_no, outline_id)
+    analysis_context.update({"content": content, "chapter_no": chapter_no})
+
+    # 步骤 2：旧版手动分析入口复用 V3 Agent 和结构化输出契约。
+    analyzer = get_agent("analyzer", "default")
+    try:
+        result = analyzer.run(analysis_context, {"temperature": 0.2})
+    except LLMError:
+        # 保留旧入口在未配置模型时的可用反馈；空结构化结果不会创建或写回任何提案。
+        fallback_summary = "开发模式摘要：本章内容已保存，等待配置模型后重新分析。"
+        result = {
+            "analysis_text": fallback_summary,
+            "summary": fallback_summary,
+            "character_changes": "暂无。",
+            "world_changes": "暂无。",
+            "new_foreshadowings": "暂无。",
+            "timeline_events": "暂无。",
+            "structured_analysis": {},
+        }
+    analysis = result.get("analysis_text") or result.get("content", "")
+    sections = {
+        "summary": result.get("summary") or analysis,
+        "character_changes": result.get("character_changes", ""),
+        "world_changes": result.get("world_changes", ""),
+        "new_foreshadowings": result.get("new_foreshadowings", ""),
+        "timeline_events": result.get("timeline_events", ""),
+    }
+    structured = result.get("structured_analysis", {})
+
+    # 步骤 3：只将唯一匹配到的实体变化转成提案；模糊名称不自动改写设定。
+    with get_business_db() as db:
+        catalog = load_entity_catalog(db, project_id)
+        proposal_drafts = build_proposal_drafts(structured, catalog, chapter_no)
+
+        # 步骤 4：章节摘要与候选变化在同一事务提交。
+        existing = db.query(ChapterSummary).filter(
+            ChapterSummary.chapter_id == chapter_id,
+        ).first()
+        summary_fields = {
+            "summary": sections["summary"],
+            "character_changes": sections["character_changes"],
+            "world_changes": sections["world_changes"],
+            "new_foreshadowings": sections["new_foreshadowings"],
+            "timeline_events": sections["timeline_events"],
+        }
+        if existing:
+            for field_name, value in summary_fields.items():
+                setattr(existing, field_name, value)
+        else:
+            db.add(ChapterSummary(chapter_id=chapter_id, **summary_fields))
+
+        proposals = create_proposals(
+            db=db,
+            project_id=project_id,
+            chapter_id=chapter_id,
+            run_id=None,
+            version_id=version_id,
+            drafts=proposal_drafts,
+        )
+        db.add(GenerationLog(
             project_id=project_id,
             task_type="chapter_analyze",
             request=f"chapter_id={chapter_id}",
             response=analysis,
             status="success",
-        )
-        db.add(log)
+        ))
         db.commit()
 
-    return {"chapter_id": chapter_id, "analysis": analysis, **sections}
+    return {
+        "chapter_id": chapter_id,
+        "analysis": analysis,
+        **sections,
+        "pending_change_count": sum(1 for item in proposals if item["status"] == "pending"),
+    }
 
 
 def check_consistency(project_id: int, chapter_id: int | None, content: str) -> dict:

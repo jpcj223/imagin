@@ -138,6 +138,8 @@ export interface ContextPreview {
   foreshadowings: Array<{ id: number; keyword: string; status: string; payoff_chapter: number | null }>
   /** 最近章节摘要摘录。 */
   recent_summaries: Array<{ id: number; summary: string; timeline_events: string }>
+  /** 已沉淀长期记忆摘录；待审核提案不会出现在此列表中。 */
+  long_term_memories: Array<{ memory_id: string; title: string; content_summary: string; importance: number; source_type: string }>
 }
 
 export interface WorldSetting {

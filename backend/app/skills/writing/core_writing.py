@@ -4,6 +4,8 @@
 """
 from __future__ import annotations
 
+import json
+
 from app.skills.base import BaseSkill, SkillMeta
 from app.skills.registry import SkillRegistry
 
@@ -42,6 +44,7 @@ class CoreWritingSkill(BaseSkill):
         organizations = context.get("organizations", [])
         foreshadowings = context.get("foreshadowings", [])
         recent_summaries = context.get("recent_summaries", [])
+        long_term_memories = context.get("long_term_memories", [])
 
         context_text = f"""
 项目：{project.get("name", "")}
@@ -51,6 +54,7 @@ class CoreWritingSkill(BaseSkill):
 组织：{_format_organizations(organizations)}
 待处理伏笔：{_format_foreshadowings(foreshadowings)}
 最近章节摘要：{_format_summaries(recent_summaries)}
+已确认长期记忆：{_format_long_term_memories(long_term_memories)}
 """.strip()
 
         context["_writing_context"] = context_text
@@ -81,6 +85,12 @@ def _format_outline(outline: dict) -> str:
 def _format_characters(characters: list[dict]) -> str:
     if not characters:
         return "暂无角色资料"
+    # 步骤 1：构建当前上下文中的人物名称索引，用于把关系卡里的 target_id 转成人名。
+    names_by_id = {
+        item.get("id"): item.get("name", "")
+        for item in characters
+        if item.get("id") is not None and item.get("name")
+    }
     lines = []
     for ch in characters[:8]:  # 最多展示 8 个
         name = ch.get("name", "")
@@ -92,6 +102,26 @@ def _format_characters(characters: list[dict]) -> str:
             info += f" - 性格：{personality[:30]}"
         if motivation:
             info += f" - 动机：{motivation[:30]}"
+        # 步骤 2：兼容 JSON 文本和已解析列表，附上审核确认后生效的人物关系。
+        relations = ch.get("character_relations", [])
+        if isinstance(relations, str):
+            try:
+                relations = json.loads(relations) if relations else []
+            except json.JSONDecodeError:
+                relations = []
+        if isinstance(relations, list):
+            relation_labels = []
+            for relation in relations[:4]:
+                if not isinstance(relation, dict):
+                    continue
+                target_name = relation.get("target_name") or names_by_id.get(relation.get("target_id"))
+                if not target_name and relation.get("target_id") is not None:
+                    target_name = f"角色#{relation['target_id']}"
+                relation_type = relation.get("relation_type", "关系未注明")
+                if target_name:
+                    relation_labels.append(f"{target_name}（{relation_type}）")
+            if relation_labels:
+                info += " - 关系：" + "、".join(relation_labels)
         lines.append(info)
     return "\n".join(lines)
 
@@ -135,3 +165,16 @@ def _format_summaries(summaries: list[dict]) -> str:
         if summary:
             lines.append(summary[:80])
     return "\n".join(lines) if lines else "暂无"
+
+
+def _format_long_term_memories(memories: list[dict]) -> str:
+    """把审核通过并已持久化的记忆摘要注入后续章节写作上下文。"""
+    if not memories:
+        return "暂无已确认的长期记忆"
+    lines = []
+    for memory in memories[:8]:
+        title = memory.get("title", "")
+        content = memory.get("content_summary") or memory.get("content", "")
+        if title or content:
+            lines.append(f"- {title}：{content[:120]}")
+    return "\n".join(lines) if lines else "暂无已确认的长期记忆"

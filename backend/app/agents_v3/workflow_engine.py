@@ -5,7 +5,6 @@
 from __future__ import annotations
 
 import json
-import uuid
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -132,9 +131,16 @@ BUILTIN_TEMPLATES: dict[str, WorkflowTemplate] = {
                 variant="default",
                 label="分析",
                 depends_on=["writer"],
+                # 步骤 1：把写作步骤正文映射到分析器提示词使用的 content 字段。
+                input_mapping={"content": "draft_content"},
                 output_mapping={
                     "summary": "chapter_summary",
                     "character_changes": "character_changes",
+                    "world_changes": "world_changes",
+                    "new_foreshadowings": "new_foreshadowings",
+                    "timeline_events": "timeline_events",
+                    "structured_analysis": "structured_analysis",
+                    "analysis_entity_catalog": "analysis_entity_catalog",
                 },
             ),
         ],
@@ -168,6 +174,8 @@ BUILTIN_TEMPLATES: dict[str, WorkflowTemplate] = {
                 label="精修",
                 depends_on=["writer"],
                 params={"mode": "flow"},
+                # 步骤 1：将草稿映射到精修 Agent 的 original_content 输入。
+                input_mapping={"original_content": "draft_content"},
                 output_mapping={"content": "polished_content"},
             ),
             WorkflowStep(
@@ -176,10 +184,16 @@ BUILTIN_TEMPLATES: dict[str, WorkflowTemplate] = {
                 variant="deep",
                 label="深度分析",
                 depends_on=["polisher"],
+                # 步骤 1：分析精修后的最终正文，避免仍使用原始草稿或空 content。
+                input_mapping={"content": "polished_content"},
                 output_mapping={
                     "summary": "chapter_summary",
                     "character_changes": "character_changes",
                     "world_changes": "world_changes",
+                    "new_foreshadowings": "new_foreshadowings",
+                    "timeline_events": "timeline_events",
+                    "structured_analysis": "structured_analysis",
+                    "analysis_entity_catalog": "analysis_entity_catalog",
                 },
             ),
         ],
@@ -236,7 +250,7 @@ class WorkflowEngine:
             self._restore_from_db()
         else:
             # 新建工作流
-            self.run_id = str(uuid.uuid4())
+            self.run_id = ""
             self.status = WorkflowStatus.PENDING
             self._persist_new_run()
 
@@ -246,7 +260,9 @@ class WorkflowEngine:
             step.step_id: step.variant for step in self.template.steps
         }
         # 使用类的静态方法创建记录
-        WorkflowPersistence.create_run(
+        # 步骤 1：以持久化层实际生成的 ID 作为本次引擎 ID。
+        # 保证运行状态、步骤记录、续跑和章节版本引用指向同一条记录。
+        self.run_id = WorkflowPersistence.create_run(
             project_id=self.project_id,
             template_name=self.template_name,
             template_snapshot=self.template.to_dict(),
@@ -297,6 +313,9 @@ class WorkflowEngine:
             self.step_statuses[sid] = StepStatus.PENDING
             if sid in self.step_results:
                 del self.step_results[sid]
+        if "analyzer" in to_reset:
+            # 步骤 1：重跑分析时重新读取实体名录，避免沿用旧审核上下文。
+            self.session_context.pop("analysis_entity_catalog", None)
 
         # 从会话上下文中移除这些步骤的输出
         for step in self.template.steps:
@@ -369,8 +388,24 @@ class WorkflowEngine:
 
         return context
 
+    def _capture_analysis_entity_catalog(self) -> dict[str, list[dict[str, Any]]]:
+        """读取项目实体名称和 ID，供结构化分析结果安全解析实体引用。"""
+        from app.db.session import get_business_db
+        from app.services.chapter_change_proposals import load_entity_catalog
+
+        # 步骤 1：读取当前项目全部可引用实体；图谱视图的截断列表不适合作为解析目录。
+        with get_business_db() as db:
+            # 步骤 2：只把匹配需要的 ID 和名称放进运行状态，避免复制整份设定正文。
+            return load_entity_catalog(db, self.project_id)
+
     def _save_step_output(self, step: WorkflowStep, result: dict[str, Any]) -> None:
         """保存步骤输出到会话记忆和数据库。"""
+        if step.agent_type == "analyzer":
+            # 步骤 1：将实体解析目录随分析输出一起持久化，断点续跑后仍可解析提案。
+            result.setdefault(
+                "analysis_entity_catalog",
+                self.session_context.get("analysis_entity_catalog", {}),
+            )
         self.step_results[step.step_id] = result
 
         # 按映射保存到会话记忆
@@ -463,6 +498,10 @@ class WorkflowEngine:
                     # 构建上下文
                     context = self._build_step_context(step, chapter_no, outline_id)
 
+                    # 步骤 1：分析前捕获完整项目实体名录，用于把自然语言名称解析成项目内 ID。
+                    if step.agent_type == "analyzer":
+                        self.session_context["analysis_entity_catalog"] = self._capture_analysis_entity_catalog()
+
                     # 添加会话记忆中的字段
                     context.update(self.session_context)
 
@@ -502,6 +541,11 @@ class WorkflowEngine:
             s == StepStatus.COMPLETED for s in self.step_statuses.values()
         )
         if all_completed:
+            # 步骤 1：优先采用精修稿；快速写作和未精修模板回退到草稿。
+            self.session_context["final_content"] = (
+                self.session_context.get("polished_content")
+                or self.session_context.get("draft_content", "")
+            )
             self.status = WorkflowStatus.COMPLETED
             WorkflowPersistence.update_run_status(
                 self.run_id, "completed", progress=100
@@ -563,6 +607,10 @@ class WorkflowEngine:
 
                 try:
                     context = self._build_step_context(step, chapter_no, outline_id)
+
+                    # 步骤 1：流式和同步路径使用同一套分析实体目录与 ID 解析输入。
+                    if step.agent_type == "analyzer":
+                        self.session_context["analysis_entity_catalog"] = self._capture_analysis_entity_catalog()
                     context.update(self.session_context)
 
                     params = {"instruction": instruction, "rhythm_level": rhythm_level}
@@ -627,6 +675,11 @@ class WorkflowEngine:
             s == StepStatus.COMPLETED for s in self.step_statuses.values()
         )
         if all_completed:
+            # 步骤 1：让同步与流式工作流共用同一份最终正文定义。
+            self.session_context["final_content"] = (
+                self.session_context.get("polished_content")
+                or self.session_context.get("draft_content", "")
+            )
             self.status = WorkflowStatus.COMPLETED
             WorkflowPersistence.update_run_status(
                 self.run_id, "completed", progress=100

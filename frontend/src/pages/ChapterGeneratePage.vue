@@ -658,6 +658,90 @@
                 </div>
               </div>
 
+              <!-- 章节分析只产生提案；作者确认后才写回人物、关系、组织等正式资料。 -->
+              <div class="form-block">
+                <div class="block-title">
+                  资料变化审核
+                  <n-tag size="tiny" :type="pendingProposalCount ? 'warning' : 'default'">
+                    {{ pendingProposalCount }} 条待审核
+                  </n-tag>
+                  <n-button
+                    size="tiny"
+                    quaternary
+                    :loading="proposalLoading"
+                    :disabled="!chapterId"
+                    @click="loadChapterChangeProposals"
+                  >
+                    刷新
+                  </n-button>
+                </div>
+                <n-spin :show="proposalLoading">
+                  <div v-if="changeProposals.length === 0" class="empty-proposals">
+                    分析章节后，人物、关系、组织、伏笔和时间线变化会出现在这里；确认后才会更新正式资料。
+                  </div>
+                  <div v-else class="proposal-list">
+                    <article
+                      v-for="proposal in changeProposals"
+                      :key="proposal.proposal_id"
+                      class="proposal-card"
+                      :class="'proposal-' + proposal.status"
+                    >
+                      <div class="proposal-heading">
+                        <div class="proposal-title">
+                          <strong>{{ proposalEntityLabel(proposal.entity_type) }} · {{ proposal.target_label || '未命名' }}</strong>
+                          <n-tag size="small" :type="proposalStatusType(proposal.status)">
+                            {{ proposalStatusLabel(proposal.status) }}
+                          </n-tag>
+                          <n-tag v-if="proposal.operation === 'create'" size="small" type="info">新增</n-tag>
+                        </div>
+                        <span v-if="proposal.version_id" class="proposal-source">来源版本 {{ proposal.version_id.slice(0, 8) }}</span>
+                      </div>
+                      <p v-if="proposal.rationale" class="proposal-rationale">{{ proposal.rationale }}</p>
+                      <blockquote v-if="proposal.evidence" class="proposal-evidence">{{ proposal.evidence }}</blockquote>
+                      <div class="proposal-diff">
+                        <div v-for="change in proposalChanges(proposal)" :key="change.field" class="proposal-diff-row">
+                          <span class="proposal-field">{{ change.field }}</span>
+                          <span class="proposal-before">{{ change.before }}</span>
+                          <span class="proposal-arrow">→</span>
+                          <span class="proposal-after">{{ change.after }}</span>
+                        </div>
+                      </div>
+                      <p v-if="proposal.review_note" class="proposal-review-note">{{ proposal.review_note }}</p>
+                      <div v-if="proposal.status === 'pending'" class="proposal-actions">
+                        <n-button
+                          size="small"
+                          quaternary
+                          :disabled="proposalBusyIds.includes(proposal.proposal_id)"
+                          @click="startProposalEdit(proposal)"
+                        >
+                          修改内容
+                        </n-button>
+                        <n-button
+                          size="small"
+                          type="error"
+                          quaternary
+                          :disabled="proposalBusyIds.includes(proposal.proposal_id)"
+                          @click="reviewChangeProposal(proposal, 'reject')"
+                        >
+                          拒绝
+                        </n-button>
+                        <n-button
+                          size="small"
+                          type="success"
+                          :loading="proposalBusyIds.includes(proposal.proposal_id)"
+                          @click="reviewChangeProposal(proposal, 'approve')"
+                        >
+                          确认并写回
+                        </n-button>
+                      </div>
+                      <div v-else-if="proposal.status === 'conflict'" class="proposal-actions">
+                        <n-button size="small" @click="analyze()">按当前资料重新分析</n-button>
+                      </div>
+                    </article>
+                  </div>
+                </n-spin>
+              </div>
+
               <!-- 一致性检查 -->
               <div class="form-block">
                 <div class="block-title">一致性检查</div>
@@ -839,6 +923,23 @@
       </aside>
     </div>
 
+    <!-- 提案先在审核草稿中调整，提交确认时由后端再次校验字段与原值。 -->
+    <n-modal v-model:show="proposalEditVisible" preset="card" title="调整资料变化" style="width: min(720px, 92vw)">
+      <p class="proposal-edit-hint">只修改 JSON 对象中的字段值；更新提案不能增加或删除字段。</p>
+      <n-input
+        v-model:value="proposalEditText"
+        type="textarea"
+        :autosize="{ minRows: 8, maxRows: 18 }"
+        spellcheck="false"
+      />
+      <template #footer>
+        <n-button @click="proposalEditVisible = false">取消</n-button>
+        <n-button type="primary" :loading="proposalEditSaving" @click="saveEditedProposal">
+          确认并写回
+        </n-button>
+      </template>
+    </n-modal>
+
     <!-- 精修模式选择弹窗 -->
     <n-modal v-model:show="showPolishModal" preset="card" title="选择精修模式" style="width: 480px">
       <div class="polish-modes">
@@ -898,11 +999,16 @@ import {
   workflowGenerateStream,
   workflowResumeStream,
   getGenerationVersions,
+  getChapterChangeProposals,
+  reviewChapterChangeProposal,
   setCurrentVersion,
   getUserPreferences,
   updateUserPreferences,
   type WorkflowTemplate,
   type GenerationVersion,
+  type ChapterChangeProposal,
+  type ChangeProposalEntityType,
+  type ChangeProposalStatus,
   type WorkflowStreamEvent,
 } from '@/api/agentsV3'
 import WorkflowProgress from '@/components/WorkflowProgress.vue'
@@ -950,6 +1056,14 @@ const characters = ref<CharacterItem[]>([])
 const organizations = ref<OrganizationItem[]>([])
 const foreshadowings = ref<ForeshadowingItem[]>([])
 const summaries = ref<ChapterSummary[]>([])
+const changeProposals = ref<ChapterChangeProposal[]>([])
+const proposalLoading = ref(false)
+const proposalBusyIds = ref<string[]>([])
+const proposalEditVisible = ref(false)
+const proposalEditSaving = ref(false)
+const proposalEditText = ref('')
+const editingProposal = ref<ChapterChangeProposal | null>(null)
+const pendingProposalCount = computed(() => changeProposals.value.filter(item => item.status === 'pending').length)
 const agentLogs = ref<GenerationLog[]>([])
 const localEvents = ref<
   Array<{ id: string; title: string; detail: string; time: string; status: string }>
@@ -1706,6 +1820,171 @@ function clearAnalysisSections() {
   setAnalysisSections({})
 }
 
+const proposalEntityLabels: Record<ChangeProposalEntityType, string> = {
+  character: '人物',
+  relationship: '人物关系',
+  organization: '组织',
+  foreshadowing: '伏笔',
+  world_setting: '世界观',
+  memory: '长期记忆',
+}
+
+function proposalEntityLabel(entityType: ChangeProposalEntityType) {
+  return proposalEntityLabels[entityType] ?? entityType
+}
+
+function proposalStatusLabel(status: ChangeProposalStatus) {
+  const labels: Record<ChangeProposalStatus, string> = {
+    pending: '待审核',
+    applied: '已写回',
+    rejected: '已拒绝',
+    conflict: '资料有变化',
+  }
+  return labels[status]
+}
+
+function proposalStatusType(status: ChangeProposalStatus): 'warning' | 'success' | 'error' | 'default' {
+  if (status === 'pending') return 'warning'
+  if (status === 'applied') return 'success'
+  if (status === 'rejected') return 'default'
+  return 'error'
+}
+
+function formatProposalValue(value: unknown): string {
+  if (value === null || value === undefined || value === '') return '—'
+  if (typeof value === 'string') return value
+  return JSON.stringify(value) ?? String(value)
+}
+
+function proposalChanges(proposal: ChapterChangeProposal) {
+  const fields = Object.entries(proposal.proposed_value ?? {})
+  if (proposal.entity_type === 'relationship') {
+    const existing = proposal.before_value.relationships
+    const targetId = proposal.proposed_value.target_id
+    const oldRelation = Array.isArray(existing)
+      ? existing.find((item) => {
+          if (!item || typeof item !== 'object') return false
+          return (item as Record<string, unknown>).target_id === targetId
+        }) as Record<string, unknown> | undefined
+      : undefined
+    const relationText = (value: Record<string, unknown> | undefined) => {
+      if (!value) return '无既有关系'
+      const depth = value.depth === undefined ? '' : ' · 深度 ' + String(value.depth)
+      return formatProposalValue(value.relation_type) + depth
+    }
+    return [{
+      field: proposal.operation === 'update' ? '关系更新' : '新增关系',
+      before: relationText(oldRelation),
+      after: relationText(proposal.proposed_value),
+    }]
+  }
+  if (proposal.operation === 'create') {
+    return fields.map(([field, value]) => ({
+      field,
+      before: '—',
+      after: formatProposalValue(value),
+    }))
+  }
+  return fields.map(([field, value]) => ({
+    field,
+    before: formatProposalValue(proposal.before_value[field]),
+    after: formatProposalValue(value),
+  }))
+}
+
+async function loadChapterChangeProposals() {
+  const projectId = projectStore.currentProject?.id
+  const currentChapterId = chapterId.value
+  if (!projectId || !currentChapterId) {
+    changeProposals.value = []
+    return
+  }
+  proposalLoading.value = true
+  try {
+    const result = await getChapterChangeProposals(projectId, currentChapterId)
+    changeProposals.value = result.items
+  } catch {
+    // 章节刚切换或后端尚未升级时，保留页面其他功能并允许手动重试。
+    changeProposals.value = []
+  } finally {
+    proposalLoading.value = false
+  }
+}
+
+async function reviewChangeProposal(
+  proposal: ChapterChangeProposal,
+  decision: 'approve' | 'reject',
+  proposedValue?: Record<string, unknown>,
+) {
+  const projectId = projectStore.currentProject?.id
+  if (!projectId) return false
+  const prompt = decision === 'approve'
+    ? '确认将这条变化写回正式资料？'
+    : '确认拒绝这条变化提案？'
+  if (!window.confirm(prompt)) return false
+
+  proposalBusyIds.value = [...proposalBusyIds.value, proposal.proposal_id]
+  try {
+    const result = await reviewChapterChangeProposal(projectId, proposal.chapter_id, proposal.proposal_id, {
+      decision,
+      proposed_value: proposedValue,
+    })
+    changeProposals.value = changeProposals.value.map(item =>
+      item.proposal_id === proposal.proposal_id ? result.proposal : item,
+    )
+    if (decision === 'approve') {
+      await loadResources()
+      message.success('已确认并更新正式资料')
+    } else {
+      message.success('已拒绝这条提案')
+    }
+    await loadChapterChangeProposals()
+    return true
+  } catch (error) {
+    message.error(errorMessage(error))
+    await loadChapterChangeProposals()
+    return false
+  } finally {
+    proposalBusyIds.value = proposalBusyIds.value.filter(id => id !== proposal.proposal_id)
+  }
+}
+
+function startProposalEdit(proposal: ChapterChangeProposal) {
+  // 步骤 1：把候选值复制到本地审核草稿，编辑期间不修改服务端记录。
+  editingProposal.value = proposal
+  proposalEditText.value = JSON.stringify(proposal.proposed_value, null, 2)
+  proposalEditVisible.value = true
+}
+
+async function saveEditedProposal() {
+  // 步骤 1：解析并限制审核草稿为 JSON 对象。
+  const proposal = editingProposal.value
+  if (!proposal) return
+  let proposedValue: Record<string, unknown>
+  try {
+    const parsed: unknown = JSON.parse(proposalEditText.value)
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      throw new Error('内容必须是 JSON 对象')
+    }
+    proposedValue = parsed as Record<string, unknown>
+  } catch (error) {
+    message.error(errorMessage(error))
+    return
+  }
+
+  // 步骤 2：复用审核写回流程；后端仍会检查字段白名单和提案前值。
+  proposalEditSaving.value = true
+  try {
+    const saved = await reviewChangeProposal(proposal, 'approve', proposedValue)
+    if (saved) {
+      proposalEditVisible.value = false
+      editingProposal.value = null
+    }
+  } finally {
+    proposalEditSaving.value = false
+  }
+}
+
 // ---- 运行轨迹 ----
 function addEvent(title: string, detail: string, status = 'success') {
   localEvents.value.unshift({
@@ -1783,7 +2062,7 @@ async function refreshContextPreview(options: { silent?: boolean } = {}) {
     if (!options.silent)
       addEvent(
         '拼装上下文',
-        `角色 ${contextPreview.value.characters.length}，组织 ${contextPreview.value.organizations.length}，伏笔 ${contextPreview.value.foreshadowings.length}`
+        `角色 ${contextPreview.value.characters.length}，组织 ${contextPreview.value.organizations.length}，伏笔 ${contextPreview.value.foreshadowings.length}，长期记忆 ${contextPreview.value.long_term_memories.length}`
       )
   } catch (error) {
     if (!options.silent) {
@@ -2108,6 +2387,12 @@ async function generateV3(options: { showToast?: boolean } = {}) {
             form.chapter_id = sessionContext.chapter_id as number
           }
         },
+        onChangeProposalsReady: (savedChapterId, pendingCount) => {
+          chapterId.value = savedChapterId
+          form.chapter_id = savedChapterId
+          addEvent('变化提案就绪', pendingCount + ' 条待审核', 'success')
+          void loadChapterChangeProposals()
+        },
         onError: (messageStr, stepId) => {
           const step = workflowSteps.value.find(s => s.id === stepId)
           if (step) {
@@ -2129,6 +2414,7 @@ async function generateV3(options: { showToast?: boolean } = {}) {
     addEvent('保存章节', `章节已写入草稿库`)
     await loadResources()
     await loadVersions()  // 刷新版本列表
+    await loadChapterChangeProposals()
     addEvent('生成完成', 'v3 工作流已完成', 'success')
     if (showToast) message.success('章节已生成')
 
@@ -2224,6 +2510,12 @@ async function resumeGenerateV3() {
             form.chapter_id = sessionContext.chapter_id as number
           }
         },
+        onChangeProposalsReady: (savedChapterId, pendingCount) => {
+          chapterId.value = savedChapterId
+          form.chapter_id = savedChapterId
+          addEvent('变化提案就绪', pendingCount + ' 条待审核', 'success')
+          void loadChapterChangeProposals()
+        },
         onError: (messageStr, stepId) => {
           const step = workflowSteps.value.find(s => s.id === stepId)
           if (step) {
@@ -2244,6 +2536,7 @@ async function resumeGenerateV3() {
     addEvent('保存章节', `章节已写入草稿库`)
     await loadResources()
     await loadVersions()
+    await loadChapterChangeProposals()
     addEvent('续传成功', '工作流已从中断处完成', 'success')
     message.success('续传完成')
 
@@ -2339,6 +2632,12 @@ async function handleRestartFromStep(stepId: string) {
             chapterId.value = sessionContext.chapter_id as number
             form.chapter_id = sessionContext.chapter_id as number
           }
+        },
+        onChangeProposalsReady: (savedChapterId, pendingCount) => {
+          chapterId.value = savedChapterId
+          form.chapter_id = savedChapterId
+          addEvent('变化提案就绪', pendingCount + ' 条待审核', 'success')
+          void loadChapterChangeProposals()
         },
         onError: (messageStr, sid) => {
           const s = workflowSteps.value.find(x => x.id === sid)
@@ -2601,6 +2900,7 @@ async function analyze(options: { showToast?: boolean } = {}) {
     setAnalysisSections(result)
     await loadAgentLogs()
     await loadResources()
+    await loadChapterChangeProposals()
     addEvent('分析完成', '摘要、人物变化、伏笔线索已生成')
     if (showToast) message.success('章节分析已完成')
     return true
@@ -2705,6 +3005,15 @@ watch(
     }
   },
   { immediate: true }
+)
+
+// 步骤 1：章节或项目切换时刷新对应的审核队列，避免沿用上一章提案。
+watch(
+  () => String(projectStore.currentProject?.id ?? '') + ':' + String(chapterId.value ?? ''),
+  () => {
+    void loadChapterChangeProposals()
+  },
+  { immediate: true },
 )
 
 // 切换模板时同步更新流水线步骤
@@ -3815,6 +4124,132 @@ watch(
   font-size: 12px;
   line-height: 1.6;
   color: var(--n-text-color-1, #e5e7eb);
+}
+
+.empty-proposals {
+  padding: 16px;
+  color: var(--n-text-color-3, #6b7280);
+  background: var(--n-color-1, #1e2228);
+  border-radius: 8px;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.proposal-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.proposal-card {
+  padding: 12px;
+  background: var(--n-color-1, #1e2228);
+  border: 1px solid var(--n-border-color, #2a2f3a);
+  border-radius: 8px;
+}
+
+.proposal-applied {
+  border-color: rgba(16, 185, 129, 0.3);
+}
+
+.proposal-conflict {
+  border-color: rgba(239, 68, 68, 0.45);
+}
+
+.proposal-heading,
+.proposal-title,
+.proposal-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.proposal-heading {
+  justify-content: space-between;
+  flex-wrap: wrap;
+}
+
+.proposal-title {
+  flex-wrap: wrap;
+}
+
+.proposal-title strong {
+  font-size: 13px;
+}
+
+.proposal-source {
+  color: var(--n-text-color-3, #6b7280);
+  font-size: 10px;
+}
+
+.proposal-rationale,
+.proposal-review-note {
+  margin: 8px 0;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.proposal-evidence {
+  margin: 8px 0;
+  padding: 7px 9px;
+  border-left: 2px solid #6366f1;
+  background: rgba(99, 102, 241, 0.07);
+  color: var(--n-text-color-2, #9ca3af);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.proposal-diff {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  margin-top: 8px;
+}
+
+.proposal-diff-row {
+  display: grid;
+  grid-template-columns: minmax(72px, 0.7fr) minmax(0, 1fr) 20px minmax(0, 1fr);
+  align-items: start;
+  gap: 6px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.025);
+  font-size: 11px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.proposal-field {
+  color: var(--n-text-color-2, #9ca3af);
+}
+
+.proposal-before {
+  color: #f59e0b;
+}
+
+.proposal-arrow {
+  color: var(--n-text-color-3, #6b7280);
+  text-align: center;
+}
+
+.proposal-after {
+  color: #34d399;
+}
+
+.proposal-review-note {
+  color: #f87171;
+}
+
+.proposal-edit-hint {
+  margin: 0 0 10px;
+  color: var(--n-text-color-2, #9ca3af);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.proposal-actions {
+  justify-content: flex-end;
+  margin-top: 10px;
 }
 
 .consistency-result {

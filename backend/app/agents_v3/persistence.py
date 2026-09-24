@@ -445,20 +445,27 @@ class WorkflowPersistence:
         step_results: dict[str, dict[str, Any]] = {}
         session_context: dict[str, Any] = {}
 
-        for record in step_records:
-            step_id = record["step_id"]
+        # 步骤 1：同一步骤可能因重试或重跑有多条记录，只恢复最后一次尝试。
+        latest_records = {record["step_id"]: record for record in step_records}
+        template_snapshot = run.get("template_snapshot") or {}
+        step_configs = {
+            step.get("step_id"): step
+            for step in template_snapshot.get("steps", [])
+            if step.get("step_id")
+        }
+
+        # 步骤 2：按模板的 output_mapping 还原工作流共享状态，而不是把 Agent 原始字段名误当会话键。
+        for step_id, record in latest_records.items():
             step_statuses[step_id] = record["status"]
 
             if record["status"] == "completed" and record.get("output_snapshot"):
                 step_results[step_id] = record["output_snapshot"]
-
-                # 从 output_mapping 恢复 session_context
-                # （这里简化处理，后续可以根据 template 中的映射恢复）
                 output = record["output_snapshot"]
                 if isinstance(output, dict):
-                    for key, value in output.items():
-                        if key not in ("type", "error"):
-                            session_context[key] = value
+                    mapping = step_configs.get(step_id, {}).get("output_mapping", {})
+                    for result_key, session_key in mapping.items():
+                        if result_key in output:
+                            session_context[session_key] = output[result_key]
 
         return {
             "run_info": run,

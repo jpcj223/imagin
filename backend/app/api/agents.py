@@ -4,7 +4,7 @@ import json
 import traceback
 from collections.abc import Iterator
 
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 from sqlalchemy import desc
 
@@ -140,7 +140,10 @@ def chapter_draft_stream(payload: ChapterDraftRequest) -> StreamingResponse:
 @router.post("/chapter-analyze")
 def chapter_analyze(payload: ChapterAnalyzeRequest) -> dict:
     """分析章节正文并沉淀摘要。"""
-    return analyze_chapter(payload.project_id, payload.chapter_id, payload.content)
+    try:
+        return analyze_chapter(payload.project_id, payload.chapter_id, payload.content)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 @router.post("/polish")

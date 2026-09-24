@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api import agents, agents_v3, models, projects, resources, setting_co
+from app.api import agents, agents_v3, change_proposals, models, projects, resources, setting_co
 from app.api.core import (
     auth_router,
     dictionaries_router,
@@ -48,6 +48,7 @@ def health_check() -> dict[str, str]:
 # 业务库 API（创作相关）
 # ---------------------------------------------------------------------------
 app.include_router(projects.router, prefix="/api/projects", tags=["projects"])
+app.include_router(change_proposals.router, prefix="/api/projects", tags=["chapter-change-proposals"])
 app.include_router(models.router, prefix="/api/models", tags=["models"])  # 兼容旧路径
 app.include_router(resources.router, prefix="/api/resources", tags=["resources"])
 app.include_router(agents.router, prefix="/api/agents", tags=["agents"])

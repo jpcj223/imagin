@@ -9,6 +9,7 @@ from app.models.business import (
     ChapterSummary,
     Character,
     Foreshadowing,
+    MemoryItem,
     Organization,
     Outline,
     Project,
@@ -84,6 +85,15 @@ def build_chapter_context(project_id: int, chapter_no: int, outline_id: int | No
             .all()
         )
 
+        # 步骤 1：只把已经存在于长期记忆库的条目交给旧版章节 Agent；待审核提案不会进入生成上下文。
+        long_term_memories = (
+            db.query(MemoryItem)
+            .filter(MemoryItem.project_id == project_id)
+            .order_by(MemoryItem.updated_at.desc(), MemoryItem.importance.desc())
+            .limit(8)
+            .all()
+        )
+
     return {
         "project": row_to_dict(project) or {},
         "world": row_to_dict(world) or {},
@@ -92,6 +102,7 @@ def build_chapter_context(project_id: int, chapter_no: int, outline_id: int | No
         "organizations": rows_to_dicts(organizations),
         "foreshadowings": rows_to_dicts(foreshadowings),
         "recent_summaries": rows_to_dicts(summaries),
+        "long_term_memories": rows_to_dicts(long_term_memories),
     }
 
 
@@ -150,5 +161,15 @@ def build_context_preview(project_id: int, chapter_no: int, outline_id: int | No
                 "timeline_events": item.get("timeline_events", ""),
             }
             for item in context["recent_summaries"]
+        ],
+        "long_term_memories": [
+            {
+                "memory_id": item.get("memory_id", ""),
+                "title": item.get("title") or "",
+                "content_summary": (item.get("content_summary") or item.get("content") or "")[:120],
+                "importance": item.get("importance") or 0,
+                "source_type": item.get("source_type") or "",
+            }
+            for item in context["long_term_memories"]
         ],
     }
