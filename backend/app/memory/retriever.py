@@ -16,6 +16,7 @@ from app.models.business import (
     Foreshadowing,
     MemoryItem,
     Organization,
+    OrganizationRelation,
     WorldSetting,
 )
 
@@ -53,7 +54,7 @@ class MemoryRetriever:
             "world": self._get_world_setting(),
             "outline": self._get_outline(outline_id, chapter_no),
             "characters": self._get_characters(query, top_k=8),
-            "organizations": self._get_organizations(query, top_k=5),
+            "organizations": self._get_organizations(query, top_k=5, chapter_no=chapter_no),
             "foreshadowings": self._get_foreshadowings(query, top_k=8),
             "recent_summaries": self._get_recent_summaries(chapter_no, limit=5),
             "long_term_memories": self._get_long_term_memories(limit=8),
@@ -156,11 +157,18 @@ class MemoryRetriever:
             rows = query_obj.order_by(Character.id.desc()).limit(top_k).all()
             return rows_to_dicts(rows)
 
-    def _get_organizations(self, query: str = "", top_k: int = 5) -> list[dict]:
-        """获取相关组织。"""
+    def _get_organizations(self, query: str = "", top_k: int = 5, chapter_no: int = 1) -> list[dict]:
+        """获取本章仍有效的相关组织，以及有效的组织关系。"""
         with get_business_db() as db:
             query_obj = db.query(Organization).filter(
                 Organization.project_id == self.project_id
+            )
+            query_obj = query_obj.filter(
+                (Organization.active_from_chapter.is_(None))
+                | (Organization.active_from_chapter <= chapter_no)
+            ).filter(
+                (Organization.disbanded_chapter.is_(None))
+                | (Organization.disbanded_chapter >= chapter_no)
             )
 
             if query:
@@ -174,7 +182,66 @@ class MemoryRetriever:
                 )
 
             rows = query_obj.order_by(Organization.id.desc()).limit(top_k).all()
-            return rows_to_dicts(rows)
+            items = rows_to_dicts(rows)
+            organization_ids = [item["id"] for item in items]
+            if not organization_ids:
+                return items
+
+            # 步骤 1：按本章章节号筛选关系，跳过尚未生效或已经失效的势力关系。
+            active_organization_ids = [
+                row.id
+                for row in db.query(Organization.id).filter(
+                    Organization.project_id == self.project_id,
+                    (Organization.active_from_chapter.is_(None))
+                    | (Organization.active_from_chapter <= chapter_no),
+                    (Organization.disbanded_chapter.is_(None))
+                    | (Organization.disbanded_chapter >= chapter_no),
+                ).all()
+            ]
+            relations = db.query(OrganizationRelation).filter(
+                OrganizationRelation.project_id == self.project_id,
+                (
+                    OrganizationRelation.organization_a_id.in_(organization_ids)
+                    | OrganizationRelation.organization_b_id.in_(organization_ids)
+                ),
+                (OrganizationRelation.effective_from_chapter.is_(None))
+                | (OrganizationRelation.effective_from_chapter <= chapter_no),
+                (OrganizationRelation.expires_at_chapter.is_(None))
+                | (OrganizationRelation.expires_at_chapter >= chapter_no),
+                OrganizationRelation.organization_a_id.in_(active_organization_ids),
+                OrganizationRelation.organization_b_id.in_(active_organization_ids),
+            ).order_by(OrganizationRelation.id.asc()).all()
+            related_ids = {
+                org_id
+                for relation in relations
+                for org_id in (relation.organization_a_id, relation.organization_b_id)
+            }
+            names = {
+                row.id: row.name
+                for row in db.query(Organization.id, Organization.name).filter(
+                    Organization.project_id == self.project_id,
+                    Organization.id.in_(related_ids),
+                ).all()
+            }
+
+            # 步骤 2：双向挂载关系，保证从任何一方检索组织时都能读到同盟和敌对状态。
+            by_organization: dict[int, list[dict]] = {}
+            for relation in relations:
+                for current_id, target_id in (
+                    (relation.organization_a_id, relation.organization_b_id),
+                    (relation.organization_b_id, relation.organization_a_id),
+                ):
+                    by_organization.setdefault(current_id, []).append({
+                        "target_org_id": target_id,
+                        "target_org_name": names.get(target_id, ""),
+                        "relation_type": relation.relation_type,
+                        "description": relation.description or "",
+                        "effective_from_chapter": relation.effective_from_chapter,
+                        "expires_at_chapter": relation.expires_at_chapter,
+                    })
+            for item in items:
+                item["relations"] = by_organization.get(item["id"], [])
+            return items
 
     def _get_foreshadowings(self, query: str = "", top_k: int = 8) -> list[dict]:
         """获取相关伏笔（待埋+已埋+发展中）。"""
@@ -290,6 +357,15 @@ class MemoryRetriever:
                     line += f"（{org_type}）"
                 if goal:
                     line += f" - {goal[:25]}"
+                relations = org.get("relations", [])
+                if relations:
+                    relation_labels = [
+                        f"{'盟友' if relation.get('relation_type') == 'alliance' else '敌对'}：{relation.get('target_org_name', '')}"
+                        for relation in relations[:6]
+                        if relation.get("target_org_name")
+                    ]
+                    if relation_labels:
+                        line += " - 势力关系：" + "、".join(relation_labels)
                 lines.append(line)
         else:
             lines.append("（暂无）")

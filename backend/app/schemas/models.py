@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import BaseModel, Field
 
 
@@ -139,10 +141,20 @@ class OrganizationSave(BaseModel):
     member_count: int = Field(default=0, description="成员总数")
     status: str = Field(default="", description="组织当前状态，例如隐世、扩张、衰落")
     core_members: str = Field(default="", description="核心成员，文本形式预留")
-    allies: str = Field(default="", description="盟友组织")
-    enemies: str = Field(default="", description="敌对组织")
+    allies: str = Field(default="", description="旧版盟友文本字段，兼容历史数据")
+    enemies: str = Field(default="", description="旧版敌对文本字段，兼容历史数据")
     impact: str = Field(default="", description="对剧情推进的影响")
     risk_notes: str = Field(default="", description="组织设定风险或冲突提示")
+
+
+class OrganizationRelationSave(BaseModel):
+    """新增或更新组织间关系。"""
+
+    target_org_id: int = Field(gt=0, description="关系另一端组织 ID")
+    relation_type: Literal["alliance", "hostility"] = Field(description="组织关系类型")
+    description: str = Field(default="", description="关系来由、约束或当前状态说明")
+    effective_from_chapter: int | None = Field(default=None, ge=1, description="关系生效章节")
+    expires_at_chapter: int | None = Field(default=None, ge=1, description="关系失效章节")
 
 
 class ForeshadowingSave(BaseModel):

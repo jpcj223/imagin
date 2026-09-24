@@ -11,6 +11,7 @@ from app.models.business import (
     Foreshadowing,
     MemoryItem,
     Organization,
+    OrganizationRelation,
     Outline,
     Project,
     WorldSetting,
@@ -60,10 +61,59 @@ def build_chapter_context(project_id: int, chapter_no: int, outline_id: int | No
         organizations = (
             db.query(Organization)
             .filter(Organization.project_id == project_id)
+            .filter(
+                (Organization.active_from_chapter.is_(None))
+                | (Organization.active_from_chapter <= chapter_no)
+            )
+            .filter(
+                (Organization.disbanded_chapter.is_(None))
+                | (Organization.disbanded_chapter >= chapter_no)
+            )
             .order_by(Organization.id.desc())
             .limit(8)
             .all()
         )
+
+        # 步骤 1：只检索本章有效、且至少一端出现在上下文中的组织关系。
+        organization_ids = [item.id for item in organizations]
+        organization_relations = []
+        related_organization_names: dict[int, str] = {}
+        if organization_ids:
+            active_organization_ids = [
+                row.id
+                for row in db.query(Organization.id).filter(
+                    Organization.project_id == project_id,
+                    (Organization.active_from_chapter.is_(None))
+                    | (Organization.active_from_chapter <= chapter_no),
+                    (Organization.disbanded_chapter.is_(None))
+                    | (Organization.disbanded_chapter >= chapter_no),
+                ).all()
+            ]
+            organization_relations = db.query(OrganizationRelation).filter(
+                OrganizationRelation.project_id == project_id,
+                (
+                    OrganizationRelation.organization_a_id.in_(organization_ids)
+                    | OrganizationRelation.organization_b_id.in_(organization_ids)
+                ),
+                (OrganizationRelation.effective_from_chapter.is_(None))
+                | (OrganizationRelation.effective_from_chapter <= chapter_no),
+                (OrganizationRelation.expires_at_chapter.is_(None))
+                | (OrganizationRelation.expires_at_chapter >= chapter_no),
+                OrganizationRelation.organization_a_id.in_(active_organization_ids),
+                OrganizationRelation.organization_b_id.in_(active_organization_ids),
+            ).order_by(OrganizationRelation.id.asc()).all()
+            relation_org_ids = {
+                org_id
+                for relation in organization_relations
+                for org_id in (relation.organization_a_id, relation.organization_b_id)
+            }
+            related_organization_names = {
+                row.id: row.name
+                for row in db.query(Organization.id, Organization.name).filter(
+                    Organization.project_id == project_id,
+                    Organization.id.in_(relation_org_ids),
+                ).all()
+            }
 
         foreshadowings = (
             db.query(Foreshadowing)
@@ -94,12 +144,31 @@ def build_chapter_context(project_id: int, chapter_no: int, outline_id: int | No
             .all()
         )
 
+    organization_items = rows_to_dicts(organizations)
+    relation_items_by_organization: dict[int, list[dict]] = {}
+    for relation in organization_relations:
+        # 步骤 2：把关系以双向视角附在组织资料上，Agent 能读到同盟和敌对信息。
+        for current_id, target_id in (
+            (relation.organization_a_id, relation.organization_b_id),
+            (relation.organization_b_id, relation.organization_a_id),
+        ):
+            relation_items_by_organization.setdefault(current_id, []).append({
+                "target_org_id": target_id,
+                "target_org_name": related_organization_names.get(target_id, ""),
+                "relation_type": relation.relation_type,
+                "description": relation.description or "",
+                "effective_from_chapter": relation.effective_from_chapter,
+                "expires_at_chapter": relation.expires_at_chapter,
+            })
+    for item in organization_items:
+        item["relations"] = relation_items_by_organization.get(item["id"], [])
+
     return {
         "project": row_to_dict(project) or {},
         "world": row_to_dict(world) or {},
         "outline": row_to_dict(outline) or {},
         "characters": rows_to_dicts(characters),
-        "organizations": rows_to_dicts(organizations),
+        "organizations": organization_items,
         "foreshadowings": rows_to_dicts(foreshadowings),
         "recent_summaries": rows_to_dicts(summaries),
         "long_term_memories": rows_to_dicts(long_term_memories),
@@ -142,6 +211,7 @@ def build_context_preview(project_id: int, chapter_no: int, outline_id: int | No
                 "name": item.get("name", ""),
                 "goal": item.get("goal", ""),
                 "power_level": item.get("power_level", 0),
+                "relations": item.get("relations", []),
             }
             for item in context["organizations"]
         ],

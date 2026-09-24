@@ -137,6 +137,19 @@ def _format_organizations(organizations: list[dict]) -> str:
         info = f"{name}（{org_type}）"
         if goal:
             info += f" - 目标：{goal[:30]}"
+        relations = org.get("relations", [])
+        if relations:
+            relation_labels = []
+            for relation in relations[:8]:
+                relation_type = "盟友" if relation.get("relation_type") == "alliance" else "敌对"
+                target_name = relation.get("target_org_name", "")
+                if target_name:
+                    label = f"{relation_type}：{target_name}"
+                    if relation.get("description"):
+                        label += f"（{relation['description'][:36]}）"
+                    relation_labels.append(label)
+            if relation_labels:
+                info += " - 势力关系：" + "；".join(relation_labels)
         lines.append(info)
     return "\n".join(lines)
 

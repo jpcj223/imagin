@@ -133,7 +133,13 @@ export interface ContextPreview {
   /** 会进入上下文的角色摘录。 */
   characters: Array<{ id: number; name: string; role_type: string; motivation: string }>
   /** 会进入上下文的组织摘录。 */
-  organizations: Array<{ id: number; name: string; goal: string; power_level: number }>
+  organizations: Array<{
+    id: number
+    name: string
+    goal: string
+    power_level: number
+    relations: Array<{ target_org_name: string; relation_type: 'alliance' | 'hostility'; description: string }>
+  }>
   /** 会进入上下文的伏笔摘录。 */
   foreshadowings: Array<{ id: number; keyword: string; status: string; payoff_chapter: number | null }>
   /** 最近章节摘要摘录。 */
@@ -382,9 +388,9 @@ export interface OrganizationItem {
   status: string
   /** 核心成员（旧版字符串字段，保留兼容）。 */
   core_members: string
-  /** 盟友组织 ID，逗号分隔。 */
+  /** 旧版盟友文本字段；可关联的组织关系已迁移到结构化关系表。 */
   allies: string
-  /** 敌对组织 ID，逗号分隔。 */
+  /** 旧版敌对文本字段；可关联的组织关系已迁移到结构化关系表。 */
   enemies: string
   /** 对剧情的影响。 */
   impact: string
@@ -402,6 +408,21 @@ export interface OrganizationItem {
   hierarchy_levels: string
   /** 各体系的组织级层级副本（JSON 对象），不覆盖内置默认模板。 */
   hierarchy_templates?: string
+}
+
+/** 组织间的同盟/敌对关系记录。 */
+export interface OrganizationRelation {
+  id: number
+  project_id: number
+  organization_id: number
+  target_org_id: number
+  target_org_name: string
+  relation_type: 'alliance' | 'hostility'
+  description: string
+  effective_from_chapter: number | null
+  expires_at_chapter: number | null
+  created_at: string | null
+  updated_at: string | null
 }
 
 export interface ForeshadowingItem {

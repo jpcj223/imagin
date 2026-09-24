@@ -97,6 +97,7 @@ class CoreAnalysisSkill(BaseSkill):
                     "org_type": item.get("org_type", ""),
                     "status": item.get("status", ""),
                     "goal": item.get("goal", ""),
+                    "relations": item.get("relations", []),
                 }
                 for item in context.get("organizations", [])
                 if isinstance(item, dict)

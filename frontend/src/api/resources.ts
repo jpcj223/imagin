@@ -1,5 +1,43 @@
 import { apiClient } from './client'
-import type { DashboardData } from '@/types/domain'
+import type { DashboardData, OrganizationRelation } from '@/types/domain'
+
+export interface OrganizationRelationPayload {
+  target_org_id: number
+  relation_type: OrganizationRelation['relation_type']
+  description: string
+  effective_from_chapter: number | null
+  expires_at_chapter: number | null
+}
+
+export async function listOrganizationRelations(projectId: number, organizationId: number) {
+  // 组织关系接口按当前组织视角返回对端名称，页面无需处理关系方向。
+  const { data } = await apiClient.get<{ items: OrganizationRelation[]; total: number }>(
+    `/resources/${projectId}/organizations/${organizationId}/relations`
+  )
+  return data.items
+}
+
+export async function saveOrganizationRelation(
+  projectId: number,
+  organizationId: number,
+  payload: OrganizationRelationPayload,
+  relationId?: number
+) {
+  // 有 relationId 时更新既有关系，否则新增关系。
+  const path = `/resources/${projectId}/organizations/${organizationId}/relations`
+  const { data } = relationId
+    ? await apiClient.put<OrganizationRelation>(`${path}/${relationId}`, payload)
+    : await apiClient.post<OrganizationRelation>(path, payload)
+  return data
+}
+
+export async function deleteOrganizationRelation(projectId: number, organizationId: number, relationId: number) {
+  // 删除时同时限定项目、当前组织和关系 ID，避免跨组织误删。
+  const { data } = await apiClient.delete<{ ok: boolean; id: number }>(
+    `/resources/${projectId}/organizations/${organizationId}/relations/${relationId}`
+  )
+  return data
+}
 
 export async function getDashboard(projectId: number) {
   // 首页项目概览：计数、字数、最近章节、分布数据等。

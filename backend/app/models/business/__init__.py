@@ -13,6 +13,7 @@ from app.models.business.chapter_change_proposal import ChapterChangeProposal
 from app.models.business.character import Character
 from app.models.business.character_group import CharacterGroup
 from app.models.business.organization import Organization
+from app.models.business.organization_relation import OrganizationRelation
 from app.models.business.foreshadowing import Foreshadowing
 from app.models.business.generation_log import GenerationLog
 from app.models.business.workflow_memory import (
@@ -34,6 +35,7 @@ __all__ = [
     "Character",
     "CharacterGroup",
     "Organization",
+    "OrganizationRelation",
     "Foreshadowing",
     "GenerationLog",
     "WorkflowRun",

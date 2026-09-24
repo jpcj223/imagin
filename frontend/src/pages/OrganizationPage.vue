@@ -493,22 +493,74 @@
             <span class="card-icon">🔗</span>
             <span class="card-title">阵营关系</span>
           </div>
-          <n-form label-placement="top" size="small">
-            <n-form-item label="盟友组织">
-              <TagSelectField
-                v-model="form.allies"
-                :options="orgNameOptions"
-                placeholder="选择或输入盟友..."
+          <div v-if="!editingId" class="relation-empty-tip">保存组织后即可添加关系</div>
+          <template v-else>
+            <div v-if="organizationRelations.length" class="organization-relation-list">
+              <div v-for="relation in organizationRelations" :key="relation.id" class="organization-relation-item">
+                <div class="organization-relation-heading">
+                  <n-tag :type="relation.relation_type === 'alliance' ? 'success' : 'error'" size="small">
+                    {{ relation.relation_type === 'alliance' ? '盟友' : '敌对' }}
+                  </n-tag>
+                  <strong>{{ relation.target_org_name }}</strong>
+                  <div class="organization-relation-actions">
+                    <n-button text size="tiny" @click="editOrganizationRelation(relation)">编辑</n-button>
+                    <n-button text size="tiny" type="error" @click="removeOrganizationRelation(relation)">移除</n-button>
+                  </div>
+                </div>
+                <div v-if="relation.description" class="organization-relation-description">{{ relation.description }}</div>
+                <div v-if="relation.effective_from_chapter || relation.expires_at_chapter" class="organization-relation-range">
+                  {{ relation.effective_from_chapter ? `第 ${relation.effective_from_chapter} 章起` : '生效章节未设' }}
+                  ·
+                  {{ relation.expires_at_chapter ? `第 ${relation.expires_at_chapter} 章止` : '持续有效' }}
+                </div>
+              </div>
+            </div>
+            <div v-else class="relation-empty-tip">暂未记录同盟或敌对组织</div>
+
+            <div v-if="legacyRelationText" class="legacy-relation-note">
+              尚未匹配到组织卡片的旧关系文本：{{ legacyRelationText }}
+            </div>
+
+            <div class="organization-relation-editor">
+              <n-select
+                v-model:value="relationDraft.target_org_id"
+                :options="relationTargetOptions"
+                filterable
+                clearable
+                size="small"
+                placeholder="选择关联组织"
               />
-            </n-form-item>
-            <n-form-item label="敌对组织">
-              <TagSelectField
-                v-model="form.enemies"
-                :options="orgNameOptions"
-                placeholder="选择或输入敌对..."
+              <n-select
+                v-model:value="relationDraft.relation_type"
+                :options="organizationRelationTypeOptions"
+                size="small"
               />
-            </n-form-item>
-          </n-form>
+              <n-input
+                v-model:value="relationDraft.description"
+                size="small"
+                type="textarea"
+                :autosize="{ minRows: 2, maxRows: 4 }"
+                placeholder="关系来由或当前状态（可选）"
+              />
+              <div class="organization-relation-chapters">
+                <n-input-number v-model:value="relationDraft.effective_from_chapter" :min="1" clearable size="small" placeholder="生效章" />
+                <span>至</span>
+                <n-input-number v-model:value="relationDraft.expires_at_chapter" :min="1" clearable size="small" placeholder="失效章" />
+              </div>
+              <div class="organization-relation-editor-actions">
+                <n-button v-if="editingRelationId" size="small" @click="resetOrganizationRelationDraft">取消编辑</n-button>
+                <n-button
+                  type="primary"
+                  size="small"
+                  :loading="relationSaving"
+                  :disabled="!relationDraft.target_org_id"
+                  @click="saveOrganizationRelationDraft"
+                >
+                  {{ editingRelationId ? '保存关系' : '添加关系' }}
+                </n-button>
+              </div>
+            </div>
+          </template>
         </div>
 
         <!-- 剧情影响 -->
@@ -551,7 +603,15 @@
 
 <script setup lang="ts">
 import { computed, nextTick, reactive, ref, watch } from 'vue'
-import { createResource, deleteResource, listResource, updateResource } from '@/api/resources'
+import {
+  createResource,
+  deleteOrganizationRelation,
+  deleteResource,
+  listOrganizationRelations,
+  listResource,
+  saveOrganizationRelation as persistOrganizationRelation,
+  updateResource
+} from '@/api/resources'
 import { useProjectStore } from '@/stores/project'
 import { useDictStore } from '@/stores/dict'
 import { useOrganizationStore } from '@/stores/organization'
@@ -562,7 +622,7 @@ import { notify } from '@/utils/notify'
 import TagSelectField from '@/components/TagSelectField.vue'
 import SingleSelectField from '@/components/SingleSelectField.vue'
 import type { SelectOption } from 'naive-ui'
-import type { CharacterItem, OrganizationItem, CharacterOrgRelation } from '@/types/domain'
+import type { CharacterItem, OrganizationItem, OrganizationRelation, CharacterOrgRelation } from '@/types/domain'
 
 const projectStore = useProjectStore()
 const dictStore = useDictStore()
@@ -579,6 +639,24 @@ const showDeleteConfirm = ref(false)
 const deletingOrgName = ref('')
 const loading = ref(false)
 const expandedIds = ref<Set<number>>(new Set())
+const organizationRelations = ref<OrganizationRelation[]>([])
+const editingRelationId = ref<number | null>(null)
+const relationSaving = ref(false)
+const relationDraft = reactive({
+  target_org_id: null as number | null,
+  relation_type: 'alliance' as OrganizationRelation['relation_type'],
+  description: '',
+  effective_from_chapter: null as number | null,
+  expires_at_chapter: null as number | null
+})
+
+const organizationRelationTypeOptions = [
+  { label: '盟友', value: 'alliance' },
+  { label: '敌对', value: 'hostility' }
+]
+const relationTargetOptions = computed(() => organizations.value
+  .filter((item) => item.id !== editingId.value)
+  .map((item) => ({ label: item.name, value: item.id })))
 
 // 只统计存在下级组织的节点，避免叶子节点影响全部展开状态。
 const expandableOrganizationIds = computed(() => {
@@ -622,6 +700,15 @@ const form = reactive({
   hierarchy_system: 'none',
   hierarchy_levels: [] as HierarchyLevel[],
   hierarchy_templates: {} as Record<string, HierarchyLevel[]>
+})
+
+const legacyRelationText = computed(() => {
+  // 只展示尚未映射到组织卡片的旧文本，防止迁移过的关系重复出现。
+  const linkedNames = new Set(organizationRelations.value.map((item) => item.target_org_name.trim().toLocaleLowerCase()))
+  const tokens = [...form.allies.split(/[、,，;；\n]+/), ...form.enemies.split(/[、,，;；\n]+/)]
+    .map((item) => item.trim())
+    .filter((item) => item && !linkedNames.has(item.toLocaleLowerCase()))
+  return [...new Set(tokens)].join('、')
 })
 
 const { isDirty, markClean, confirmIfDirty } = useDirtySnapshot(form, '当前势力档案有未保存的修改，确定要离开吗？')
@@ -994,7 +1081,7 @@ const avgPower = computed(() => {
 })
 
 const riskLevel = computed(() => {
-  if (form.enemies && form.power_level <= 4) return '高风险'
+  if ((form.enemies || organizationRelations.value.some((item) => item.relation_type === 'hostility')) && form.power_level <= 4) return '高风险'
   if (!form.goal || !form.resources) return '资料不足'
   return '稳定'
 })
@@ -1162,12 +1249,6 @@ function onOrgTypeChange(_newType: string | null) {
   // 通过统一切换逻辑先保存当前体系副本，避免类型切换时覆盖用户修改。
   onHierarchySystemChange('none')
 }
-
-const orgNameOptions = computed(() =>
-  organizations.value
-    .filter((item) => item.id !== editingId.value)
-    .map((item) => ({ label: item.name, value: item.name }))
-)
 
 const characterNameOptions = computed(() =>
   characters.value.map((c) => ({ label: c.name, value: c.name }))
@@ -1451,6 +1532,8 @@ async function startCreate() {
   editingId.value = null
   isCreating.value = true
   form.parent_id = null
+  organizationRelations.value = []
+  resetOrganizationRelationDraft()
   fillForm()
   await nextTick()
   markClean()
@@ -1461,6 +1544,8 @@ async function startCreateChild() {
   const parent = organizations.value.find((o) => o.id === editingId.value)
   editingId.value = null
   isCreating.value = true
+  organizationRelations.value = []
+  resetOrganizationRelationDraft()
   fillForm()
   form.parent_id = parent?.id || null
   // 自动展开父组织
@@ -1475,6 +1560,7 @@ async function selectOrganization(item: OrganizationItem) {
   editingId.value = item.id
   isCreating.value = false
   fillForm(item)
+  await loadOrganizationRelations(item.id)
   await nextTick()
   markClean()
 }
@@ -1496,6 +1582,86 @@ async function resetCurrent() {
 async function ensureProject() {
   if (!projectStore.currentProject) await projectStore.loadDefaultProject()
   return projectStore.currentProject?.id
+}
+
+async function loadOrganizationRelations(organizationId: number) {
+  // 步骤 1：确认当前项目；步骤 2：按所选组织读取结构化关系；步骤 3：失败时清空旧列表。
+  const projectId = await ensureProject()
+  if (!projectId) return
+  try {
+    organizationRelations.value = await listOrganizationRelations(projectId, organizationId)
+  } catch {
+    organizationRelations.value = []
+  }
+  resetOrganizationRelationDraft()
+}
+
+function resetOrganizationRelationDraft() {
+  // 重置新增/编辑表单，避免切换组织时把上一条关系带入下一条。
+  editingRelationId.value = null
+  relationDraft.target_org_id = null
+  relationDraft.relation_type = 'alliance'
+  relationDraft.description = ''
+  relationDraft.effective_from_chapter = null
+  relationDraft.expires_at_chapter = null
+}
+
+function editOrganizationRelation(relation: OrganizationRelation) {
+  // 将已保存关系载入表单，保持关系 ID 用于后续更新。
+  editingRelationId.value = relation.id
+  relationDraft.target_org_id = relation.target_org_id
+  relationDraft.relation_type = relation.relation_type
+  relationDraft.description = relation.description
+  relationDraft.effective_from_chapter = relation.effective_from_chapter
+  relationDraft.expires_at_chapter = relation.expires_at_chapter
+}
+
+async function saveOrganizationRelationDraft() {
+  // 步骤 1：检查当前组织、目标组织和章节区间；步骤 2：新增或更新；步骤 3：刷新视图。
+  const projectId = await ensureProject()
+  const organizationId = editingId.value
+  const targetOrgId = relationDraft.target_org_id
+  const relationId = editingRelationId.value
+  if (!projectId || !organizationId || !targetOrgId) return
+  if (
+    relationDraft.effective_from_chapter !== null &&
+    relationDraft.expires_at_chapter !== null &&
+    relationDraft.expires_at_chapter < relationDraft.effective_from_chapter
+  ) {
+    notify.warning('关系失效章节不能早于生效章节')
+    return
+  }
+
+  relationSaving.value = true
+  try {
+    await persistOrganizationRelation(
+      projectId,
+      organizationId,
+      {
+        target_org_id: targetOrgId,
+        relation_type: relationDraft.relation_type,
+        description: relationDraft.description,
+        effective_from_chapter: relationDraft.effective_from_chapter,
+        expires_at_chapter: relationDraft.expires_at_chapter
+      },
+      relationId ?? undefined
+    )
+    notify.success(relationId ? '组织关系已更新' : '组织关系已添加')
+    await loadOrganizationRelations(organizationId)
+  } finally {
+    relationSaving.value = false
+  }
+}
+
+async function removeOrganizationRelation(relation: OrganizationRelation) {
+  // 步骤 1：由作者确认移除目标；步骤 2：调用限定项目和组织的删除接口；步骤 3：刷新关系。
+  const organizationId = editingId.value
+  if (!organizationId || !window.confirm(`确认移除与「${relation.target_org_name}」的关系吗？`)) return
+  const projectId = await ensureProject()
+  if (!projectId) return
+  await deleteOrganizationRelation(projectId, organizationId, relation.id)
+  notify.success('组织关系已移除')
+  await loadOrganizationRelations(organizationId)
 }
 
 async function load() {
@@ -1525,6 +1691,12 @@ async function load() {
       fillForm(organizations.value[0])
       await nextTick()
       markClean()
+    }
+    if (editingId.value && !isCreating.value) {
+      await loadOrganizationRelations(editingId.value)
+    } else {
+      organizationRelations.value = []
+      resetOrganizationRelationDraft()
     }
   } finally {
     loading.value = false
@@ -2389,5 +2561,92 @@ useProjectDataLoader(load)
   font-size: 12px;
   color: #666;
   opacity: 0.6;
+}
+
+/* ===== 组织关系 ===== */
+.organization-relation-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.organization-relation-item {
+  padding: 9px 10px;
+  border: 1px solid var(--n-border-color, #2a2f3a);
+  border-radius: 7px;
+  background: var(--n-color-1, #1e2228);
+}
+
+.organization-relation-heading,
+.organization-relation-actions,
+.organization-relation-chapters,
+.organization-relation-editor-actions {
+  display: flex;
+  align-items: center;
+}
+
+.organization-relation-heading {
+  gap: 7px;
+  min-width: 0;
+}
+
+.organization-relation-heading strong {
+  overflow: hidden;
+  flex: 1;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+}
+
+.organization-relation-actions {
+  gap: 5px;
+  flex-shrink: 0;
+}
+
+.organization-relation-description,
+.organization-relation-range,
+.relation-empty-tip,
+.legacy-relation-note {
+  margin-top: 6px;
+  color: var(--n-text-color-3, #8b93a1);
+  font-size: 11px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.organization-relation-range {
+  color: #7f8da5;
+}
+
+.legacy-relation-note {
+  margin: 0 0 10px;
+  padding: 7px 8px;
+  border-radius: 5px;
+  background: rgba(245, 158, 11, 0.08);
+  color: #d6a84f;
+}
+
+.organization-relation-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-top: 10px;
+  border-top: 1px solid var(--n-border-color, #2a2f3a);
+}
+
+.organization-relation-chapters {
+  gap: 6px;
+  color: var(--n-text-color-3, #8b93a1);
+}
+
+.organization-relation-chapters :deep(.n-input-number) {
+  flex: 1;
+  min-width: 0;
+}
+
+.organization-relation-editor-actions {
+  justify-content: flex-end;
+  gap: 7px;
 }
 </style>
