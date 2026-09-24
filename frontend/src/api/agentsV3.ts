@@ -86,12 +86,55 @@ export interface GenerationVersion {
   created_at: string
 }
 
+export type ChangeProposalStatus = 'pending' | 'applied' | 'rejected' | 'conflict'
+export type ChangeProposalEntityType = 'character' | 'relationship' | 'organization' | 'foreshadowing' | 'world_setting' | 'memory'
+
+export interface ChapterChangeProposal {
+  id: number
+  proposal_id: string
+  project_id: number
+  chapter_id: number
+  run_id: string | null
+  version_id: string | null
+  entity_type: ChangeProposalEntityType
+  operation: 'create' | 'update'
+  target_id: number | null
+  target_label: string
+  before_value: Record<string, unknown>
+  proposed_value: Record<string, unknown>
+  rationale: string
+  evidence: string
+  status: ChangeProposalStatus
+  review_note: string
+  applied_entity_id: number | null
+  reviewed_at: string | null
+  applied_at: string | null
+  created_at: string | null
+}
+
+export interface LongTermMemoryItem {
+  id: number
+  memory_id: string
+  project_id: number | null
+  memory_type: string | null
+  title: string | null
+  content: string | null
+  content_summary: string | null
+  metadata_json: string | null
+  importance: number | null
+  source_type: string | null
+  source_ref: string | null
+  created_at: string | null
+  updated_at: string | null
+}
+
 // 工作流流式事件类型
 export type WorkflowStreamEvent =
   | { type: 'step_start'; step_id: string; label: string }
   | { type: 'delta'; step_id: string; content: string }
   | { type: 'step_done'; step_id: string; result: Record<string, unknown> }
   | { type: 'workflow_done'; status: string; run_id: string; session_context: Record<string, unknown>; step_statuses: Record<string, string> }
+  | { type: 'change_proposals_ready'; chapter_id: number; pending_count: number }
   | { type: 'error'; step_id?: string; message: string; trace?: string }
 
 export interface WorkflowStreamHandlers {
@@ -99,6 +142,7 @@ export interface WorkflowStreamHandlers {
   onDelta?: (stepId: string, content: string) => void
   onStepDone?: (stepId: string, result: Record<string, unknown>) => void
   onWorkflowDone?: (status: string, runId: string, sessionContext: Record<string, unknown>) => void
+  onChangeProposalsReady?: (chapterId: number, pendingCount: number) => void
   onError?: (message: string, stepId?: string) => void
 }
 
@@ -181,6 +225,9 @@ export async function workflowGenerateStream(
             session_context: event.session_context,
           }
           handlers.onWorkflowDone?.(event.status, event.run_id, event.session_context)
+          break
+        case 'change_proposals_ready':
+          handlers.onChangeProposalsReady?.(event.chapter_id, event.pending_count)
           break
         case 'error':
           handlers.onError?.(event.message, event.step_id)
@@ -278,6 +325,9 @@ export async function workflowResumeStream(
           }
           handlers.onWorkflowDone?.(event.status, event.run_id, event.session_context)
           break
+        case 'change_proposals_ready':
+          handlers.onChangeProposalsReady?.(event.chapter_id, event.pending_count)
+          break
         case 'error':
           handlers.onError?.(event.message, event.step_id)
           throw new Error(event.message)
@@ -362,6 +412,33 @@ export async function setCurrentVersion(chapterId: number, versionId: string) {
 }
 
 // ============================================================
+// 章节变化审核
+// ============================================================
+
+export async function getChapterChangeProposals(projectId: number, chapterId: number) {
+  // 步骤 1：按项目与章节读取分析候选及其审核状态。
+  const { data } = await apiClient.get<{ items: ChapterChangeProposal[]; total: number }>(
+    `/projects/${projectId}/chapters/${chapterId}/change-proposals`,
+  )
+  return data
+}
+
+export async function reviewChapterChangeProposal(
+  projectId: number,
+  chapterId: number,
+  proposalId: string,
+  payload: { decision: 'approve' | 'reject'; proposed_value?: Record<string, unknown>; review_note?: string },
+) {
+  // 步骤 1：调用审核接口；后端在事务中校验前值并应用已批准变更。
+  const { data } = await apiClient.post<{
+    proposal: ChapterChangeProposal
+    idempotent: boolean
+    conflict: boolean
+  }>(`/projects/${projectId}/chapters/${chapterId}/change-proposals/${proposalId}/review`, payload)
+  return data
+}
+
+// ============================================================
 // 记忆管理
 // ============================================================
 
@@ -379,4 +456,16 @@ export async function updateUserPreferences(projectId: number, preferences: Reco
     project_level: projectLevel,
   })
   return data
+}
+
+/**
+ * 查询项目内沉淀的长期记忆。
+ * 步骤 1：请求项目范围内的记忆条目。
+ * 步骤 2：限制单次返回数量，避免记忆中心加载过重。
+ */
+export async function getLongTermMemoryItems(projectId: number, limit = 100) {
+  const { data } = await apiClient.get<{ items: LongTermMemoryItem[]; total: number }>('/agents/v3/memory/items', {
+    params: { project_id: projectId, limit },
+  })
+  return data.items
 }

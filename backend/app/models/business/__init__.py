@@ -9,6 +9,7 @@ from app.models.business.world_setting import WorldSetting
 from app.models.business.outline import Outline
 from app.models.business.chapter import Chapter
 from app.models.business.chapter_summary import ChapterSummary
+from app.models.business.chapter_change_proposal import ChapterChangeProposal
 from app.models.business.character import Character
 from app.models.business.character_group import CharacterGroup
 from app.models.business.organization import Organization
@@ -29,6 +30,7 @@ __all__ = [
     "Outline",
     "Chapter",
     "ChapterSummary",
+    "ChapterChangeProposal",
     "Character",
     "CharacterGroup",
     "Organization",

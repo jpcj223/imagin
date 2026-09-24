@@ -176,32 +176,14 @@ def workflow_generate(payload: WorkflowGenerateRequest) -> dict:
         rhythm_level=payload.rhythm_level,
     )
 
-    # 保存到章节表（向后兼容）
-    content = result.get("session_context", {}).get("draft_content", "")
-    if content and payload.chapter_id:
-        _save_chapter_content(
-            payload.project_id,
-            payload.chapter_no,
-            payload.outline_id,
-            payload.chapter_id,
-            content,
-            status="draft",
-        )
-        # 创建生成版本
-        _create_generation_version(
-            chapter_id=payload.chapter_id,
-            run_id=result.get("run_id"),
-            content=content,
-            summary=result.get("session_context", {}).get("chapter_summary", ""),
-        )
-
-    # 工作流完成后自动更新记忆
+    # 步骤 1：同步和流式生成共用持久化逻辑，避免无 chapter_id 时丢失整章结果。
     if result.get("status") == "completed":
-        _auto_update_memory(
+        _persist_completed_workflow_output(
             project_id=payload.project_id,
-            chapter_id=payload.chapter_id,
             chapter_no=payload.chapter_no,
-            session_context=result.get("session_context", {}),
+            outline_id=payload.outline_id,
+            chapter_id=payload.chapter_id,
+            result=result,
         )
 
     return result
@@ -241,37 +223,28 @@ def workflow_generate_stream(payload: WorkflowGenerateRequest) -> StreamingRespo
 
                 yield json.dumps(event, ensure_ascii=False) + "\n"
 
-            # 工作流完成后保存
-            if content_buffer and payload.chapter_id:
-                content = "".join(content_buffer)
-                chapter_info = _save_chapter_content(
-                    payload.project_id,
-                    payload.chapter_no,
-                    payload.outline_id,
-                    payload.chapter_id,
-                    content,
-                    status="draft",
-                )
-
-                # 创建生成版本
-                summary = ""
-                if final_result:
-                    summary = final_result.get("session_context", {}).get("chapter_summary", "")
-                _create_generation_version(
+            # 步骤 1：工作流完成后，保存最终稿、生成版本和分析提案。
+            if final_result and final_result.get("status") == "completed":
+                session_context = final_result.get("session_context", {})
+                # 旧模板没有 final_content 时，以流式写作正文作为兼容回退。
+                session_context.setdefault("draft_content", "".join(content_buffer))
+                persisted = _persist_completed_workflow_output(
+                    project_id=payload.project_id,
+                    chapter_no=payload.chapter_no,
+                    outline_id=payload.outline_id,
                     chapter_id=payload.chapter_id,
-                    run_id=final_result.get("run_id") if final_result else None,
-                    content=content,
-                    summary=summary,
+                    result=final_result,
                 )
-
-                # 自动更新记忆
-                if final_result and final_result.get("status") == "completed":
-                    _auto_update_memory(
-                        project_id=payload.project_id,
-                        chapter_id=payload.chapter_id,
-                        chapter_no=payload.chapter_no,
-                        session_context=final_result.get("session_context", {}),
-                    )
+                # 步骤 2：让前端获得最终章节 ID，再加载待审核提案列表。
+                if persisted["chapter_id"]:
+                    yield json.dumps(
+                        {
+                            "type": "change_proposals_ready",
+                            "chapter_id": persisted["chapter_id"],
+                            "pending_count": persisted["pending_count"],
+                        },
+                        ensure_ascii=False,
+                    ) + "\n"
 
         except Exception as exc:  # noqa: BLE001
             yield json.dumps(
@@ -317,6 +290,15 @@ def workflow_resume(payload: WorkflowResumeRequest) -> dict:
         instruction=payload.instruction,
         rhythm_level=payload.rhythm_level,
     )
+    if result.get("status") == "completed":
+        # 步骤 1：续跑成功也必须保存正文版本、章节摘要和待审核变化。
+        _persist_completed_workflow_output(
+            project_id=project_id,
+            chapter_no=payload.chapter_no,
+            outline_id=payload.outline_id,
+            chapter_id=run_info.get("chapter_id"),
+            result=result,
+        )
     return result
 
 
@@ -347,13 +329,41 @@ def workflow_resume_stream(payload: WorkflowResumeRequest) -> StreamingResponse:
             if payload.restart_from_step_id:
                 engine.restart_from_step(payload.restart_from_step_id)
 
+            content_buffer: list[str] = []
+            final_result: dict | None = None
             for event in engine.run_stream(
                 chapter_no=payload.chapter_no,
                 outline_id=payload.outline_id,
                 instruction=payload.instruction,
                 rhythm_level=payload.rhythm_level,
             ):
+                if event.get("type") == "delta" and event.get("step_id") == "writer":
+                    content_buffer.append(event.get("content", ""))
+                if event.get("type") == "workflow_done":
+                    final_result = event
                 yield json.dumps(event, ensure_ascii=False) + "\n"
+
+            if final_result and final_result.get("status") == "completed":
+                # 步骤 1：恢复完成后使用共享持久化步骤，不留下未入库的正文或分析。
+                session_context = final_result.get("session_context", {})
+                session_context.setdefault("draft_content", "".join(content_buffer))
+                persisted = _persist_completed_workflow_output(
+                    project_id=project_id,
+                    chapter_no=payload.chapter_no,
+                    outline_id=payload.outline_id,
+                    chapter_id=run_info.get("chapter_id"),
+                    result=final_result,
+                )
+                # 步骤 2：通知前端章节已保存，可加载本章的提案列表。
+                if persisted["chapter_id"]:
+                    yield json.dumps(
+                        {
+                            "type": "change_proposals_ready",
+                            "chapter_id": persisted["chapter_id"],
+                            "pending_count": persisted["pending_count"],
+                        },
+                        ensure_ascii=False,
+                    ) + "\n"
 
         except Exception as exc:
             yield json.dumps(
@@ -459,6 +469,31 @@ def store_memory(payload: MemoryStoreRequest) -> dict:
     return {"memory_id": memory_id, "success": True}
 
 
+@router.get("/memory/items")
+def list_memory_items(project_id: int, limit: int = 100) -> dict:
+    """按项目读取已沉淀的长期记忆条目。
+
+    步骤 1：把查询数量限制在合理范围，避免一次加载过多正文。
+    步骤 2：按项目隔离并优先返回近期更新、重要性高的记忆。
+    步骤 3：序列化为稳定响应，供长期记忆中心展示来源和内容。
+    """
+    from app.db.repository import rows_to_dicts
+    from app.db.session import get_business_db
+    from app.models.business import MemoryItem
+
+    safe_limit = max(1, min(limit, 200))
+    with get_business_db() as db:
+        rows = (
+            db.query(MemoryItem)
+            .filter(MemoryItem.project_id == project_id)
+            .order_by(MemoryItem.updated_at.desc(), MemoryItem.importance.desc())
+            .limit(safe_limit)
+            .all()
+        )
+        items = rows_to_dicts(rows)
+    return {"items": items, "total": len(items)}
+
+
 @router.get("/memory/{memory_id}")
 def get_memory(memory_id: str) -> dict | None:
     """获取一条记忆详情。"""
@@ -507,7 +542,12 @@ def _save_chapter_content(
     content: str,
     status: str = "draft",
 ) -> dict:
-    """保存章节内容（复用现有逻辑，兼容旧 API）。"""
+    """保存最终正文并保留章节已有标题和大纲关联。
+
+    步骤 1：优先按明确章节 ID 定位，其次只复用同号草稿或生成中的章节。
+    步骤 2：已有章节只更新本次正文及明确传入的大纲，不覆盖作者维护的标题。
+    步骤 3：没有可复用章节时创建默认标题的新章节并返回数据库 ID。
+    """
     from app.db.session import get_business_db
     from app.models.business import Chapter
 
@@ -522,15 +562,19 @@ def _save_chapter_content(
         else:
             chapter = (
                 db.query(Chapter)
-                .filter(Chapter.project_id == project_id, Chapter.chapter_no == chapter_no)
+                .filter(
+                    Chapter.project_id == project_id,
+                    Chapter.chapter_no == chapter_no,
+                    Chapter.status.in_(["draft", "generating"]),
+                )
                 .order_by(Chapter.id.desc())
                 .first()
             )
 
         if chapter:
-            chapter.outline_id = outline_id
+            if outline_id is not None:
+                chapter.outline_id = outline_id
             chapter.chapter_no = chapter_no
-            chapter.title = title
             chapter.content = content
             chapter.status = status
             db.commit()
@@ -573,50 +617,148 @@ def _create_generation_version(
     )
 
 
+def _persist_completed_workflow_output(
+    project_id: int,
+    chapter_no: int,
+    outline_id: int | None,
+    chapter_id: int | None,
+    result: dict,
+) -> dict:
+    """统一保存同步、流式及续跑完成的章节结果。
+
+    步骤 1：读取精修最终稿，兼容旧流程的 draft_content。
+    步骤 2：保存或创建章节，并把新章节 ID 回填到工作流状态。
+    步骤 3：创建正文版本并关联工作流运行记录。
+    步骤 4：持久化章节摘要与待审核变化提案。
+    """
+    session_context = result.setdefault("session_context", {})
+    content = session_context.get("final_content") or session_context.get("draft_content", "")
+    resolved_chapter_id = chapter_id
+    version_id = None
+
+    if content:
+        saved_chapter = _save_chapter_content(
+            project_id,
+            chapter_no,
+            outline_id,
+            chapter_id,
+            content,
+            status="draft",
+        )
+        resolved_chapter_id = saved_chapter["chapter_id"]
+        session_context["chapter_id"] = resolved_chapter_id
+
+        # 步骤 1：创建版本快照，来源明确指向实际保存的最终正文。
+        version_id = _create_generation_version(
+            chapter_id=resolved_chapter_id,
+            run_id=result.get("run_id"),
+            content=content,
+            summary=session_context.get("chapter_summary", ""),
+        )
+        session_context["version_id"] = version_id
+
+    if result.get("run_id") and resolved_chapter_id:
+        # 步骤 2：新章节生成时，工作流开始前还没有章节 ID；完成后补上外键。
+        from app.db.session import get_business_db
+        from app.models.business import WorkflowRun
+
+        with get_business_db() as db:
+            run = db.query(WorkflowRun).filter(
+                WorkflowRun.run_id == result["run_id"],
+                WorkflowRun.project_id == project_id,
+            ).first()
+            if run:
+                run.chapter_id = resolved_chapter_id
+                db.commit()
+
+    pending_count = 0
+    if resolved_chapter_id:
+        # 步骤 3：章节摘要与提案只在工作流成功后落库，正式设定等待人工审核。
+        pending_count = _auto_update_memory(
+            project_id=project_id,
+            chapter_id=resolved_chapter_id,
+            chapter_no=chapter_no,
+            session_context=session_context,
+            run_id=result.get("run_id"),
+            version_id=version_id,
+        )
+    session_context["pending_change_count"] = pending_count
+    return {"chapter_id": resolved_chapter_id, "version_id": version_id, "pending_count": pending_count}
+
+
 def _auto_update_memory(
     project_id: int,
     chapter_id: int | None,
     chapter_no: int,
     session_context: dict,
-) -> None:
-    """工作流完成后自动更新记忆。
+    run_id: str | None = None,
+    version_id: str | None = None,
+) -> int:
+    """工作流完成后保存章节分析，并生成待审核变化提案。
 
-    1. 如果有章节摘要，写入 chapter_summary 表
-    2. 记录生成统计
+    步骤 1：读取分析结果并转换为项目内、字段受限的候选变更。
+    步骤 2：在业务库事务中更新章节摘要并创建待审核提案。
+    步骤 3：记录最终正文的生成统计；正式资料仍等待作者审核后写回。
     """
     if not chapter_id:
-        return
+        return 0
 
     mm = MemoryManager(project_id)
 
-    # 1. 写入章节摘要
+    # 步骤 1：从结构化分析解析可审核提案；旧版文本结果不会直接更改资料卡。
+    from app.services.chapter_change_proposals import build_proposal_drafts, create_proposals
+
+    structured_analysis = session_context.get("structured_analysis", {})
+    entity_catalog = session_context.get("analysis_entity_catalog", {})
+    proposal_drafts = build_proposal_drafts(
+        structured_analysis,
+        entity_catalog,
+        chapter_no,
+    )
+
+    # 步骤 2：章节摘要和提案同库提交，确保候选来源与摘要保持一致。
     summary = session_context.get("chapter_summary", "")
-    if summary:
+    pending_count = 0
+    if summary or proposal_drafts:
         from app.db.session import get_business_db
         from app.models.business import ChapterSummary
 
         with get_business_db() as db:
-            existing = (
-                db.query(ChapterSummary)
-                .filter(ChapterSummary.chapter_id == chapter_id)
-                .first()
-            )
-            if existing:
-                existing.summary = summary
-                existing.character_changes = session_context.get("character_changes", "")
-                existing.world_changes = session_context.get("world_changes", "")
-                db.commit()
-            else:
-                cs = ChapterSummary(
-                    chapter_id=chapter_id,
-                    summary=summary,
-                    character_changes=session_context.get("character_changes", ""),
-                    world_changes=session_context.get("world_changes", ""),
+            if summary:
+                existing = (
+                    db.query(ChapterSummary)
+                    .filter(ChapterSummary.chapter_id == chapter_id)
+                    .first()
                 )
-                db.add(cs)
-                db.commit()
+                changes = {
+                    "summary": summary,
+                    "character_changes": session_context.get("character_changes", ""),
+                    "world_changes": session_context.get("world_changes", ""),
+                    "new_foreshadowings": session_context.get("new_foreshadowings", ""),
+                    "timeline_events": session_context.get("timeline_events", ""),
+                }
+                if existing:
+                    for key, value in changes.items():
+                        setattr(existing, key, value)
+                else:
+                    db.add(ChapterSummary(chapter_id=chapter_id, **changes))
 
-    # 2. 更新统计数据
-    content = session_context.get("draft_content", "")
+            # 步骤 3：提案只进入 pending 状态，不自动覆盖人物、组织或其他正式资料。
+            if proposal_drafts:
+                saved_proposals = create_proposals(
+                    db=db,
+                    project_id=project_id,
+                    chapter_id=chapter_id,
+                    run_id=run_id,
+                    version_id=version_id,
+                    drafts=proposal_drafts,
+                )
+                pending_count = sum(1 for item in saved_proposals if item["status"] == "pending")
+                session_context["pending_change_count"] = pending_count
+            db.commit()
+
+    # 步骤 4：将统计与最终正文绑定；精修流程已将正文放在 final_content 中。
+    content = session_context.get("final_content") or session_context.get("draft_content", "")
     if content:
         mm.record_generation(len(content))
+    return pending_count

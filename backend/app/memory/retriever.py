@@ -56,6 +56,7 @@ class MemoryRetriever:
             "organizations": self._get_organizations(query, top_k=5),
             "foreshadowings": self._get_foreshadowings(query, top_k=8),
             "recent_summaries": self._get_recent_summaries(chapter_no, limit=5),
+            "long_term_memories": self._get_long_term_memories(limit=8),
         }
         return result
 
@@ -212,6 +213,18 @@ class MemoryRetriever:
             )
             return rows_to_dicts(rows)
 
+    def _get_long_term_memories(self, limit: int = 8) -> list[dict]:
+        """读取已确认写回的项目记忆，按最近更新和重要性限制数量。"""
+        with get_business_db() as db:
+            rows = (
+                db.query(MemoryItem)
+                .filter(MemoryItem.project_id == self.project_id)
+                .order_by(MemoryItem.updated_at.desc(), MemoryItem.importance.desc())
+                .limit(limit)
+                .all()
+            )
+            return rows_to_dicts(rows)
+
     def build_context_prompt(self, memory_bundle: dict) -> str:
         """把记忆包格式化成 Prompt 文本。
 
@@ -224,6 +237,7 @@ class MemoryRetriever:
         organizations = memory_bundle.get("organizations", [])
         foreshadowings = memory_bundle.get("foreshadowings", [])
         recent_summaries = memory_bundle.get("recent_summaries", [])
+        long_term_memories = memory_bundle.get("long_term_memories", [])
 
         lines = []
         lines.append("=== 项目信息 ===")
@@ -303,5 +317,16 @@ class MemoryRetriever:
                     lines.append(f"第{len(recent_summaries)-i}章：{summary[:60]}...")
         else:
             lines.append("（暂无历史章节）")
+
+        lines.append("")
+        lines.append("=== 已确认长期记忆 ===")
+        if long_term_memories:
+            for memory in long_term_memories[:8]:
+                title = memory.get("title", "")
+                content = memory.get("content_summary") or memory.get("content", "")
+                if title or content:
+                    lines.append(f"- {title}：{content[:120]}")
+        else:
+            lines.append("（暂无已确认的长期记忆）")
 
         return "\n".join(lines)
