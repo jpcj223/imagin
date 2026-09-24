@@ -53,8 +53,14 @@
         </div>
 
         <div class="tree-toolbar">
-          <n-button text size="tiny" @click="expandAll">全部展开</n-button>
-          <n-button text size="tiny" @click="collapseAll">全部折叠</n-button>
+          <n-button
+            text
+            size="tiny"
+            :disabled="!hasExpandableOrganizations"
+            @click="toggleAllOrganizations"
+          >
+            {{ allOrganizationsExpanded ? '全部折叠' : '全部展开' }}
+          </n-button>
           <div class="toolbar-spacer"></div>
           <n-button v-if="editingId" text size="tiny" type="primary" @click="startCreateChild">
             + 子组织
@@ -561,6 +567,23 @@ const showDeleteConfirm = ref(false)
 const deletingOrgName = ref('')
 const loading = ref(false)
 const expandedIds = ref<Set<number>>(new Set())
+
+// 只统计存在下级组织的节点，避免叶子节点影响全部展开状态。
+const expandableOrganizationIds = computed(() => {
+  const parentIds = new Set(
+    organizations.value
+      .map((item) => item.parent_id)
+      .filter((parentId): parentId is number => parentId !== null && parentId !== undefined)
+  )
+  return organizations.value
+    .filter((item) => parentIds.has(item.id))
+    .map((item) => item.id)
+})
+const hasExpandableOrganizations = computed(() => expandableOrganizationIds.value.length > 0)
+const allOrganizationsExpanded = computed(() =>
+  hasExpandableOrganizations.value &&
+  expandableOrganizationIds.value.every((id) => expandedIds.value.has(id))
+)
 
 const form = reactive({
   name: '新组织',
@@ -1143,11 +1166,20 @@ function toggleExpand(id: number) {
 }
 
 function expandAll() {
-  organizations.value.forEach((o) => expandedIds.value.add(o.id))
+  expandableOrganizationIds.value.forEach((id) => expandedIds.value.add(id))
 }
 
 function collapseAll() {
   expandedIds.value.clear()
+}
+
+// 根据当前状态统一切换组织树的展开状态。
+function toggleAllOrganizations() {
+  if (allOrganizationsExpanded.value) {
+    collapseAll()
+  } else {
+    expandAll()
+  }
 }
 
 function getParentName(): string {
