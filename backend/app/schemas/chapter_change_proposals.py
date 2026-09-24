@@ -10,6 +10,7 @@ ChangeEntityType = Literal[
     "character",
     "relationship",
     "organization",
+    "organization_relation",
     "foreshadowing",
     "world_setting",
     "memory",

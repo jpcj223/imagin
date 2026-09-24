@@ -40,6 +40,7 @@ class CoreAnalysisSkill(BaseSkill):
   "character_changes": [{"name": "人物名", "operation": "update", "changes": {"personality": "仅填写确实改变的人物卡字段"}, "rationale": "变化理由", "evidence": "正文依据"}],
   "relationships": [{"source_name": "关系发起方", "target_name": "关系另一方", "operation": "create", "relation_type": "关系描述", "depth": 3, "effective_from": 1, "expires_at": null, "rationale": "变化理由", "evidence": "正文依据"}],
   "organization_changes": [{"name": "组织名", "operation": "update", "changes": {"goal": "仅填写确实改变的组织字段"}, "rationale": "变化理由", "evidence": "正文依据"}],
+  "organization_relations": [{"source_name": "关系发起组织", "target_name": "关系另一组织", "operation": "create", "relation_type": "alliance", "description": "关系说明", "effective_from_chapter": 1, "expires_at_chapter": null, "rationale": "变化理由", "evidence": "正文依据"}],
   "foreshadowing_changes": [{"keyword": "伏笔关键词", "operation": "create", "target_keyword": null, "changes": {"keyword": "伏笔关键词", "description": "伏笔内容", "status": "planted"}, "rationale": "作用", "evidence": "正文依据"}],
   "world_changes": [{"title": "设定名称", "operation": "update", "changes": {"rules": "仅填写确实新增或修正的设定字段"}, "rationale": "变化理由", "evidence": "正文依据"}],
   "timeline_events": [{"title": "事件标题", "content": "事件经过", "importance": 60}]
@@ -49,17 +50,18 @@ class CoreAnalysisSkill(BaseSkill):
 1. 仅输出正文明确支持的变化，不把推测写成事实；evidence 使用能定位变化的短句。
 2. 已有实体使用 update；只有确认为新人物/组织/伏笔/设定时才使用 create。
 3. 人物 changes 只使用人物卡字段：name、role_type、mbti、mbti_primary、mbti_secondary、appearance、personality、background、motivation、arc、identity、faction、weakness、secret、dialogue_style、ai_notes、status。
-4. 组织 changes 只使用组织资料字段：parent_id、name、org_type、location、slogan、description、level、power_level、member_count、status、hierarchy、resources、goal、core_members、allies、enemies、impact、risk_notes、hidden_secrets、active_from_chapter、disbanded_chapter、hierarchy_system、hierarchy_levels。
-5. 伏笔 changes 只使用 keyword、description、status、importance、planted_chapter、payoff_chapter、effective_from、expires_at、notes、related_character_ids、related_organization_ids、related_outline_ids、replaced_by_id。
-6. 世界观 changes 只使用 era、geography、atmosphere、rules、extra、title、category、tags、importance、related_chapters、related_characters、related_organizations、related_foreshadowings、conflict_notes。
+4. 组织 changes 只使用组织资料字段：parent_id、name、org_type、location、slogan、description、level、power_level、member_count、status、hierarchy、resources、goal、core_members、impact、risk_notes、hidden_secrets、active_from_chapter、disbanded_chapter、hierarchy_system、hierarchy_levels。
+5. 组织同盟/敌对关系变化单独写入 organization_relations；source_name 和 target_name 必须是上下文中的组织名称，relation_type 只能是 alliance 或 hostility。已有组织对关系更新时用 update，并填写 target_effective_from_chapter 以定位原关系；不允许把旧的 allies/enemies 文本字段当作结构化关系变化。
+6. 伏笔 changes 只使用 keyword、description、status、importance、planted_chapter、payoff_chapter、effective_from、expires_at、notes、related_character_ids、related_organization_ids、related_outline_ids、replaced_by_id。
+7. 世界观 changes 只使用 era、geography、atmosphere、rules、extra、title、category、tags、importance、related_chapters、related_characters、related_organizations、related_foreshadowings、conflict_notes。
    category 使用 geography、era、power_system、rules、items、weapons、medicine、creatures、organizations、other 之一。
-7. relationships 描述关系新增或明确变化；已有 source-target 关系变化时使用 update，相同关系不要重复提出；人物名必须与上下文资料或正文中的明确新人物一致，不编造数据库 ID。
-8. 纯情绪或短暂动作不改写人物卡；可以作为时间线事件记录。
+8. relationships 描述人物关系新增或明确变化；已有 source-target 关系变化时使用 update，相同关系不要重复提出；人物名必须与上下文资料或正文中的明确新人物一致，不编造数据库 ID。
+9. 纯情绪或短暂动作不改写人物卡；可以作为时间线事件记录。
 """.strip()
 
     produced_outputs = [
         "summary", "character_changes", "world_changes", "new_foreshadowings",
-        "timeline_events", "structured_analysis",
+        "timeline_events", "structured_analysis", "organization_relations",
     ]
 
     def pre_process(self, context, params):
@@ -135,6 +137,10 @@ class CoreAnalysisSkill(BaseSkill):
             data["relationships"] = [
                 item.model_dump(exclude_unset=True)
                 for item in structured.relationships
+            ]
+            data["organization_relations"] = [
+                item.model_dump(exclude_unset=True)
+                for item in structured.organization_relations
             ]
             result["structured_analysis"] = data
             result["summary"] = data["summary"]

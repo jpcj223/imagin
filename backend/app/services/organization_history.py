@@ -6,7 +6,7 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
-from app.models.business import Organization, OrganizationHistory
+from app.models.business import Organization, OrganizationHistory, OrganizationRelation
 
 
 SNAPSHOT_FIELDS = (
@@ -16,6 +16,37 @@ SNAPSHOT_FIELDS = (
     "allies", "enemies", "impact", "risk_notes", "hidden_secrets",
     "active_from_chapter", "disbanded_chapter",
 )
+
+
+def capture_organization_relation_snapshot(
+    db: Session,
+    relation: OrganizationRelation,
+    organization_id: int,
+) -> dict[str, Any]:
+    """按当前组织视角读取关系快照。
+
+    步骤 1：从关系两端确定当前组织对应的另一端。
+    步骤 2：查询对端名称并返回关系类型、说明和章节区间。
+    """
+    target_id = (
+        relation.organization_b_id
+        if relation.organization_a_id == organization_id
+        else relation.organization_a_id
+    )
+    target = db.query(Organization).filter(
+        Organization.id == target_id,
+        Organization.project_id == relation.project_id,
+    ).first()
+    return {
+        "organization_relation": {
+            "target_org_id": target_id,
+            "target_org_name": target.name if target else "（组织已删除）",
+            "relation_type": relation.relation_type,
+            "description": relation.description or "",
+            "effective_from_chapter": relation.effective_from_chapter,
+            "expires_at_chapter": relation.expires_at_chapter,
+        }
+    }
 
 
 def capture_organization_snapshot(organization: Organization) -> dict[str, Any]:
@@ -38,24 +69,32 @@ def record_organization_history(
     proposal_id: str | None = None,
     rationale: str = "",
     evidence: str = "",
+    changed_fields_override: list[str] | None = None,
 ) -> OrganizationHistory | None:
     """写入组织历史。
 
-    步骤 1：比较变更前后的业务字段。
+    步骤 1：比较变更前后的档案字段，或使用调用方指定的关系事件字段。
     步骤 2：无实际变化时跳过，避免产生重复历史。
     步骤 3：将快照与章节提案来源加入当前事务，交由调用方统一提交。
     """
-    changed_fields = [
-        field_name
-        for field_name in SNAPSHOT_FIELDS
-        if before_snapshot.get(field_name) != after_snapshot.get(field_name)
-    ]
-    if operation == "create":
+    if changed_fields_override is not None:
+        changed_fields = [
+            field_name
+            for field_name in changed_fields_override
+            if before_snapshot.get(field_name) != after_snapshot.get(field_name)
+        ]
+    else:
         changed_fields = [
             field_name
             for field_name in SNAPSHOT_FIELDS
-            if after_snapshot.get(field_name) not in (None, "", [], {}, 0)
+            if before_snapshot.get(field_name) != after_snapshot.get(field_name)
         ]
+        if operation == "create":
+            changed_fields = [
+                field_name
+                for field_name in SNAPSHOT_FIELDS
+                if after_snapshot.get(field_name) not in (None, "", [], {}, 0)
+            ]
     if not changed_fields:
         return None
 

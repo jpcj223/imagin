@@ -34,6 +34,21 @@ class OrganizationChange(BaseModel):
     evidence: str = ""
 
 
+class OrganizationRelationChange(BaseModel):
+    """章节中明确出现的组织关系变化。"""
+
+    source_name: str
+    target_name: str
+    operation: Literal["create", "update"] = "create"
+    relation_type: Literal["alliance", "hostility"] | None = None
+    description: str | None = None
+    effective_from_chapter: int | None = Field(default=None, ge=1)
+    expires_at_chapter: int | None = Field(default=None, ge=1)
+    target_effective_from_chapter: int | None = Field(default=None, ge=1)
+    rationale: str = ""
+    evidence: str = ""
+
+
 class ForeshadowingChange(BaseModel):
     keyword: str
     operation: Literal["create", "update"] = "create"
@@ -64,6 +79,7 @@ class ChapterAnalysis(BaseModel):
     character_changes: list[CharacterChange] = Field(default_factory=list)
     relationships: list[RelationshipChange] = Field(default_factory=list)
     organization_changes: list[OrganizationChange] = Field(default_factory=list)
+    organization_relations: list[OrganizationRelationChange] = Field(default_factory=list)
     foreshadowing_changes: list[ForeshadowingChange] = Field(default_factory=list)
     world_changes: list[WorldSettingChange] = Field(default_factory=list)
     timeline_events: list[TimelineEvent] = Field(default_factory=list)

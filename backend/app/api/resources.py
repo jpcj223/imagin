@@ -26,6 +26,7 @@ from app.schemas.models import (
     WorldSettingSave,
 )
 from app.services.organization_history import (
+    capture_organization_relation_snapshot,
     capture_organization_snapshot,
     parse_history_json,
     record_organization_history,
@@ -270,7 +271,8 @@ def create_organization_relation(
 
     步骤 1：验证关系两端都属于当前项目。
     步骤 2：校验自关联与章节范围重叠。
-    步骤 3：以固定端点顺序保存，避免反向重复关系。
+    步骤 3：以固定端点顺序保存，并为两端组织记历史。
+    步骤 4：提交关系和历史记录后返回关系视图。
     """
     with get_business_db() as db:
         current = _get_project_organization(db, project_id, organization_id)
@@ -288,6 +290,14 @@ def create_organization_relation(
             expires_at_chapter=payload.expires_at_chapter,
         )
         db.add(relation)
+        db.flush()
+        _record_manual_organization_relation_history(
+            db,
+            project_id,
+            relation,
+            before_snapshots={},
+            after_organization_ids={current.id, target.id},
+        )
         db.commit()
         db.refresh(relation)
         result = _serialize_organization_relation(db, relation, current.id)
@@ -303,9 +313,10 @@ def update_organization_relation(
 ) -> dict:
     """更新当前组织关联的一条关系记录。
 
-    步骤 1：按项目和关系两端限定目标记录。
+    步骤 1：按项目和关系两端限定目标记录，并保存旧快照。
     步骤 2：重新校验组织归属和时间范围。
-    步骤 3：写回并返回当前组织视角的结果。
+    步骤 3：写回关系并记录两端变更历史。
+    步骤 4：提交并返回当前组织视角的结果。
     """
     with get_business_db() as db:
         current = _get_project_organization(db, project_id, organization_id)
@@ -317,6 +328,11 @@ def update_organization_relation(
         ).first()
         if not relation:
             raise HTTPException(status_code=404, detail="组织关系不存在")
+        old_organization_ids = {relation.organization_a_id, relation.organization_b_id}
+        before_snapshots = {
+            owner_id: capture_organization_relation_snapshot(db, relation, owner_id)
+            for owner_id in old_organization_ids
+        }
         target = _get_project_organization(db, project_id, payload.target_org_id)
         _validate_organization_relation(db, project_id, current, target, payload, exclude_id=relation.id)
 
@@ -327,6 +343,14 @@ def update_organization_relation(
         relation.description = payload.description
         relation.effective_from_chapter = payload.effective_from_chapter
         relation.expires_at_chapter = payload.expires_at_chapter
+        db.flush()
+        _record_manual_organization_relation_history(
+            db,
+            project_id,
+            relation,
+            before_snapshots=before_snapshots,
+            after_organization_ids={relation.organization_a_id, relation.organization_b_id},
+        )
         db.commit()
         db.refresh(relation)
         result = _serialize_organization_relation(db, relation, current.id)
@@ -335,8 +359,14 @@ def update_organization_relation(
 
 @router.delete("/{project_id}/organizations/{organization_id}/relations/{relation_id}")
 def delete_organization_relation(project_id: int, organization_id: int, relation_id: int) -> dict:
-    """删除当前组织关联的一条关系记录，并限定项目及关系端点。"""
+    """删除当前组织关联的一条关系记录并保存两端历史。
+
+    步骤 1：限定项目、当前组织和关系 ID。
+    步骤 2：在删除前保存两端的关系快照。
+    步骤 3：删除关系并把变化记录到两端组织历史。
+    """
     with get_business_db() as db:
+        _get_project_organization(db, project_id, organization_id)
         relation = db.query(OrganizationRelation).filter(
             OrganizationRelation.id == relation_id,
             OrganizationRelation.project_id == project_id,
@@ -345,9 +375,64 @@ def delete_organization_relation(project_id: int, organization_id: int, relation
         ).first()
         if not relation:
             raise HTTPException(status_code=404, detail="组织关系不存在")
+        old_organization_ids = {relation.organization_a_id, relation.organization_b_id}
+        before_snapshots = {
+            owner_id: capture_organization_relation_snapshot(db, relation, owner_id)
+            for owner_id in old_organization_ids
+        }
         db.delete(relation)
+        _record_manual_organization_relation_history(
+            db,
+            project_id,
+            relation,
+            before_snapshots=before_snapshots,
+            after_organization_ids=set(),
+        )
         db.commit()
     return {"ok": True, "id": relation_id}
+
+
+def _record_manual_organization_relation_history(
+    db,
+    project_id: int,
+    relation: OrganizationRelation,
+    before_snapshots: dict[int, dict],
+    after_organization_ids: set[int],
+) -> None:
+    """为组织关系两端写入手动变更历史。
+
+    步骤 1：合并关系变更前后的组织端点。
+    步骤 2：按组织视角整理前后快照和新增、更新、移除动作。
+    步骤 3：把历史行加入当前事务，随关系写入一并提交。
+    """
+    before_organization_ids = set(before_snapshots)
+    for owner_id in before_organization_ids | after_organization_ids:
+        owner = db.query(Organization).filter(
+            Organization.id == owner_id,
+            Organization.project_id == project_id,
+        ).first()
+        if not owner:
+            continue
+        before_snapshot = before_snapshots.get(owner_id, {})
+        after_snapshot = (
+            capture_organization_relation_snapshot(db, relation, owner_id)
+            if owner_id in after_organization_ids
+            else {}
+        )
+        operation = (
+            "create" if owner_id not in before_organization_ids
+            else "delete" if owner_id not in after_organization_ids
+            else "update"
+        )
+        record_organization_history(
+            db=db,
+            organization=owner,
+            source_type="manual",
+            operation=operation,
+            before_snapshot=before_snapshot,
+            after_snapshot=after_snapshot,
+            changed_fields_override=["organization_relation"],
+        )
 
 
 def _get_project_organization(db, project_id: int, organization_id: int) -> Organization:

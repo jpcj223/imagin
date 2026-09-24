@@ -87,7 +87,7 @@ export interface GenerationVersion {
 }
 
 export type ChangeProposalStatus = 'pending' | 'applied' | 'rejected' | 'conflict'
-export type ChangeProposalEntityType = 'character' | 'relationship' | 'organization' | 'foreshadowing' | 'world_setting' | 'memory'
+export type ChangeProposalEntityType = 'character' | 'relationship' | 'organization' | 'organization_relation' | 'foreshadowing' | 'world_setting' | 'memory'
 
 export interface ChapterChangeProposal {
   id: number

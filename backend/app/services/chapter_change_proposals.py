@@ -18,10 +18,12 @@ from app.models.business import (
     GenerationVersion,
     MemoryItem,
     Organization,
+    OrganizationRelation,
     WorldSetting,
     WorkflowRun,
 )
 from app.services.organization_history import (
+    capture_organization_relation_snapshot,
     capture_organization_snapshot,
     record_organization_history,
 )
@@ -37,8 +39,12 @@ EDITABLE_FIELDS: dict[str, set[str]] = {
     "organization": {
         "parent_id", "name", "org_type", "location", "slogan", "description", "level",
         "power_level", "member_count", "status", "hierarchy", "resources", "goal",
-        "core_members", "allies", "enemies", "impact", "risk_notes", "hidden_secrets",
+        "core_members", "impact", "risk_notes", "hidden_secrets",
         "active_from_chapter", "disbanded_chapter", "hierarchy_system", "hierarchy_levels",
+    },
+    "organization_relation": {
+        "source_org_id", "target_org_id", "relation_type", "description",
+        "effective_from_chapter", "expires_at_chapter",
     },
     "foreshadowing": {
         "keyword", "description", "status", "importance", "planted_chapter", "payoff_chapter",
@@ -56,6 +62,7 @@ EDITABLE_FIELDS: dict[str, set[str]] = {
 ENTITY_MODELS = {
     "character": Character,
     "organization": Organization,
+    "organization_relation": OrganizationRelation,
     "foreshadowing": Foreshadowing,
     "world_setting": WorldSetting,
     "memory": MemoryItem,
@@ -176,12 +183,20 @@ def _get_entity(db: Session, entity_type: str, project_id: int, entity_id: int) 
 
 
 def load_entity_catalog(db: Session, project_id: int) -> dict[str, list[dict[str, Any]]]:
-    """读取完整的名称索引；只返回 ID 和显示名，不把整库资料复制进工作流状态。"""
+    """读取分析用实体索引。
+
+    步骤 1：按项目读取人物、组织、伏笔和设定名称。
+    步骤 2：附带人物及组织的结构化关系，用于精确定位关系变化。
+    步骤 3：只返回匹配和冲突校验所需字段，控制工作流上下文体积。
+    """
     characters = db.query(Character.id, Character.name, Character.character_relations).filter(
         Character.project_id == project_id,
     ).all()
     organizations = db.query(Organization.id, Organization.name).filter(
         Organization.project_id == project_id,
+    ).all()
+    organization_relations = db.query(OrganizationRelation).filter(
+        OrganizationRelation.project_id == project_id,
     ).all()
     foreshadowings = db.query(Foreshadowing.id, Foreshadowing.keyword).filter(
         Foreshadowing.project_id == project_id,
@@ -199,15 +214,72 @@ def load_entity_catalog(db: Session, project_id: int) -> dict[str, list[dict[str
             for row in characters
         ],
         "organizations": [{"id": row.id, "name": row.name} for row in organizations],
+        "organization_relations": [
+            {
+                "id": row.id,
+                "organization_a_id": row.organization_a_id,
+                "organization_b_id": row.organization_b_id,
+                "relation_type": row.relation_type,
+                "description": row.description or "",
+                "effective_from_chapter": row.effective_from_chapter,
+                "expires_at_chapter": row.expires_at_chapter,
+            }
+            for row in organization_relations
+        ],
         "foreshadowings": [{"id": row.id, "keyword": row.keyword} for row in foreshadowings],
         "world_settings": [{"id": row.id, "title": row.title} for row in world_settings],
     }
 
 
 def _validate_value(entity_type: str, operation: str, target_id: int | None, value: dict[str, Any]) -> None:
-    """检查提案类型、操作方式和字段白名单，不信任模型生成的字段名。"""
+    """校验提案实体、操作方式和字段内容。
+
+    步骤 1：拒绝不支持的操作。
+    步骤 2：先校验人物关系和组织关系等专用数据结构。
+    步骤 3：对普通实体应用字段白名单和数据库列类型检查。
+    """
     if operation not in {"create", "update"}:
         raise ValueError("提案操作仅支持 create 或 update")
+    if entity_type == "organization_relation":
+        # 步骤 1：新增关系必须给出两个组织 ID；更新只能改关系属性，不能换关系端点。
+        if not isinstance(value, dict) or not value:
+            raise ValueError("组织关系提案内容不能为空")
+        allowed_fields = (
+            EDITABLE_FIELDS[entity_type]
+            if operation == "create"
+            else {"relation_type", "description", "effective_from_chapter", "expires_at_chapter"}
+        )
+        if set(value) - allowed_fields:
+            raise ValueError("组织关系提案包含不允许修改的字段")
+        if operation == "create":
+            if target_id is not None:
+                raise ValueError("新增组织关系不能指定已有关系 ID")
+            for field_name in ("source_org_id", "target_org_id"):
+                field_value = value.get(field_name)
+                if not isinstance(field_value, int) or isinstance(field_value, bool) or field_value <= 0:
+                    raise ValueError(f"组织关系字段 {field_name} 必须是有效组织 ID")
+        elif not isinstance(target_id, int) or isinstance(target_id, bool) or target_id <= 0:
+            raise ValueError("更新组织关系必须指定有效关系 ID")
+
+        relation_type = value.get("relation_type")
+        if "relation_type" in value and relation_type not in {"alliance", "hostility"}:
+            raise ValueError("组织关系类型仅支持 alliance 或 hostility")
+        if operation == "create" and relation_type is None:
+            raise ValueError("新增组织关系必须指定关系类型")
+        if "description" in value and not isinstance(value["description"], str):
+            raise ValueError("组织关系说明必须是文本")
+        for field_name in ("effective_from_chapter", "expires_at_chapter"):
+            field_value = value.get(field_name)
+            if field_value is not None and (
+                not isinstance(field_value, int) or isinstance(field_value, bool) or field_value < 1
+            ):
+                raise ValueError(f"组织关系字段 {field_name} 必须是正整数或空值")
+        start = value.get("effective_from_chapter")
+        end = value.get("expires_at_chapter")
+        if start is not None and end is not None and end < start:
+            raise ValueError("关系失效章节不能早于生效章节")
+        return
+
     if entity_type == "relationship":
         if not isinstance(target_id, int) or isinstance(target_id, bool):
             raise ValueError("人物关系提案必须指定源人物")
@@ -289,6 +361,49 @@ def _validate_value(entity_type: str, operation: str, target_id: int | None, val
         raise ValueError("长期记忆采用版本化追加，不允许覆盖已有条目")
 
 
+def _find_organization_relation_conflict(
+    db: Session,
+    project_id: int,
+    organization_a_id: int,
+    organization_b_id: int,
+    start: int | None,
+    end: int | None,
+    exclude_id: int | None = None,
+    planned_updates: dict[int, dict[str, Any]] | None = None,
+) -> OrganizationRelation | None:
+    """查找同一组织对中章节区间重叠的关系。
+
+    步骤 1：按项目和规范化后的组织端点筛选既有关系。
+    步骤 2：应用本批次已提出的区间调整并跳过指定关系。
+    步骤 3：返回首条与候选区间冲突的记录。
+    """
+    first_id, second_id = sorted((organization_a_id, organization_b_id))
+    query = db.query(OrganizationRelation).filter(
+        OrganizationRelation.project_id == project_id,
+        OrganizationRelation.organization_a_id == first_id,
+        OrganizationRelation.organization_b_id == second_id,
+    )
+    if exclude_id is not None:
+        query = query.filter(OrganizationRelation.id != exclude_id)
+    for existing in query.all():
+        planned = (planned_updates or {}).get(existing.id, {})
+        existing_start = planned.get("effective_from_chapter", existing.effective_from_chapter)
+        existing_end = planned.get("expires_at_chapter", existing.expires_at_chapter)
+        starts_before_existing_ends = (
+            existing_end is None
+            or start is None
+            or start <= existing_end
+        )
+        existing_starts_before_end = (
+            end is None
+            or existing_start is None
+            or existing_start <= end
+        )
+        if starts_before_existing_ends and existing_starts_before_end:
+            return existing
+    return None
+
+
 def _read_before_value(
     entity_type: str,
     entity: Any,
@@ -344,6 +459,14 @@ def create_proposals(
             raise ValueError("正文版本与当前章节不匹配")
 
     results = []
+    # 章节可能同时结束旧关系并建立新关系；用本批更新草稿计算其审核后的区间。
+    planned_relation_updates = {
+        draft.get("target_id"): draft.get("proposed_value", {})
+        for draft in drafts
+        if draft.get("entity_type") == "organization_relation"
+        and draft.get("operation") == "update"
+        and isinstance(draft.get("target_id"), int)
+    }
     for draft in drafts:
         entity_type = draft["entity_type"]
         operation = draft["operation"]
@@ -351,7 +474,43 @@ def create_proposals(
         proposed_value = draft["proposed_value"]
         _validate_value(entity_type, operation, target_id, proposed_value)
 
-        if entity_type == "relationship":
+        if entity_type == "organization_relation":
+            if operation == "create":
+                source = _get_entity(db, "organization", project_id, proposed_value["source_org_id"])
+                target = _get_entity(db, "organization", project_id, proposed_value["target_org_id"])
+                if not source or not target or source.id == target.id:
+                    raise ValueError("组织关系的两端必须是当前项目中的不同组织")
+                conflict = _find_organization_relation_conflict(
+                    db,
+                    project_id,
+                    source.id,
+                    target.id,
+                    proposed_value.get("effective_from_chapter"),
+                    proposed_value.get("expires_at_chapter"),
+                    planned_updates=planned_relation_updates,
+                )
+                if conflict:
+                    raise ValueError("这两个组织在该章节范围内已有关系记录")
+                entity = None
+            else:
+                entity = _get_entity(db, entity_type, project_id, target_id)
+                if not entity:
+                    raise ValueError(f"提案目标不存在或不属于当前项目：{entity_type}#{target_id}")
+                new_start = proposed_value.get("effective_from_chapter", entity.effective_from_chapter)
+                new_end = proposed_value.get("expires_at_chapter", entity.expires_at_chapter)
+                conflict = _find_organization_relation_conflict(
+                    db,
+                    project_id,
+                    entity.organization_a_id,
+                    entity.organization_b_id,
+                    new_start,
+                    new_end,
+                    exclude_id=entity.id,
+                    planned_updates=planned_relation_updates,
+                )
+                if conflict:
+                    raise ValueError("关系更新后的章节范围与同一组织对的其他关系重叠")
+        elif entity_type == "relationship":
             source = _get_entity(db, "relationship", project_id, target_id)
             target = _get_entity(db, "character", project_id, proposed_value["target_id"])
             if not source or not target:
@@ -563,6 +722,124 @@ def build_proposal_drafts(
                 "evidence": item.get("evidence", ""),
             })
 
+    # 组织间关系：按唯一组织名称定位端点，并把章节区间冲突挡在待审核队列之外。
+    organizations = entity_catalog.get("organizations", [])
+    existing_org_relations = [dict(relation) for relation in entity_catalog.get("organization_relations", [])]
+    relation_changes = [
+        item for item in analysis.get("organization_relations", []) if isinstance(item, dict)
+    ]
+    # 先排关系区间更新，再排新增，支持“结束旧同盟并转为敌对”等同章变化。
+    relation_changes.sort(key=lambda item: 0 if item.get("operation") == "update" else 1)
+    used_relation_ids: set[int] = set()
+    for item in relation_changes:
+        source = unique_match(organizations, "name", item.get("source_name"))
+        target = unique_match(organizations, "name", item.get("target_name"))
+        operation = item.get("operation", "create")
+        relation_type = item.get("relation_type")
+        if not source or not target or source["id"] == target["id"]:
+            continue
+        pair_ids = tuple(sorted((source["id"], target["id"])))
+        pair_relations = [
+            relation
+            for relation in existing_org_relations
+            if (relation["organization_a_id"], relation["organization_b_id"]) == pair_ids
+        ]
+        if operation == "create":
+            requested_start = item.get("effective_from_chapter")
+            start = chapter_no if requested_start is None else requested_start
+            end = item.get("expires_at_chapter")
+            if relation_type not in {"alliance", "hostility"}:
+                continue
+            if start < 1 or (end is not None and end < start):
+                continue
+            if any(_chapter_ranges_overlap(
+                start,
+                end,
+                relation.get("effective_from_chapter"),
+                relation.get("expires_at_chapter"),
+            ) for relation in pair_relations):
+                continue
+            relation_values = {
+                "source_org_id": source["id"],
+                "target_org_id": target["id"],
+                "relation_type": relation_type,
+                "description": item.get("description") or "",
+                "effective_from_chapter": start,
+                "expires_at_chapter": end,
+            }
+            target_id = None
+        elif operation == "update":
+            target_effective_from = item.get("target_effective_from_chapter")
+            matches = pair_relations
+            if "target_effective_from_chapter" in item:
+                matches = [
+                    relation for relation in matches
+                    if relation.get("effective_from_chapter") == target_effective_from
+                ]
+            if len(matches) != 1:
+                continue
+            existing = matches[0]
+            target_id = existing["id"]
+            if target_id in used_relation_ids:
+                continue
+            relation_values = {}
+            for field_name in (
+                "relation_type", "description", "effective_from_chapter", "expires_at_chapter",
+            ):
+                if field_name in item and item[field_name] is not None:
+                    relation_values[field_name] = item[field_name]
+                elif field_name == "description" and field_name in item:
+                    relation_values[field_name] = item[field_name] or ""
+                elif field_name in item and field_name in {"effective_from_chapter", "expires_at_chapter"}:
+                    relation_values[field_name] = None
+            if not relation_values or all(
+                existing.get(field_name) == value
+                for field_name, value in relation_values.items()
+            ):
+                continue
+            start = relation_values.get("effective_from_chapter", existing.get("effective_from_chapter"))
+            end = relation_values.get("expires_at_chapter", existing.get("expires_at_chapter"))
+            if (start is not None and start < 1) or (end is not None and end < 1):
+                continue
+            if start is not None and end is not None and end < start:
+                continue
+            if any(
+                relation["id"] != target_id
+                and _chapter_ranges_overlap(
+                    start,
+                    end,
+                    relation.get("effective_from_chapter"),
+                    relation.get("expires_at_chapter"),
+                )
+                for relation in pair_relations
+            ):
+                continue
+            for relation in existing_org_relations:
+                if relation["id"] == target_id:
+                    relation.update(relation_values)
+                    break
+            used_relation_ids.add(target_id)
+        else:
+            continue
+
+        if operation == "create":
+            existing_org_relations.append({
+                "id": -len(existing_org_relations) - 1,
+                "organization_a_id": pair_ids[0],
+                "organization_b_id": pair_ids[1],
+                **relation_values,
+            })
+
+        proposals.append({
+            "entity_type": "organization_relation",
+            "operation": operation,
+            "target_id": target_id,
+            "target_label": f'{source["name"]} → {target["name"]}',
+            "proposed_value": relation_values,
+            "rationale": item.get("rationale", ""),
+            "evidence": item.get("evidence", ""),
+        })
+
     # 伏笔变化：通过关键词唯一定位旧伏笔，否则只允许明确新增。
     for item in analysis.get("foreshadowing_changes", []):
         if not isinstance(item, dict):
@@ -676,6 +953,22 @@ def build_proposal_drafts(
     return validated
 
 
+def _chapter_ranges_overlap(
+    first_start: int | None,
+    first_end: int | None,
+    second_start: int | None,
+    second_end: int | None,
+) -> bool:
+    """判断两个组织关系章节区间是否重叠。
+
+    步骤 1：把空起止边界视为没有时间限制。
+    步骤 2：分别检查两个区间的起点是否落在对方范围内。
+    """
+    first_starts_before_second_ends = second_end is None or first_start is None or first_start <= second_end
+    second_starts_before_first_end = first_end is None or second_start is None or second_start <= first_end
+    return first_starts_before_second_ends and second_starts_before_first_end
+
+
 def _encode_entity_field(entity_type: str, field_name: str, value: Any) -> Any:
     """将原生对象编码为模型中兼容现有页面的 JSON 文本字段。"""
     if field_name in JSON_FIELDS.get(entity_type, set()):
@@ -690,7 +983,30 @@ def _create_entity(
     proposal: ChapterChangeProposal,
     values: dict[str, Any],
 ) -> Any:
-    """根据已审核提案创建实体，并由服务补齐项目和来源字段。"""
+    """根据已审核提案创建实体，并由服务补齐项目和来源字段。
+
+    步骤 1：处理需要补充来源信息的长期记忆。
+    步骤 2：把 JSON 字段编码后构造实体。
+    步骤 3：新增并 flush，确保调用方可以记录实体 ID。
+    """
+    if proposal.entity_type == "organization_relation":
+        # 关系端点由项目内 ID 解析，数据库始终按升序保存以避免方向重复。
+        source_id = values["source_org_id"]
+        target_id = values["target_org_id"]
+        first_id, second_id = sorted((source_id, target_id))
+        entity = OrganizationRelation(
+            project_id=project_id,
+            organization_a_id=first_id,
+            organization_b_id=second_id,
+            relation_type=values["relation_type"],
+            description=values.get("description", ""),
+            effective_from_chapter=values.get("effective_from_chapter"),
+            expires_at_chapter=values.get("expires_at_chapter"),
+        )
+        db.add(entity)
+        db.flush()
+        return entity
+
     if proposal.entity_type == "memory":
         values = {**values, "metadata_json": values.get("metadata_json", {})}
         values["source_type"] = "chapter_analysis"
@@ -737,6 +1053,8 @@ def review_proposal(
         raise ValueError(f"提案当前状态为 {proposal.status}，不能重复审核")
 
     organization_before_snapshot: dict[str, Any] | None = None
+    organization_relation_before_snapshots: dict[int, dict[str, Any]] = {}
+    organization_relation_owner_ids: set[int] = set()
 
     proposal.reviewed_at = datetime.utcnow()
     proposal.review_note = review_note
@@ -759,7 +1077,29 @@ def review_proposal(
         if set(values) != set(before_value):
             raise ValueError("审核修改不能增删提案字段；请退回并重新生成提案")
 
-    if proposal.operation == "create" and proposal.entity_type != "relationship":
+    if proposal.operation == "create" and proposal.entity_type == "organization_relation":
+        # 步骤 3b：审核新增关系时再次验证组织归属和时间区间，挡住待审核期间的冲突。
+        source = _get_entity(db, "organization", project_id, values["source_org_id"])
+        target = _get_entity(db, "organization", project_id, values["target_org_id"])
+        if not source or not target or source.id == target.id:
+            proposal.status = "conflict"
+            proposal.review_note = review_note or "关系端点组织已删除或无效，请重新分析后确认。"
+            return {"proposal": _serialize_proposal(proposal), "idempotent": False, "conflict": True}
+        conflict = _find_organization_relation_conflict(
+            db,
+            project_id,
+            source.id,
+            target.id,
+            values.get("effective_from_chapter"),
+            values.get("expires_at_chapter"),
+        )
+        if conflict:
+            proposal.status = "conflict"
+            proposal.review_note = review_note or "审核期间这两个组织已建立重叠区间关系，请刷新后重新分析。"
+            return {"proposal": _serialize_proposal(proposal), "idempotent": False, "conflict": True}
+        organization_relation_owner_ids = {source.id, target.id}
+        entity = _create_entity(db, project_id, chapter_id, proposal, values)
+    elif proposal.operation == "create" and proposal.entity_type != "relationship":
         # 步骤 3a：提案待审核期间若已有同名正式资料，标记冲突而不是创建重复卡片。
         unique_fields = {
             "character": "name",
@@ -801,6 +1141,13 @@ def review_proposal(
         if proposal.entity_type == "organization":
             # 在应用审核值之前保留完整档案快照，供历史页还原本次变化。
             organization_before_snapshot = capture_organization_snapshot(entity)
+        elif proposal.entity_type == "organization_relation":
+            # 把关系两端的旧视角都保存下来，方便从任一组织档案追溯变化。
+            organization_relation_owner_ids = {entity.organization_a_id, entity.organization_b_id}
+            organization_relation_before_snapshots = {
+                owner_id: capture_organization_relation_snapshot(db, entity, owner_id)
+                for owner_id in organization_relation_owner_ids
+            }
 
         before_value = _json_load(proposal.before_value, {})
         if proposal.entity_type == "relationship":
@@ -838,6 +1185,23 @@ def review_proposal(
                 proposal.status = "conflict"
                 proposal.review_note = review_note or "目标资料在提案生成后发生变化，请重新确认。"
                 return {"proposal": _serialize_proposal(proposal), "idempotent": False, "conflict": True}
+            if proposal.entity_type == "organization_relation":
+                # 更新章节范围前排除自身并检查同一组织对的重叠关系。
+                new_start = values.get("effective_from_chapter", entity.effective_from_chapter)
+                new_end = values.get("expires_at_chapter", entity.expires_at_chapter)
+                conflict = _find_organization_relation_conflict(
+                    db,
+                    project_id,
+                    entity.organization_a_id,
+                    entity.organization_b_id,
+                    new_start,
+                    new_end,
+                    exclude_id=entity.id,
+                )
+                if conflict:
+                    proposal.status = "conflict"
+                    proposal.review_note = review_note or "关系章节范围与另一条关系重叠，请刷新后重新分析。"
+                    return {"proposal": _serialize_proposal(proposal), "idempotent": False, "conflict": True}
             if proposal.entity_type == "organization" and values.get("parent_id"):
                 parent = _get_entity(db, "organization", project_id, values["parent_id"])
                 if not parent or parent.id == entity.id:
@@ -860,6 +1224,30 @@ def review_proposal(
             rationale=proposal.rationale or "",
             evidence=proposal.evidence or "",
         )
+    elif proposal.entity_type == "organization_relation":
+        # 步骤 6：两端组织都保留关系变化，章节审核与关系写入同事务提交。
+        if proposal.operation == "create":
+            organization_relation_owner_ids = {
+                entity.organization_a_id,
+                entity.organization_b_id,
+            }
+        for owner_id in organization_relation_owner_ids:
+            owner = _get_entity(db, "organization", project_id, owner_id)
+            if not owner:
+                continue
+            record_organization_history(
+                db=db,
+                organization=owner,
+                source_type="chapter_analysis",
+                operation=proposal.operation,
+                before_snapshot=organization_relation_before_snapshots.get(owner_id, {}),
+                after_snapshot=capture_organization_relation_snapshot(db, entity, owner_id),
+                chapter_id=chapter_id,
+                proposal_id=proposal.proposal_id,
+                rationale=proposal.rationale or "",
+                evidence=proposal.evidence or "",
+                changed_fields_override=["organization_relation"],
+            )
 
     proposal.status = "applied"
     proposal.applied_at = datetime.utcnow()

@@ -580,7 +580,7 @@
                 <n-tag :type="record.source_type === 'chapter_analysis' ? 'info' : 'default'" size="tiny">
                   {{ record.source_type === 'chapter_analysis' ? '章节分析' : '手动编辑' }}
                 </n-tag>
-                <strong>{{ record.operation === 'create' ? '创建档案' : '更新档案' }}</strong>
+                <strong>{{ historyRecordTitle(record) }}</strong>
               </div>
               <div class="organization-history-meta">
                 <span v-if="record.chapter_no">第 {{ record.chapter_no }} 章{{ record.chapter_title ? ` · ${record.chapter_title}` : '' }}</span>
@@ -1688,6 +1688,7 @@ const organizationHistoryFieldLabels: Record<string, string> = {
   impact: '剧情影响',
   risk_notes: '风险提示',
   hidden_secrets: '隐藏设定',
+  organization_relation: '组织关系',
   active_from_chapter: '活跃起始章节',
   disbanded_chapter: '解散章节'
 }
@@ -1695,6 +1696,17 @@ const organizationHistoryFieldLabels: Record<string, string> = {
 function historyFieldLabel(field: string) {
   // 步骤 1：优先显示中文字段名；步骤 2：未知字段保留原始标识。
   return organizationHistoryFieldLabels[field] || field
+}
+
+function historyRecordTitle(record: OrganizationHistory) {
+  // 步骤 1：区分组织档案字段与组织关系事件；步骤 2：显示新增、更新或移除动作。
+  if (record.changed_fields.includes('organization_relation')) {
+    const action = record.operation === 'create'
+      ? '新增'
+      : record.operation === 'delete' ? '移除' : '更新'
+    return `${action}组织关系`
+  }
+  return record.operation === 'create' ? '创建档案' : '更新档案'
 }
 
 function formatHistoryValue(value: unknown) {

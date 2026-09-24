@@ -1824,6 +1824,7 @@ const proposalEntityLabels: Record<ChangeProposalEntityType, string> = {
   character: '人物',
   relationship: '人物关系',
   organization: '组织',
+  organization_relation: '组织关系',
   foreshadowing: '伏笔',
   world_setting: '世界观',
   memory: '长期记忆',
@@ -1858,6 +1859,37 @@ function formatProposalValue(value: unknown): string {
 
 function proposalChanges(proposal: ChapterChangeProposal) {
   const fields = Object.entries(proposal.proposed_value ?? {})
+  if (proposal.entity_type === 'organization_relation') {
+    const summarize = (value: Record<string, unknown>) => {
+      const source = value.source_org_id
+        ? organizations.value.find((item) => item.id === Number(value.source_org_id))?.name
+        : ''
+      const target = value.target_org_id
+        ? organizations.value.find((item) => item.id === Number(value.target_org_id))?.name
+        : ''
+      const endpoints = source && target ? `${source} → ${target}` : proposal.target_label
+      const relationType = value.relation_type === 'alliance'
+        ? '同盟'
+        : value.relation_type === 'hostility' ? '敌对' : ''
+      const range = []
+      if ('effective_from_chapter' in value) {
+        range.push(value.effective_from_chapter == null ? '起始不限' : `第 ${String(value.effective_from_chapter)} 章起`)
+      }
+      if ('expires_at_chapter' in value) {
+        range.push(value.expires_at_chapter == null ? '持续有效' : `至第 ${String(value.expires_at_chapter)} 章`)
+      }
+      return [endpoints, relationType, range.join('，'), value.description]
+        .filter((part) => part !== '' && part !== undefined && part !== null)
+        .join(' · ')
+    }
+    return [{
+      field: proposal.operation === 'create' ? '新增组织关系' : '组织关系调整',
+      before: proposal.operation === 'create'
+        ? '无既有关系'
+        : summarize(proposal.before_value),
+      after: summarize(proposal.proposed_value),
+    }]
+  }
   if (proposal.entity_type === 'relationship') {
     const existing = proposal.before_value.relationships
     const targetId = proposal.proposed_value.target_id
