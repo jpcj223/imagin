@@ -3924,6 +3924,8 @@ useProjectDataLoader(load)
 }
 
 .attr-chapter-num :deep(.n-input__input-el) {
+  height: 26px;
+  line-height: 26px;
   text-align: center;
   font-size: 13px;
   font-weight: 500;
