@@ -56,7 +56,6 @@
           <n-button
             text
             size="tiny"
-            :disabled="!hasExpandableOrganizations"
             @click="toggleAllOrganizations"
           >
             {{ allOrganizationsExpanded ? '全部折叠' : '全部展开' }}
@@ -1175,6 +1174,11 @@ function collapseAll() {
 
 // 根据当前状态统一切换组织树的展开状态。
 function toggleAllOrganizations() {
+  if (!hasExpandableOrganizations.value) {
+    notify.info('当前没有下级组织，添加子组织后即可展开或折叠')
+    return
+  }
+
   if (allOrganizationsExpanded.value) {
     collapseAll()
   } else {
