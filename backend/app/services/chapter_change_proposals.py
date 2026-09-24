@@ -66,6 +66,13 @@ JSON_FIELDS: dict[str, set[str]] = {
 
 RELATION_FIELDS = {"target_id", "relation_type", "depth", "effective_from", "expires_at"}
 
+# 世界观分类与前端分类字典一致，同时保留历史分析结果使用过的值。
+WORLD_SETTING_CATEGORIES = {
+    "geography", "era", "power_system", "rules", "items", "weapons",
+    "medicine", "creatures", "organizations", "other",
+    "location", "power", "rule", "taboo", "term",
+}
+
 
 def _json_dump(value: Any) -> str:
     """统一 JSON 序列化，确保中文可读且键顺序稳定。"""
@@ -268,7 +275,7 @@ def _validate_value(entity_type: str, operation: str, target_id: int | None, val
         if not any(value.get(key) for key in ("title", "era", "geography", "rules")):
             raise ValueError("新增世界观设定至少需要标题、时代、地理或规则之一")
     if entity_type == "world_setting" and value.get("category") not in (
-        None, "era", "location", "power", "rule", "taboo", "term", "other",
+        None, *WORLD_SETTING_CATEGORIES,
     ):
         raise ValueError("世界观分类不在支持范围内")
     if entity_type == "memory" and operation == "create":

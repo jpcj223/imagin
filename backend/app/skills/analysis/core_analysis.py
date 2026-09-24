@@ -52,6 +52,7 @@ class CoreAnalysisSkill(BaseSkill):
 4. 组织 changes 只使用组织资料字段：parent_id、name、org_type、location、slogan、description、level、power_level、member_count、status、hierarchy、resources、goal、core_members、allies、enemies、impact、risk_notes、hidden_secrets、active_from_chapter、disbanded_chapter、hierarchy_system、hierarchy_levels。
 5. 伏笔 changes 只使用 keyword、description、status、importance、planted_chapter、payoff_chapter、effective_from、expires_at、notes、related_character_ids、related_organization_ids、related_outline_ids、replaced_by_id。
 6. 世界观 changes 只使用 era、geography、atmosphere、rules、extra、title、category、tags、importance、related_chapters、related_characters、related_organizations、related_foreshadowings、conflict_notes。
+   category 使用 geography、era、power_system、rules、items、weapons、medicine、creatures、organizations、other 之一。
 7. relationships 描述关系新增或明确变化；已有 source-target 关系变化时使用 update，相同关系不要重复提出；人物名必须与上下文资料或正文中的明确新人物一致，不编造数据库 ID。
 8. 纯情绪或短暂动作不改写人物卡；可以作为时间线事件记录。
 """.strip()
