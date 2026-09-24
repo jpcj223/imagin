@@ -653,7 +653,8 @@ useProjectDataLoader(load)
   display: flex;
   flex-direction: column;
   gap: 16px;
-  height: 100%;
+  min-height: 100%;
+  height: auto;
 }
 
 /* ===== 世界观概览横幅 ===== */
@@ -795,10 +796,11 @@ useProjectDataLoader(load)
 /* ===== 工作台 ===== */
 .workbench {
   display: grid;
-  grid-template-columns: 200px 280px 1fr;
+  grid-template-columns: 240px 360px minmax(0, 1fr);
   gap: 12px;
-  flex: 1;
-  min-height: 0;
+  /* 总览展开时保留足够的编辑区高度，让页面滚动而不是压扁三栏。 */
+  flex: 1 0 460px;
+  min-height: 460px;
 }
 
 /* ===== 分类面板 ===== */
@@ -810,6 +812,7 @@ useProjectDataLoader(load)
   display: flex;
   flex-direction: column;
   min-height: 0;
+  min-width: 0;
 }
 
 .panel-title {
@@ -861,12 +864,15 @@ useProjectDataLoader(load)
   display: flex;
   flex-direction: column;
   min-height: 0;
+  min-width: 0;
 }
 
 .list-head {
   display: flex;
+  flex-wrap: wrap;
   justify-content: space-between;
   align-items: center;
+  gap: 8px;
   padding: 12px 14px;
   border-bottom: 1px solid #2c3035;
   flex-shrink: 0;
@@ -879,6 +885,8 @@ useProjectDataLoader(load)
   font-size: 14px;
   font-weight: 600;
   color: #e5e7eb;
+  flex-shrink: 0;
+  white-space: nowrap;
 }
 .cur-cat-icon { font-size: 16px; }
 .list-count {
@@ -891,6 +899,8 @@ useProjectDataLoader(load)
 .list-tools {
   display: flex;
   gap: 8px;
+  flex-shrink: 0;
+  margin-left: auto;
 }
 
 .list-scroll {
@@ -983,6 +993,7 @@ useProjectDataLoader(load)
   display: flex;
   flex-direction: column;
   min-height: 0;
+  min-width: 0;
 }
 
 .detail-header {
@@ -1042,7 +1053,7 @@ useProjectDataLoader(load)
 /* ===== 响应式 ===== */
 @media (max-width: 1400px) {
   .workbench {
-    grid-template-columns: 180px 260px 1fr;
+    grid-template-columns: 200px 320px minmax(0, 1fr);
   }
   .form-grid-3 {
     grid-template-columns: 1fr 1fr;
@@ -1051,7 +1062,7 @@ useProjectDataLoader(load)
 
 @media (max-width: 1100px) {
   .workbench {
-    grid-template-columns: 180px 1fr;
+    grid-template-columns: 180px minmax(0, 1fr);
   }
   .detail-panel { display: none; }
   .form-grid-2, .form-grid-3 {
