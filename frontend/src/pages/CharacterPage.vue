@@ -2816,6 +2816,8 @@ useProjectDataLoader(load)
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
   flex-shrink: 0;
+  margin-left: auto;
+  margin-right: 8px;
 }
 
 /* 分组操作栏 */
