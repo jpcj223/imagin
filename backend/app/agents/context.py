@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from sqlalchemy import desc, or_
+from sqlalchemy import desc, func, or_
 
 from app.db.repository import row_to_dict, rows_to_dicts
 from app.db.session import get_business_db
@@ -120,6 +120,9 @@ def build_chapter_context(project_id: int, chapter_no: int, outline_id: int | No
             .filter(
                 Foreshadowing.project_id == project_id,
                 Foreshadowing.status.in_(["pending", "planted", "developing", "payoff_pending"]),
+                # 步骤 1：只纳入当前章节已生效且尚未失效的伏笔；计划回收章节不等同于失效。
+                func.coalesce(Foreshadowing.effective_from, Foreshadowing.planted_chapter, 1) <= chapter_no,
+                or_(Foreshadowing.expires_at.is_(None), Foreshadowing.expires_at >= chapter_no),
             )
             .order_by(desc(Foreshadowing.importance), desc(Foreshadowing.id))
             .limit(12)

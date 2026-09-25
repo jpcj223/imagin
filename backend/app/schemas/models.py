@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class ProjectCreate(BaseModel):
@@ -170,12 +170,30 @@ class ForeshadowingSave(BaseModel):
     importance: Literal["low", "medium", "high"] = Field(default="medium", description="重要性：low/medium/high")
     planted_chapter: int | None = Field(default=None, ge=1, description="首次埋下伏笔的章节号")
     payoff_chapter: int | None = Field(default=None, ge=1, description="计划回收伏笔的章节号")
+    resolved_chapter: int | None = Field(default=None, ge=1, description="实际回收伏笔的章节号")
     effective_from: int | None = Field(default=None, ge=1, description="伏笔开始生效的章节号")
     expires_at: int | None = Field(default=None, ge=1, description="伏笔过期或失效章节号")
     notes: str = Field(default="", description="备注信息")
     related_character_ids: str = Field(default="", description="关联角色 ID，逗号分隔")
     related_organization_ids: str = Field(default="", description="关联组织 ID，逗号分隔")
     related_outline_ids: str = Field(default="", description="关联大纲 ID，逗号分隔")
+    replaced_by_id: int | None = Field(default=None, ge=1, description="接替本线索的新伏笔 ID")
+
+    @model_validator(mode="after")
+    def validate_chapter_order(self) -> "ForeshadowingSave":
+        """校验伏笔生命周期章节顺序。
+
+        步骤 1：确保计划回收不早于埋设。
+        步骤 2：确保有效期结束不早于生效。
+        步骤 3：确保实际回收不早于埋设。
+        """
+        if self.planted_chapter and self.payoff_chapter and self.payoff_chapter < self.planted_chapter:
+            raise ValueError("计划回收章节不能早于埋下章节")
+        if self.effective_from and self.expires_at and self.expires_at < self.effective_from:
+            raise ValueError("失效章节不能早于生效章节")
+        if self.planted_chapter and self.resolved_chapter and self.resolved_chapter < self.planted_chapter:
+            raise ValueError("实际回收章节不能早于埋下章节")
+        return self
 
 
 class ChapterDraftRequest(BaseModel):

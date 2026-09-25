@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException, Query
+from pydantic import ValidationError
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
@@ -16,7 +17,6 @@ from app.models.business import (
     Outline,
     WorldSetting,
 )
-from app.models.business.foreshadowing import FORESHADOWING_STATUSES
 from app.schemas.models import (
     CharacterSave,
     ChapterSave,
@@ -775,7 +775,10 @@ def _renumber_all_chapters(db: Session, project_id: int) -> int:
 
 @router.post("/foreshadowings")
 def save_foreshadowing(payload: ForeshadowingSave) -> dict:
-    """新增伏笔记录。"""
+    """新增伏笔记录并校验替代线索的项目归属。"""
+    # 步骤 1：检查替代线索确实属于当前项目；步骤 2：校验通过后写入完整数据。
+    with get_business_db() as db:
+        _validate_foreshadowing_replacement(db, payload.project_id, payload.replaced_by_id)
     return insert_row("foreshadowings", payload.model_dump())
 
 
@@ -790,21 +793,63 @@ def update_resource(resource: str, item_id: int, payload: dict) -> dict:
         # 组织卡片更新和历史快照共用一个事务，防止只保存一半。
         return _update_organization_with_history(item_id, payload)
     if table == "foreshadowings":
-        # 步骤 1：状态和重要性必须来自看板使用的统一选项。
-        if "status" in payload and (
-            not isinstance(payload["status"], str)
-            or payload["status"] not in FORESHADOWING_STATUSES
-        ):
-            raise HTTPException(status_code=422, detail="伏笔状态不在支持范围内")
-        if "importance" in payload and (
-            not isinstance(payload["importance"], str)
-            or payload["importance"] not in {"low", "medium", "high"}
-        ):
-            raise HTTPException(status_code=422, detail="伏笔重要性必须是 low、medium 或 high")
+        return _update_foreshadowing_with_validation(item_id, payload)
     updated = update_row(table, item_id, payload)
     if not updated:
         raise HTTPException(status_code=404, detail="资源不存在")
     return updated
+
+
+def _validate_foreshadowing_replacement(db: Session, project_id: int, replaced_by_id: int | None, item_id: int | None = None) -> None:
+    """确保替代链只指向同项目中的另一条伏笔。"""
+    if replaced_by_id is None:
+        return
+    # 步骤 1：拒绝自我替代；步骤 2：确认目标存在且项目归属一致。
+    if item_id is not None and replaced_by_id == item_id:
+        raise HTTPException(status_code=422, detail="伏笔不能替代自身")
+    target = db.query(Foreshadowing.id).filter(
+        Foreshadowing.id == replaced_by_id,
+        Foreshadowing.project_id == project_id,
+    ).first()
+    if not target:
+        raise HTTPException(status_code=422, detail="被替代线索必须属于当前项目")
+
+
+def _update_foreshadowing_with_validation(item_id: int, payload: dict) -> dict:
+    """合并现有伏笔后校验字段与章节顺序，再保存允许更新的字段。"""
+    with get_business_db() as db:
+        item = db.query(Foreshadowing).filter(Foreshadowing.id == item_id).first()
+        if not item:
+            raise HTTPException(status_code=404, detail="资源不存在")
+
+        # 步骤 1：从模型字段构造完整候选，局部更新也按完整生命周期规则校验。
+        editable_fields = set(ForeshadowingSave.model_fields) - {"project_id"}
+        candidate = {
+            field_name: getattr(item, field_name)
+            for field_name in ForeshadowingSave.model_fields
+            if hasattr(item, field_name)
+        }
+        candidate.update({key: value for key, value in payload.items() if key in editable_fields})
+        candidate["project_id"] = item.project_id
+        try:
+            validated = ForeshadowingSave.model_validate(candidate)
+        except ValidationError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+        # 步骤 2：限制为显式业务字段，阻止跨项目迁移和任意属性写入。
+        _validate_foreshadowing_replacement(
+            db,
+            item.project_id,
+            validated.replaced_by_id,
+            item_id=item.id,
+        )
+        for field_name in editable_fields.intersection(payload):
+            setattr(item, field_name, getattr(validated, field_name))
+
+        # 步骤 3：提交并返回数据库刷新后的记录。
+        db.commit()
+        db.refresh(item)
+        return row_to_dict(item)
 
 
 def _update_organization_with_history(item_id: int, payload: dict) -> dict:

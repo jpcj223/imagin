@@ -463,6 +463,8 @@ export interface ForeshadowingItem {
   planted_chapter: number | null
   /** 计划回收伏笔的章节号。 */
   payoff_chapter: number | null
+  /** 实际回收伏笔的章节号。 */
+  resolved_chapter: number | null
   /** 伏笔开始生效的章节号。 */
   effective_from: number | null
   /** 伏笔失效或过期章节号。 */

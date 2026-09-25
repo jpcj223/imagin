@@ -7,6 +7,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from sqlalchemy import func, or_
+
 from app.db.repository import rows_to_dicts
 from app.db.session import get_business_db
 from app.models.business import (
@@ -55,7 +57,7 @@ class MemoryRetriever:
             "outline": self._get_outline(outline_id, chapter_no),
             "characters": self._get_characters(query, top_k=8),
             "organizations": self._get_organizations(query, top_k=5, chapter_no=chapter_no),
-            "foreshadowings": self._get_foreshadowings(query, top_k=8),
+            "foreshadowings": self._get_foreshadowings(query, chapter_no=chapter_no, top_k=8),
             "recent_summaries": self._get_recent_summaries(chapter_no, limit=5),
             "long_term_memories": self._get_long_term_memories(limit=8),
         }
@@ -243,17 +245,23 @@ class MemoryRetriever:
                 item["relations"] = by_organization.get(item["id"], [])
             return items
 
-    def _get_foreshadowings(self, query: str = "", top_k: int = 8) -> list[dict]:
-        """获取相关伏笔（待埋、已埋、发展中和待回收）。"""
+    def _get_foreshadowings(self, query: str = "", chapter_no: int | None = None, top_k: int = 8) -> list[dict]:
+        """获取当前章节有效的伏笔（待埋、已埋、发展中和待回收）。"""
         with get_business_db() as db:
             query_obj = db.query(Foreshadowing).filter(
                 Foreshadowing.project_id == self.project_id,
                 Foreshadowing.status.in_(["pending", "planted", "developing", "payoff_pending"]),
             )
 
+            # 步骤 1：按生效和失效章节筛选；计划回收只作提醒，不从上下文中提前剔除。
+            if chapter_no is not None:
+                query_obj = query_obj.filter(
+                    func.coalesce(Foreshadowing.effective_from, Foreshadowing.planted_chapter, 1) <= chapter_no,
+                    or_(Foreshadowing.expires_at.is_(None), Foreshadowing.expires_at >= chapter_no),
+                )
+
             if query:
                 keyword = f"%{query}%"
-                from sqlalchemy import or_
                 query_obj = query_obj.filter(
                     or_(
                         Foreshadowing.keyword.like(keyword),

@@ -49,7 +49,7 @@ EDITABLE_FIELDS: dict[str, set[str]] = {
     },
     "foreshadowing": {
         "keyword", "description", "status", "importance", "planted_chapter", "payoff_chapter",
-        "effective_from", "expires_at", "notes", "related_character_ids",
+        "resolved_chapter", "effective_from", "expires_at", "notes", "related_character_ids",
         "related_organization_ids", "related_outline_ids", "replaced_by_id",
     },
     "world_setting": {
@@ -327,6 +327,9 @@ def _validate_value(entity_type: str, operation: str, target_id: int | None, val
             raise ValueError(f"字段 {field_name} 必须是整数")
         if isinstance(column_type, Float) and not isinstance(field_value, (int, float)):
             raise ValueError(f"字段 {field_name} 必须是数字")
+    if entity_type == "foreshadowing":
+        # 步骤 2：章节编号必须为正数，并校验提案自身包含的生命周期顺序。
+        _validate_foreshadowing_chapter_order(value)
     if operation == "update" and target_id is None:
         raise ValueError("更新提案必须指定目标资料")
     if operation == "create" and target_id is not None:
@@ -364,6 +367,27 @@ def _validate_value(entity_type: str, operation: str, target_id: int | None, val
             raise ValueError("新增长期记忆必须提供标题和内容")
     if entity_type == "memory" and operation == "update":
         raise ValueError("长期记忆采用版本化追加，不允许覆盖已有条目")
+
+
+def _validate_foreshadowing_chapter_order(values: dict[str, Any]) -> None:
+    """校验伏笔提案包含的章节编号与局部顺序。"""
+    chapter_fields = ("planted_chapter", "payoff_chapter", "resolved_chapter", "effective_from", "expires_at")
+    for field_name in chapter_fields:
+        chapter_no = values.get(field_name)
+        if chapter_no is not None and (not isinstance(chapter_no, int) or isinstance(chapter_no, bool) or chapter_no < 1):
+            raise ValueError(f"伏笔章节字段 {field_name} 必须是正整数或空值")
+
+    planted = values.get("planted_chapter")
+    payoff = values.get("payoff_chapter")
+    resolved = values.get("resolved_chapter")
+    effective_from = values.get("effective_from")
+    expires_at = values.get("expires_at")
+    if planted and payoff and payoff < planted:
+        raise ValueError("计划回收章节不能早于埋下章节")
+    if planted and resolved and resolved < planted:
+        raise ValueError("实际回收章节不能早于埋下章节")
+    if effective_from and expires_at and expires_at < effective_from:
+        raise ValueError("失效章节不能早于生效章节")
 
 
 def _find_organization_relation_conflict(
@@ -875,6 +899,9 @@ def build_proposal_drafts(
             target_id = match["id"]
         else:
             continue
+        # 步骤 1：章节分析确认伏笔已回收时，将本章记录为实际回收章节。
+        if values.get("status") == "resolved" and not values.get("resolved_chapter"):
+            values["resolved_chapter"] = chapter_no
         if values:
             proposals.append({
                 "entity_type": "foreshadowing",
@@ -1190,6 +1217,14 @@ def review_proposal(
                 proposal.status = "conflict"
                 proposal.review_note = review_note or "目标资料在提案生成后发生变化，请重新确认。"
                 return {"proposal": _serialize_proposal(proposal), "idempotent": False, "conflict": True}
+            if proposal.entity_type == "foreshadowing":
+                # 步骤 4a：将局部改动与当前档案合并后校验，防止章节分析制造矛盾范围。
+                merged_window = {
+                    field_name: getattr(entity, field_name)
+                    for field_name in ("planted_chapter", "payoff_chapter", "resolved_chapter", "effective_from", "expires_at")
+                }
+                merged_window.update(values)
+                _validate_foreshadowing_chapter_order(merged_window)
             if proposal.entity_type == "organization_relation":
                 # 更新章节范围前排除自身并检查同一组织对的重叠关系。
                 new_start = values.get("effective_from_chapter", entity.effective_from_chapter)

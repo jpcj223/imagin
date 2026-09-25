@@ -28,7 +28,9 @@ class Foreshadowing(Base):
     status = Column(String(16), default="pending")
     importance = Column(String(16), default="medium")
     planted_chapter = Column(Integer, nullable=True)
+    # payoff_chapter 仅表示计划回收章节；实际回收章节单独留存。
     payoff_chapter = Column(Integer, nullable=True)
+    resolved_chapter = Column(Integer, nullable=True)
     effective_from = Column(Integer, nullable=True)
     expires_at = Column(Integer, nullable=True)
     notes = Column(Text, default="")

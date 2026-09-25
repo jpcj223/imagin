@@ -102,7 +102,8 @@
                       <div class="card-chapter">
                         <span class="chip chip-planted">埋 · 第{{ item.planted_chapter ?? '-' }}章</span>
                         <span class="chip-arrow">→</span>
-                        <span class="chip chip-payoff">回 · 第{{ item.payoff_chapter ?? '-' }}章</span>
+                        <span class="chip chip-payoff">计划回 · 第{{ item.payoff_chapter ?? '-' }}章</span>
+                        <span v-if="item.resolved_chapter" class="chip chip-resolved">实际回 · 第{{ item.resolved_chapter }}章</span>
                       </div>
                       <div class="card-desc">{{ shortText(item.description) }}</div>
                       <div class="card-footer">
@@ -210,8 +211,13 @@
                 <n-form-item label="埋下章节">
                   <n-input-number v-model:value="form.planted_chapter" :min="1" clearable style="width: 100%" />
                 </n-form-item>
-                <n-form-item label="回收章节">
+                <n-form-item label="计划回收章节">
                   <n-input-number v-model:value="form.payoff_chapter" :min="1" clearable style="width: 100%" />
+                </n-form-item>
+              </div>
+              <div v-if="form.status === 'resolved' || form.resolved_chapter" class="form-grid-2">
+                <n-form-item label="实际回收章节">
+                  <n-input-number v-model:value="form.resolved_chapter" :min="1" clearable style="width: 100%" />
                 </n-form-item>
               </div>
               <div class="form-grid-2">
@@ -344,6 +350,7 @@ const form = reactive({
   importance: 'medium',
   planted_chapter: 1 as number | null,
   payoff_chapter: null as number | null,
+  resolved_chapter: null as number | null,
   effective_from: null as number | null,
   expires_at: null as number | null,
   notes: '',
@@ -420,6 +427,9 @@ const riskCardTitle = computed(() => {
 const riskHints = computed(() => {
   const hints = []
   if (!form.payoff_chapter && ['planted', 'developing', 'payoff_pending'].includes(form.status)) hints.push('风险：未设置回收章节')
+  if (form.payoff_chapter && latestChapterNo.value > form.payoff_chapter && !['resolved', 'abandoned'].includes(form.status)) {
+    hints.push(`风险：计划在第${form.payoff_chapter}章回收，当前已到第${latestChapterNo.value}章`)
+  }
   if (form.expires_at && latestChapterNo.value > form.expires_at && form.status !== 'resolved') hints.push('风险：已超过失效章节')
   if (form.importance === 'high' && form.status === 'pending') hints.push('高重要性伏笔尚未埋设')
   if (!hints.length) hints.push('生命周期信息清晰')
@@ -472,13 +482,15 @@ function itemsByStatus(status: string) {
 
 function includesChapter(item: ForeshadowingItem, chapterNo: number) {
   const start = item.effective_from ?? item.planted_chapter ?? 1
-  const end = item.expires_at ?? item.payoff_chapter ?? Number.MAX_SAFE_INTEGER
+  // 计划回收章节只代表预期节点；真正失效范围由 expires_at 控制。
+  const end = item.expires_at ?? Number.MAX_SAFE_INTEGER
   return chapterNo >= start && chapterNo <= end
 }
 
 function riskOf(item: Partial<ForeshadowingItem>) {
   const unresolved = !['resolved', 'abandoned'].includes(item.status ?? '')
   if (unresolved && item.expires_at && latestChapterNo.value > item.expires_at) return 'high'
+  if (unresolved && item.payoff_chapter && latestChapterNo.value > item.payoff_chapter) return 'high'
   if (unresolved && item.importance === 'high' && !item.payoff_chapter) return 'medium'
   return 'low'
 }
@@ -527,6 +539,7 @@ function fillForm(item?: Partial<ForeshadowingItem>) {
     importance: item?.importance ?? 'medium',
     planted_chapter: item?.planted_chapter ?? 1,
     payoff_chapter: item?.payoff_chapter ?? null,
+    resolved_chapter: item?.resolved_chapter ?? null,
     effective_from: item?.effective_from ?? null,
     expires_at: item?.expires_at ?? null,
     notes: item?.notes ?? '',
@@ -575,25 +588,30 @@ async function resetCurrent() {
 }
 
 async function moveStatus(item: ForeshadowingItem, status: string) {
+  // 步骤 1：先计算目标状态与章节事实，回收时记录当前最新章节。
   // 判断是否是回撤操作（目标状态在历史栈顶）
   const history = statusHistoryMap.get(item.id) || []
   const isUndo = history.length > 0 && history[history.length - 1] === status
-
-  if (isUndo) {
-    // 回撤：弹出栈顶
-    history.pop()
-    if (history.length > 0) {
-      statusHistoryMap.set(item.id, history)
-    } else {
-      statusHistoryMap.delete(item.id)
-    }
-  } else {
-    // 前进：把当前状态压入历史栈
-    const newHistory = [...history, item.status]
-    statusHistoryMap.set(item.id, newHistory)
+  const changes: Partial<ForeshadowingItem> = { status: status as ForeshadowingItem['status'] }
+  if (status === 'planted' && !item.planted_chapter && latestChapterNo.value > 0) {
+    changes.planted_chapter = latestChapterNo.value
+  }
+  if (status === 'resolved' && latestChapterNo.value > 0) {
+    changes.resolved_chapter = latestChapterNo.value
+  }
+  if (item.status === 'resolved' && status !== 'resolved') {
+    changes.resolved_chapter = null
   }
 
-  const updated = await updateResource<ForeshadowingItem>('foreshadowings', item.id, { status })
+  // 步骤 2：先提交后更新撤销栈，避免接口失败却留下虚假的本地历史。
+  const updated = await updateResource<ForeshadowingItem>('foreshadowings', item.id, changes)
+  if (isUndo) {
+    history.pop()
+    if (history.length > 0) statusHistoryMap.set(item.id, history)
+    else statusHistoryMap.delete(item.id)
+  } else {
+    statusHistoryMap.set(item.id, [...history, item.status])
+  }
   const label = statusColumns.find((column) => column.value === status)?.label
   notify.success(isUndo ? `已回撤到「${label}」` : `已移动到「${label}」`)
   // 同步更新共享 store
@@ -642,6 +660,11 @@ async function load() {
 async function save() {
   const projectId = await ensureProject()
   if (!projectId) return
+
+  // 步骤 1：手动将线索标记为已回收时，若未填实际章节则记录当前最新章节。
+  if (form.status === 'resolved' && !form.resolved_chapter && latestChapterNo.value > 0) {
+    form.resolved_chapter = latestChapterNo.value
+  }
 
   if (editingId.value) {
     const updated = await updateResource<ForeshadowingItem>('foreshadowings', editingId.value, { ...form })
@@ -1102,6 +1125,7 @@ useProjectDataLoader(load)
 .card-chapter {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 6px;
   margin-bottom: 8px;
   font-size: 11px;
@@ -1122,6 +1146,11 @@ useProjectDataLoader(load)
 .chip-payoff {
   background: rgba(16, 185, 129, 0.12);
   color: #34d399;
+}
+
+.chip-resolved {
+  background: rgba(139, 92, 246, 0.12);
+  color: #a78bfa;
 }
 
 .chip-arrow {
