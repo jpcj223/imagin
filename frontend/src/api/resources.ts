@@ -1,5 +1,5 @@
 import { apiClient } from './client'
-import type { DashboardData, OrganizationHistory, OrganizationRelation } from '@/types/domain'
+import type { DashboardData, ForeshadowingHistory, OrganizationHistory, OrganizationRelation } from '@/types/domain'
 
 export interface OrganizationRelationPayload {
   target_org_id: number
@@ -43,6 +43,15 @@ export async function listOrganizationHistory(projectId: number, organizationId:
   // 历史接口返回章节来源、变更字段和完整前后快照，供组织卡片回溯。
   const { data } = await apiClient.get<{ items: OrganizationHistory[]; total: number }>(
     `/resources/${projectId}/organizations/${organizationId}/history`,
+    { params: { limit } }
+  )
+  return data.items
+}
+
+export async function listForeshadowingHistory(projectId: number, foreshadowingId: number, limit = 30) {
+  // 变更记录包含章节来源和前后快照，供伏笔看板回看 AI 与手工修改。
+  const { data } = await apiClient.get<{ items: ForeshadowingHistory[]; total: number }>(
+    `/resources/${projectId}/foreshadowings/${foreshadowingId}/history`,
     { params: { limit } }
   )
   return data.items

@@ -16,6 +16,7 @@ from app.models.business.organization import Organization
 from app.models.business.organization_relation import OrganizationRelation
 from app.models.business.organization_history import OrganizationHistory
 from app.models.business.foreshadowing import Foreshadowing
+from app.models.business.foreshadowing_history import ForeshadowingHistory
 from app.models.business.generation_log import GenerationLog
 from app.models.business.workflow_memory import (
     WorkflowRun,
@@ -39,6 +40,7 @@ __all__ = [
     "OrganizationRelation",
     "OrganizationHistory",
     "Foreshadowing",
+    "ForeshadowingHistory",
     "GenerationLog",
     "WorkflowRun",
     "WorkflowStepRecord",

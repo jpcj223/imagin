@@ -11,6 +11,7 @@ from app.models.business import (
     Chapter,
     Character,
     Foreshadowing,
+    ForeshadowingHistory,
     Organization,
     OrganizationHistory,
     OrganizationRelation,
@@ -31,6 +32,11 @@ from app.services.organization_history import (
     capture_organization_snapshot,
     parse_history_json,
     record_organization_history,
+)
+from app.services.foreshadowing_history import (
+    capture_foreshadowing_snapshot,
+    parse_history_json as parse_foreshadowing_history_json,
+    record_foreshadowing_history,
 )
 
 
@@ -124,6 +130,60 @@ def list_resource(project_id: int, resource: str) -> list[dict]:
     """按项目读取某一类创作资料列表。"""
     table = _resource_table(resource)
     return fetch_all(table, project_id)
+
+
+@router.get("/{project_id}/foreshadowings/{foreshadowing_id}/history")
+def list_foreshadowing_history(
+    project_id: int,
+    foreshadowing_id: int,
+    limit: int = Query(default=30, ge=1, le=100),
+) -> dict:
+    """读取伏笔历史，附上章节和提案来源。
+
+    步骤 1：按项目与伏笔 ID 统计并查询历史记录。
+    步骤 2：补充章节标题，解析前后快照 JSON。
+    步骤 3：返回最近记录，并支持追溯已删除伏笔的删除历史。
+    """
+    with get_business_db() as db:
+        total = db.query(func.count(ForeshadowingHistory.id)).filter(
+            ForeshadowingHistory.project_id == project_id,
+            ForeshadowingHistory.foreshadowing_id == foreshadowing_id,
+        ).scalar() or 0
+        rows = db.query(
+            ForeshadowingHistory,
+            Chapter.chapter_no,
+            Chapter.title,
+        ).outerjoin(
+            Chapter, Chapter.id == ForeshadowingHistory.chapter_id
+        ).filter(
+            ForeshadowingHistory.project_id == project_id,
+            ForeshadowingHistory.foreshadowing_id == foreshadowing_id,
+        ).order_by(
+            ForeshadowingHistory.created_at.desc(),
+            ForeshadowingHistory.id.desc(),
+        ).limit(limit).all()
+
+    items = [
+        {
+            "id": history.id,
+            "project_id": history.project_id,
+            "foreshadowing_id": history.foreshadowing_id,
+            "chapter_id": history.chapter_id,
+            "chapter_no": chapter_no,
+            "chapter_title": chapter_title or "",
+            "proposal_id": history.proposal_id,
+            "source_type": history.source_type,
+            "operation": history.operation,
+            "changed_fields": parse_foreshadowing_history_json(history.changed_fields, []),
+            "before_snapshot": parse_foreshadowing_history_json(history.before_snapshot, {}),
+            "after_snapshot": parse_foreshadowing_history_json(history.after_snapshot, {}),
+            "rationale": history.rationale or "",
+            "evidence": history.evidence or "",
+            "created_at": history.created_at.isoformat() if history.created_at else None,
+        }
+        for history, chapter_no, chapter_title in rows
+    ]
+    return {"items": items, "total": total}
 
 
 @router.post("/world")
@@ -775,11 +835,25 @@ def _renumber_all_chapters(db: Session, project_id: int) -> int:
 
 @router.post("/foreshadowings")
 def save_foreshadowing(payload: ForeshadowingSave) -> dict:
-    """新增伏笔记录并校验替代线索的项目归属。"""
-    # 步骤 1：检查替代线索确实属于当前项目；步骤 2：校验通过后写入完整数据。
+    """新增伏笔并将首条档案快照写入历史。"""
     with get_business_db() as db:
+        # 步骤 1：检查替代线索确实属于当前项目。
         _validate_foreshadowing_replacement(db, payload.project_id, payload.replaced_by_id)
-    return insert_row("foreshadowings", payload.model_dump())
+        # 步骤 2：创建档案并取得 ID，再将首条快照加入同一事务。
+        item = Foreshadowing(**payload.model_dump())
+        db.add(item)
+        db.flush()
+        record_foreshadowing_history(
+            db=db,
+            item=item,
+            source_type="manual",
+            operation="create",
+            before_snapshot={},
+            after_snapshot=capture_foreshadowing_snapshot(item),
+        )
+        db.commit()
+        db.refresh(item)
+        return row_to_dict(item)
 
 
 @router.put("/{resource}/{item_id}")
@@ -822,7 +896,8 @@ def _update_foreshadowing_with_validation(item_id: int, payload: dict) -> dict:
         if not item:
             raise HTTPException(status_code=404, detail="资源不存在")
 
-        # 步骤 1：从模型字段构造完整候选，局部更新也按完整生命周期规则校验。
+        # 步骤 1：保留修改前快照，并按完整字段校验局部更新。
+        before_snapshot = capture_foreshadowing_snapshot(item)
         editable_fields = set(ForeshadowingSave.model_fields) - {"project_id"}
         candidate = {
             field_name: getattr(item, field_name)
@@ -846,10 +921,44 @@ def _update_foreshadowing_with_validation(item_id: int, payload: dict) -> dict:
         for field_name in editable_fields.intersection(payload):
             setattr(item, field_name, getattr(validated, field_name))
 
-        # 步骤 3：提交并返回数据库刷新后的记录。
+        # 步骤 3：只记录实际变化，并把状态变更标成状态迁移。
+        after_snapshot = capture_foreshadowing_snapshot(item)
+        operation = "status_transition" if before_snapshot.get("status") != after_snapshot.get("status") else "update"
+        record_foreshadowing_history(
+            db=db,
+            item=item,
+            source_type="manual",
+            operation=operation,
+            before_snapshot=before_snapshot,
+            after_snapshot=after_snapshot,
+        )
+
+        # 步骤 4：档案和历史一起提交，返回刷新后的记录。
         db.commit()
         db.refresh(item)
         return row_to_dict(item)
+
+
+def _delete_foreshadowing_with_history(item_id: int) -> dict:
+    """先记下删除前快照，再删除伏笔卡片并保留历史记录。"""
+    with get_business_db() as db:
+        item = db.query(Foreshadowing).filter(Foreshadowing.id == item_id).first()
+        if not item:
+            return {"ok": True, "id": item_id}
+
+        # 步骤 1：历史表不依赖伏笔外键，因此删除后仍可追溯该档案。
+        record_foreshadowing_history(
+            db=db,
+            item=item,
+            source_type="manual",
+            operation="delete",
+            before_snapshot=capture_foreshadowing_snapshot(item),
+            after_snapshot={},
+        )
+        # 步骤 2：与历史记录在同一个事务内提交。
+        db.delete(item)
+        db.commit()
+    return {"ok": True, "id": item_id}
 
 
 def _update_organization_with_history(item_id: int, payload: dict) -> dict:
@@ -890,6 +999,8 @@ def delete_resource(resource: str, item_id: int) -> dict:
     删除章节或卷后自动重新编号。
     """
     table = _resource_table(resource)
+    if table == "foreshadowings":
+        return _delete_foreshadowing_with_history(item_id)
 
     # 如果删除的是章节或卷，先获取 project_id 和 node_type 用于后续重编号
     project_id = None

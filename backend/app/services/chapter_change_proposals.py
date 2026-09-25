@@ -28,6 +28,10 @@ from app.services.organization_history import (
     capture_organization_snapshot,
     record_organization_history,
 )
+from app.services.foreshadowing_history import (
+    capture_foreshadowing_snapshot,
+    record_foreshadowing_history,
+)
 
 
 # 模型输出只能修改显式列出的业务字段，身份、归属和时间戳由服务管理。
@@ -1085,6 +1089,7 @@ def review_proposal(
         raise ValueError(f"提案当前状态为 {proposal.status}，不能重复审核")
 
     organization_before_snapshot: dict[str, Any] | None = None
+    foreshadowing_before_snapshot: dict[str, Any] = {}
     organization_relation_before_snapshots: dict[int, dict[str, Any]] = {}
     organization_relation_owner_ids: set[int] = set()
 
@@ -1173,6 +1178,9 @@ def review_proposal(
         if proposal.entity_type == "organization":
             # 在应用审核值之前保留完整档案快照，供历史页还原本次变化。
             organization_before_snapshot = capture_organization_snapshot(entity)
+        elif proposal.entity_type == "foreshadowing":
+            # 章节分析更新伏笔时，保存审核前快照供来源追踪。
+            foreshadowing_before_snapshot = capture_foreshadowing_snapshot(entity)
         elif proposal.entity_type == "organization_relation":
             # 把关系两端的旧视角都保存下来，方便从任一组织档案追溯变化。
             organization_relation_owner_ids = {entity.organization_a_id, entity.organization_b_id}
@@ -1249,7 +1257,25 @@ def review_proposal(
             for field_name, value in values.items():
                 setattr(entity, field_name, _encode_entity_field(proposal.entity_type, field_name, value))
 
-    if proposal.entity_type == "organization":
+    if proposal.entity_type == "foreshadowing":
+        # 章节提案审核通过后，将档案变更和审核决定留在同一事务。
+        after_snapshot = capture_foreshadowing_snapshot(entity)
+        operation = proposal.operation
+        if proposal.operation == "update" and foreshadowing_before_snapshot.get("status") != after_snapshot.get("status"):
+            operation = "status_transition"
+        record_foreshadowing_history(
+            db=db,
+            item=entity,
+            source_type="chapter_analysis",
+            operation=operation,
+            before_snapshot=foreshadowing_before_snapshot,
+            after_snapshot=after_snapshot,
+            chapter_id=chapter_id,
+            proposal_id=proposal.proposal_id,
+            rationale=proposal.rationale or "",
+            evidence=proposal.evidence or "",
+        )
+    elif proposal.entity_type == "organization":
         # 步骤 5：审核通过的组织变化与提案状态在同一事务中写入历史。
         after_snapshot = capture_organization_snapshot(entity)
         record_organization_history(

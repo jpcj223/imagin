@@ -309,6 +309,47 @@
               </div>
             </div>
           </div>
+
+          <section v-if="editingId" class="history-card">
+            <div class="history-header">
+              <div>
+                <div class="history-title">变更记录</div>
+                <div class="history-subtitle">追踪手动修改与章节分析写回</div>
+              </div>
+              <n-button size="tiny" quaternary :loading="historyLoading" @click="loadHistory()">刷新</n-button>
+            </div>
+            <div v-if="historyLoading && historyItems.length === 0" class="history-empty">正在读取记录…</div>
+            <div v-else-if="historyItems.length === 0" class="history-empty">暂无变更记录</div>
+            <div v-else class="history-list">
+              <article v-for="entry in historyItems" :key="entry.id" class="history-entry">
+                <div class="history-entry-top">
+                  <span class="history-operation" :class="entry.operation">{{ historyOperationLabel(entry.operation) }}</span>
+                  <time>{{ formatHistoryTime(entry.created_at) }}</time>
+                </div>
+                <div class="history-source">
+                  {{ entry.source_type === 'chapter_analysis' ? '章节分析审核' : '手动修改' }}
+                  <span v-if="entry.chapter_no"> · 第{{ entry.chapter_no }}章{{ entry.chapter_title ? ` ${entry.chapter_title}` : '' }}</span>
+                </div>
+                <div class="history-fields">
+                  <span v-for="field in entry.changed_fields" :key="field">{{ historyFieldLabel(field) }}</span>
+                </div>
+                <details v-if="entry.rationale || entry.evidence || Object.keys(entry.before_snapshot).length || Object.keys(entry.after_snapshot).length" class="history-details">
+                  <summary>查看变化详情</summary>
+                  <p v-if="entry.rationale"><strong>变更原因：</strong>{{ entry.rationale }}</p>
+                  <p v-if="entry.evidence"><strong>章节依据：</strong>{{ entry.evidence }}</p>
+                  <div v-if="entry.before_snapshot.status !== entry.after_snapshot.status" class="history-status-change">
+                    {{ statusLabel(String(entry.before_snapshot.status ?? '')) || '无状态' }}
+                    <span>→</span>
+                    {{ statusLabel(String(entry.after_snapshot.status ?? '')) || (entry.operation === 'delete' ? '已删除' : '无状态') }}
+                  </div>
+                  <div v-if="entry.after_snapshot.payoff_chapter || entry.after_snapshot.resolved_chapter" class="history-chapters">
+                    <span v-if="entry.after_snapshot.payoff_chapter">计划回收：第{{ entry.after_snapshot.payoff_chapter }}章</span>
+                    <span v-if="entry.after_snapshot.resolved_chapter">实际回收：第{{ entry.after_snapshot.resolved_chapter }}章</span>
+                  </div>
+                </details>
+              </article>
+            </div>
+          </section>
         </n-scrollbar>
       </aside>
     </div>
@@ -317,14 +358,14 @@
 
 <script setup lang="ts">
 import { computed, nextTick, onMounted, reactive, ref } from 'vue'
-import { createResource, deleteResource, listResource, updateResource } from '@/api/resources'
+import { createResource, deleteResource, listForeshadowingHistory, listResource, updateResource } from '@/api/resources'
 import { useDictStore } from '@/stores/dict'
 import { useForeshadowingStore } from '@/stores/foreshadowing'
 import { useProjectStore } from '@/stores/project'
 import { useProjectDataLoader } from '@/composables/useProjectDataLoader'
 import { useDirtySnapshot } from '@/composables/useDirtySnapshot'
 import { notify } from '@/utils/notify'
-import type { CharacterItem, ChapterItem, ForeshadowingItem, OrganizationItem, OutlineItem } from '@/types/domain'
+import type { CharacterItem, ChapterItem, ForeshadowingHistory, ForeshadowingItem, OrganizationItem, OutlineItem } from '@/types/domain'
 
 const projectStore = useProjectStore()
 const dictStore = useDictStore()
@@ -341,6 +382,8 @@ const chapterFilter = ref<number | null>(null)
 const editingId = ref<number | null>(null)
 const isCreating = ref(false)
 const loading = ref(false)
+const historyItems = ref<ForeshadowingHistory[]>([])
+const historyLoading = ref(false)
 // 记录每个伏笔的状态移动历史栈（用于多级回撤），key: 伏笔id, value: 状态历史数组（栈顶为最近一次）
 const statusHistoryMap = new Map<number, string[]>()
 const form = reactive({
@@ -554,10 +597,59 @@ function importanceLabel(value: string) {
   return dictStore.label('importance', value)
 }
 
+async function loadHistory(itemId = editingId.value) {
+  // 步骤 1：创建态不请求记录；步骤 2：仅把仍对应当前卡片的结果写回页面。
+  const projectId = projectStore.currentProject?.id
+  if (!projectId || !itemId) {
+    historyItems.value = []
+    historyLoading.value = false
+    return
+  }
+  historyLoading.value = true
+  try {
+    const records = await listForeshadowingHistory(projectId, itemId)
+    if (editingId.value === itemId) historyItems.value = records
+  } finally {
+    if (editingId.value === itemId) historyLoading.value = false
+  }
+}
+
+function historyOperationLabel(operation: string) {
+  const labels: Record<string, string> = {
+    create: '创建',
+    update: '资料更新',
+    status_transition: '状态变化',
+    delete: '删除',
+  }
+  return labels[operation] ?? '资料变化'
+}
+
+function statusLabel(value: string) {
+  return statusColumns.find((item) => item.value === value)?.label ?? ''
+}
+
+function historyFieldLabel(field: string) {
+  const labels: Record<string, string> = {
+    keyword: '关键词', description: '描述', status: '状态', importance: '重要性',
+    planted_chapter: '埋设章节', payoff_chapter: '计划回收', resolved_chapter: '实际回收',
+    effective_from: '生效章节', expires_at: '失效章节', notes: '调查笔记',
+    related_character_ids: '关联角色', related_organization_ids: '关联组织',
+    related_outline_ids: '关联大纲', replaced_by_id: '替代线索',
+  }
+  return labels[field] ?? field
+}
+
+function formatHistoryTime(value: string | null) {
+  if (!value) return '时间未知'
+  const date = new Date(value)
+  return Number.isNaN(date.getTime()) ? value : date.toLocaleString()
+}
+
 async function startCreate() {
   if (!(await confirmIfDirty())) return
   editingId.value = null
   isCreating.value = true
+  historyItems.value = []
   fillForm()
   await nextTick()
   markClean()
@@ -568,9 +660,11 @@ async function selectForeshadowing(item: ForeshadowingItem) {
   if (!(await confirmIfDirty())) return
   editingId.value = item.id
   isCreating.value = false
+  historyItems.value = []
   fillForm(item)
   await nextTick()
   markClean()
+  await loadHistory(item.id)
 }
 
 async function resetCurrent() {
@@ -622,6 +716,7 @@ async function moveStatus(item: ForeshadowingItem, status: string) {
     await nextTick()
     markClean()
   }
+  await loadHistory(updated.id)
 }
 
 async function ensureProject() {
@@ -651,6 +746,7 @@ async function load() {
       fillForm(foreshadowings.value[0])
       await nextTick()
       markClean()
+      await loadHistory(foreshadowings.value[0].id)
     }
   } finally {
     loading.value = false
@@ -676,6 +772,7 @@ async function save() {
       fillForm(fresh)
       await nextTick()
       markClean()
+      await loadHistory(updated.id)
     }
   } else {
     const created = await createResource<ForeshadowingItem>('foreshadowings', { project_id: projectId, ...form })
@@ -689,6 +786,7 @@ async function save() {
       fillForm(fresh)
       await nextTick()
       markClean()
+      await loadHistory(created.id)
     }
   }
 }
@@ -704,9 +802,11 @@ async function remove() {
   if (nextItem) {
     editingId.value = nextItem.id
     fillForm(nextItem)
+    await loadHistory(nextItem.id)
   } else {
     editingId.value = null
     isCreating.value = false
+    historyItems.value = []
     fillForm()
   }
   await nextTick()
@@ -1519,4 +1619,70 @@ useProjectDataLoader(load)
   color: #10b981;
   background: rgba(16, 185, 129, 0.15);
 }
+
+.history-card {
+  margin-top: 14px;
+  padding: 14px;
+  border: 1px solid var(--n-border-color, #2a2f3a);
+  border-radius: 10px;
+  background: var(--n-color-1, #1e2228);
+}
+
+.history-header,
+.history-entry-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.history-title {
+  color: var(--n-text-color-1, #f0f0f0);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.history-subtitle,
+.history-source,
+.history-entry time,
+.history-empty {
+  color: var(--n-text-color-3, #6b7280);
+  font-size: 11px;
+}
+
+.history-subtitle { margin-top: 3px; }
+.history-empty { padding: 18px 0 4px; text-align: center; }
+.history-list { display: flex; flex-direction: column; margin-top: 10px; }
+
+.history-entry {
+  padding: 12px 0;
+  border-top: 1px solid var(--n-border-color, #2a2f3a);
+}
+
+.history-operation {
+  padding: 3px 7px;
+  border-radius: 5px;
+  background: rgba(59, 130, 246, 0.12);
+  color: #60a5fa;
+  font-size: 11px;
+}
+
+.history-operation.status_transition { background: rgba(139, 92, 246, 0.14); color: #a78bfa; }
+.history-operation.delete { background: rgba(239, 68, 68, 0.12); color: #f87171; }
+.history-source { margin-top: 7px; line-height: 1.5; }
+.history-fields,.history-chapters { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 8px; }
+
+.history-fields span,
+.history-chapters span {
+  padding: 3px 6px;
+  border-radius: 4px;
+  background: rgba(148, 163, 184, 0.1);
+  color: var(--n-text-color-2, #9ca3af);
+  font-size: 10px;
+}
+
+.history-details { margin-top: 9px; color: var(--n-text-color-2, #9ca3af); font-size: 11px; }
+.history-details summary { cursor: pointer; color: #60a5fa; }
+.history-details p { margin: 7px 0 0; line-height: 1.5; white-space: pre-wrap; }
+.history-status-change { display: flex; gap: 8px; margin-top: 8px; color: var(--n-text-color-1, #f0f0f0); }
 </style>

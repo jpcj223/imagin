@@ -480,3 +480,22 @@ export interface ForeshadowingItem {
   /** 被替代伏笔 ID：此伏笔被哪个新伏笔替代，形成替代链。 */
   replaced_by_id: number | null
 }
+
+/** 伏笔档案或章节审核写回留下的变更记录。 */
+export interface ForeshadowingHistory {
+  id: number
+  project_id: number
+  foreshadowing_id: number
+  chapter_id: number | null
+  chapter_no: number | null
+  chapter_title: string
+  proposal_id: string | null
+  source_type: 'manual' | 'chapter_analysis' | string
+  operation: 'create' | 'update' | 'status_transition' | 'delete' | string
+  changed_fields: string[]
+  before_snapshot: Record<string, unknown>
+  after_snapshot: Record<string, unknown>
+  rationale: string
+  evidence: string
+  created_at: string | null
+}
