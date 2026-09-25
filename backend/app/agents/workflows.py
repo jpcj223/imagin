@@ -324,6 +324,7 @@ def analyze_chapter(project_id: int, chapter_id: int, content: str) -> dict:
             "new_foreshadowings": "暂无。",
             "timeline_events": "暂无。",
             "structured_analysis": {},
+            "analysis_status": "unavailable",
         }
     analysis = result.get("analysis_text") or result.get("content", "")
     sections = {
@@ -335,12 +336,31 @@ def analyze_chapter(project_id: int, chapter_id: int, content: str) -> dict:
     }
     structured = result.get("structured_analysis", {})
 
-    # 步骤 3：只将唯一匹配到的实体变化转成提案；模糊名称不自动改写设定。
+    # 步骤 3：模型不可用时只返回明确状态，不把开发占位文本保存成正式章节记忆。
+    if result.get("analysis_status") == "unavailable":
+        with get_business_db() as db:
+            db.add(GenerationLog(
+                project_id=project_id,
+                task_type="chapter_analyze",
+                request=f"chapter_id={chapter_id}",
+                response=analysis,
+                status="failed",
+            ))
+            db.commit()
+        return {
+            "chapter_id": chapter_id,
+            "analysis": analysis,
+            **sections,
+            "pending_change_count": 0,
+            "analysis_status": "unavailable",
+        }
+
+    # 步骤 4：只将唯一匹配到的实体变化转成提案；模糊名称不自动改写设定。
     with get_business_db() as db:
         catalog = load_entity_catalog(db, project_id)
         proposal_drafts = build_proposal_drafts(structured, catalog, chapter_no)
 
-        # 步骤 4：章节摘要与候选变化在同一事务提交。
+        # 步骤 5：章节摘要与候选变化在同一事务提交。
         existing = db.query(ChapterSummary).filter(
             ChapterSummary.chapter_id == chapter_id,
         ).first()

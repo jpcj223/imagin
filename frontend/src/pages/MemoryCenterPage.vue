@@ -39,10 +39,25 @@
             <span class="stat-label">覆盖率</span>
           </div>
         </div>
-        <n-button @click="() => loadMemories()">
-          <template #icon>🔄</template>
-          刷新记忆
+        <n-button secondary :disabled="batchRunning || loading" @click="startExistingBackfill">
+          <template #icon>🧠</template>
+          补充已有章节记忆
         </n-button>
+        <n-button type="primary" :disabled="batchRunning || loading" @click="openNovelPicker">
+          <template #icon>📚</template>
+          读取小说
+        </n-button>
+        <n-button secondary :disabled="batchRunning || loading" @click="() => loadMemories()">
+          <template #icon>🔄</template>
+          刷新
+        </n-button>
+        <input
+          ref="novelFileInput"
+          class="hidden-file-input"
+          type="file"
+          accept=".txt,.md,.markdown,text/plain,text/markdown"
+          @change="handleNovelFileChange"
+        />
       </div>
     </div>
 
@@ -295,18 +310,153 @@
         </div>
       </aside>
     </div>
+
+    <n-modal
+      v-model:show="importDialogVisible"
+      preset="card"
+      title="读取小说并补充记忆"
+      class="memory-import-modal"
+      :style="{ width: 'min(920px, 94vw)' }"
+      :mask-closable="!batchRunning"
+      :close-on-esc="!batchRunning"
+    >
+      <div class="memory-import-body">
+        <n-alert type="info" :show-icon="true">
+          支持 TXT、Markdown。系统会预览识别到的章节；正文按章节保存，再依次生成摘要和待审核变化，不会直接覆盖人物、关系或组织设定。
+        </n-alert>
+
+        <div v-if="!batchStarted" class="novel-file-row">
+          <div class="novel-file-name">
+            <span class="novel-file-icon">📄</span>
+            <div>
+              <strong>{{ novelFileName || '还没有选择小说文件' }}</strong>
+              <span>{{ parsedNovelChapters.length ? `识别到 ${parsedNovelChapters.length} 章` : '单个文件最大 20 MB' }}</span>
+            </div>
+          </div>
+          <n-button secondary @click="openNovelPicker">选择文件</n-button>
+        </div>
+
+        <div v-if="!batchStarted && parsedNovelChapters.length" class="import-options">
+          <div class="import-option">
+            <span class="option-label">已有章节</span>
+            <span class="import-option-hint">保留已有正文；缺少摘要的章节会使用项目现有正文补充记忆</span>
+          </div>
+          <div class="import-option">
+            <span class="option-label">记忆处理</span>
+            <n-checkbox v-model:checked="analyzeAfterImport" :disabled="batchRunning">导入后逐章分析并补充记忆</n-checkbox>
+          </div>
+        </div>
+
+        <div v-if="!batchStarted && parsedNovelChapters.length" class="novel-preview">
+          <div class="preview-heading">
+            <strong>章节预览</strong>
+            <span>可修改章节号和标题；正文取文件中的章节内容</span>
+          </div>
+          <n-alert v-if="!novelHasHeadings" type="warning" :show-icon="true" class="preview-alert">
+            未识别到常见章节标题，当前文件会按一章导入。若这是整本小说，请先按“第 X 章”或“Chapter X”分章。
+          </n-alert>
+          <n-alert v-if="duplicateImportNumbers.length" type="error" :show-icon="true" class="preview-alert">
+            章节号重复：{{ duplicateImportNumbers.join('、') }}。请调整后再导入。
+          </n-alert>
+          <n-alert v-if="ambiguousExistingNumbers.length" type="warning" :show-icon="true" class="preview-alert">
+            项目中这些章节号已有多条正文，系统不会自动选择覆盖目标：{{ ambiguousExistingNumbers.join('、') }}。
+          </n-alert>
+          <n-scrollbar class="novel-preview-scroll">
+            <div class="novel-chapter-list">
+              <div v-for="chapter in parsedNovelChapters" :key="chapter.key" class="novel-chapter-preview">
+                <div class="novel-chapter-fields">
+                  <n-input-number v-model:value="chapter.chapter_no" :min="1" :max="999999" :disabled="batchRunning" class="chapter-number-input">
+                    <template #prefix>第</template>
+                    <template #suffix>章</template>
+                  </n-input-number>
+                  <n-input v-model:value="chapter.title" :disabled="batchRunning" placeholder="章节标题" />
+                  <n-tag size="small" :type="chapter.content.trim() ? 'success' : 'error'">
+                    {{ chapter.content.trim() ? `${chapter.content.length.toLocaleString()} 字` : '正文为空' }}
+                  </n-tag>
+                </div>
+                <p class="novel-chapter-excerpt">{{ shortText(chapter.content.replace(/\s+/g, ' '), 150) }}</p>
+              </div>
+            </div>
+          </n-scrollbar>
+        </div>
+
+        <div v-if="batchStarted" class="memory-batch-progress">
+          <div class="batch-progress-heading">
+            <strong>{{ batchLabel }}</strong>
+            <span>{{ batchFinishedCount }} / {{ batchTasks.length }} 项完成</span>
+          </div>
+          <n-progress
+            type="line"
+            :percentage="batchProgress"
+            :status="batchRunning ? 'default' : batchFailedCount ? 'warning' : 'success'"
+            :show-indicator="true"
+          />
+          <div v-if="batchRunning" class="batch-running-hint">
+            当前按章节顺序处理。可以停止后续章节；已经保存的正文和分析结果会保留。
+            <n-button size="tiny" type="warning" secondary :disabled="batchStopRequested" @click="requestStopBatch">
+              {{ batchStopRequested ? '正在停止…' : '停止后续章节' }}
+            </n-button>
+          </div>
+          <n-scrollbar class="batch-task-scroll">
+            <div class="batch-task-list">
+              <div v-for="task in batchTasks" :key="task.key" class="batch-task-row">
+                <span class="batch-task-state" :class="`state-${task.state}`">{{ batchTaskStateLabel(task.state) }}</span>
+                <strong>第 {{ task.chapter_no }} 章 · {{ task.title }}</strong>
+                <span v-if="task.error" class="batch-task-error">{{ task.error }}</span>
+              </div>
+            </div>
+          </n-scrollbar>
+          <n-alert v-if="!batchRunning" :type="batchFailedCount ? 'warning' : 'success'" :show-icon="true">
+            {{ batchCompletionMessage }}
+          </n-alert>
+        </div>
+
+        <div class="memory-import-actions">
+          <n-button v-if="batchStarted && !batchRunning && batchFailedCount" secondary @click="retryFailedTasks">重试失败项</n-button>
+          <n-button v-if="!batchRunning" @click="closeImportDialog">{{ batchStarted ? '关闭' : '取消' }}</n-button>
+          <n-button
+            v-if="!batchStarted"
+            type="primary"
+            :disabled="!canStartImport"
+            @click="startNovelImport"
+          >
+            {{ analyzeAfterImport ? '导入并补充记忆' : '仅导入章节' }}
+          </n-button>
+        </div>
+      </div>
+    </n-modal>
   </div>
 </template>
 
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
-import { getChapterSummaries } from '@/api/agents'
+import { analyzeChapter, getChapterAnalysisStatus, getChapterSummaries, type ChapterAnalysisStatus } from '@/api/agents'
 import { getLongTermMemoryItems, type LongTermMemoryItem } from '@/api/agentsV3'
-import { listResource } from '@/api/resources'
+import { createResource, listResource, updateResource } from '@/api/resources'
 import { useProjectStore } from '@/stores/project'
 import { useProjectDataLoader } from '@/composables/useProjectDataLoader'
 import { notify } from '@/utils/notify'
 import type { ChapterItem, ChapterSummary } from '@/types/domain'
+
+interface NovelChapterDraft {
+  key: string
+  chapter_no: number
+  title: string
+  content: string
+}
+
+type BatchTaskState = 'waiting' | 'saving' | 'analyzing' | 'imported' | 'done' | 'skipped' | 'failed' | 'stopped'
+
+interface MemoryBatchTask {
+  key: string
+  chapter_no: number
+  title: string
+  content: string
+  state: BatchTaskState
+  chapter_id?: number
+  existing_chapter_id?: number
+  error?: string
+}
 
 const projectStore = useProjectStore()
 const activeIndex = ref<'summaries' | 'items'>('summaries')
@@ -320,10 +470,22 @@ const memoryPageTotal = ref(0)
 const memoryPage = ref(1)
 const memoryPageSize = 50
 const chapters = ref<ChapterItem[]>([])
+const analysisStatus = ref<ChapterAnalysisStatus[]>([])
 const selectedSummary = ref<ChapterSummary | null>(null)
 const selectedMemoryItem = ref<LongTermMemoryItem | null>(null)
 const loading = ref(false)
 const hasLoadedMemories = ref(false)
+const novelFileInput = ref<HTMLInputElement | null>(null)
+const importDialogVisible = ref(false)
+const novelFileName = ref('')
+const parsedNovelChapters = ref<NovelChapterDraft[]>([])
+const novelHasHeadings = ref(false)
+const analyzeAfterImport = ref(true)
+const batchStarted = ref(false)
+const batchRunning = ref(false)
+const batchStopRequested = ref(false)
+const batchLabel = ref('')
+const batchTasks = ref<MemoryBatchTask[]>([])
 let memoryLoadSequence = 0
 let currentProjectId: number | null = null
 let memoryFilterTimer: ReturnType<typeof setTimeout> | null = null
@@ -339,11 +501,60 @@ const memoryTypeOptions = [
   'setting', 'general', 'timeline', 'timeline_event', 'chapter',
 ].map((value) => ({ label: memoryTypeLabel(value), value }))
 
-const chapterCount = computed(() => chapters.value.length)
-const summaryCount = computed(() => summaries.value.length)
+const chapterCount = computed(() => analysisStatus.value.length || chapters.value.length)
+const summaryCount = computed(() => analysisStatus.value.length
+  ? analysisStatus.value.filter((item) => item.has_summary).length
+  : summaries.value.length)
 const coverageRate = computed(() => {
-  if (chapters.value.length === 0) return 0
-  return Math.round((summaries.value.length / chapters.value.length) * 100)
+  const readableChapters = analysisStatus.value.filter((item) => item.has_content)
+  if (!readableChapters.length) return 0
+  const analyzedChapters = readableChapters.filter((item) => item.has_summary).length
+  return Math.round((analyzedChapters / readableChapters.length) * 100)
+})
+
+const duplicateImportNumbers = computed(() => {
+  const counts = new Map<number, number>()
+  parsedNovelChapters.value.forEach((chapter) => counts.set(chapter.chapter_no, (counts.get(chapter.chapter_no) || 0) + 1))
+  return [...counts.entries()].filter(([, count]) => count > 1).map(([chapterNo]) => chapterNo).sort((a, b) => a - b)
+})
+
+const ambiguousExistingNumbers = computed(() => {
+  const counts = new Map<number, number>()
+  chapters.value.forEach((chapter) => counts.set(chapter.chapter_no, (counts.get(chapter.chapter_no) || 0) + 1))
+  const importNumbers = new Set(parsedNovelChapters.value.map((chapter) => chapter.chapter_no))
+  return [...counts.entries()]
+    .filter(([chapterNo, count]) => count > 1 && importNumbers.has(chapterNo))
+    .map(([chapterNo]) => chapterNo)
+    .sort((a, b) => a - b)
+})
+
+const canStartImport = computed(() => {
+  const hasInvalidDraft = parsedNovelChapters.value.some((chapter) =>
+    !Number.isInteger(chapter.chapter_no) || chapter.chapter_no < 1 || !chapter.content.trim()
+  )
+  return Boolean(
+    novelFileName.value
+    && parsedNovelChapters.value.length
+    && !hasInvalidDraft
+    && !duplicateImportNumbers.value.length
+    && !ambiguousExistingNumbers.value.length
+    && !batchRunning.value
+  )
+})
+
+const batchFinishedCount = computed(() => batchTasks.value.filter((task) =>
+  ['imported', 'done', 'skipped', 'failed', 'stopped'].includes(task.state)
+).length)
+const batchFailedCount = computed(() => batchTasks.value.filter((task) => task.state === 'failed').length)
+const batchProgress = computed(() => batchTasks.value.length
+  ? Math.round((batchFinishedCount.value / batchTasks.value.length) * 100)
+  : 0)
+const batchCompletionMessage = computed(() => {
+  const completed = batchTasks.value.filter((task) => task.state === 'done' || task.state === 'imported').length
+  const skipped = batchTasks.value.filter((task) => task.state === 'skipped').length
+  const stopped = batchTasks.value.filter((task) => task.state === 'stopped').length
+  const failed = batchFailedCount.value
+  return `完成 ${completed} 项，跳过 ${skipped} 项，失败 ${failed} 项${stopped ? `，已停止 ${stopped} 项` : ''}。已保存内容可刷新后继续处理。`
 })
 
 const filteredSummaries = computed(() => {
@@ -478,6 +689,366 @@ function settingTargetLabel(value: string) {
   return labels[value] || value || '未知'
 }
 
+function openNovelPicker() {
+  // 步骤 1：阻止批处理中切换文件；步骤 2：打开浏览器本地文件选择器。
+  if (batchRunning.value) return
+  novelFileInput.value?.click()
+}
+
+async function handleNovelFileChange(event: Event) {
+  // 步骤 1：校验文件格式和大小；步骤 2：在浏览器本地读取并解析章节标题。
+  const input = event.target as HTMLInputElement
+  const file = input.files?.[0]
+  input.value = ''
+  if (!file) return
+
+  const extension = file.name.split('.').pop()?.toLowerCase()
+  if (!['txt', 'md', 'markdown'].includes(extension || '')) {
+    notify.error('请选择 TXT 或 Markdown 文件')
+    return
+  }
+  if (file.size > 20 * 1024 * 1024) {
+    notify.error('单个小说文件不能超过 20 MB')
+    return
+  }
+
+  try {
+    const bytes = await file.arrayBuffer()
+    let text: string
+    try {
+      // UTF-8 是默认编码；旧版 Windows 文本无法按 UTF-8 解码时再尝试 GB18030。
+      text = new TextDecoder('utf-8', { fatal: true }).decode(bytes)
+    } catch {
+      text = new TextDecoder('gb18030').decode(bytes)
+    }
+    text = text.replace(/^\uFEFF/, '').replace(/\r\n?/g, '\n').trim()
+    if (!text) {
+      notify.warning('文件内容为空')
+      return
+    }
+
+    novelFileName.value = file.name
+    const nextChapterNo = Math.max(0, ...analysisStatus.value.map((item) => item.chapter_no)) + 1
+    const parsed = splitNovelIntoChapters(text, file.name, nextChapterNo)
+    novelHasHeadings.value = parsed.hasHeadings
+    parsedNovelChapters.value = parsed.chapters
+    analyzeAfterImport.value = true
+    batchStarted.value = false
+    batchTasks.value = []
+    importDialogVisible.value = true
+  } catch (error) {
+    console.error('读取小说文件失败', error)
+    notify.error('读取文件失败，请确认文件编码和内容格式')
+  }
+}
+
+function splitNovelIntoChapters(text: string, fileName: string, fallbackChapterNo: number) {
+  // 步骤 1：逐行识别中文“第 X 章/回”和英文“Chapter X”标题。
+  const lines = text.split('\n')
+  const headings: Array<{ chapterNo: number; title: string; start: number; bodyStart: number }> = []
+  let offset = 0
+  lines.forEach((line) => {
+    const heading = parseNovelHeading(line)
+    if (heading) {
+      headings.push({
+        chapterNo: heading.chapter_no,
+        title: heading.title,
+        start: offset,
+        bodyStart: Math.min(text.length, offset + line.length + 1),
+      })
+    }
+    offset += line.length + 1
+  })
+
+  // 步骤 2：没有识别到章标题时，把文件作为一个章节导入，并提示作者核对。
+  if (!headings.length) {
+    const title = fileName.replace(/\.(txt|md|markdown)$/i, '') || `第${fallbackChapterNo}章`
+    return {
+      hasHeadings: false,
+      chapters: [{ key: `file-${Date.now()}-1`, chapter_no: fallbackChapterNo, title, content: text.trim() }],
+    }
+  }
+
+  // 步骤 3：按标题切分正文；首章标题前的序言保留到首章，不丢弃原文。
+  const preface = text.slice(0, headings[0].start).trim()
+  const chapters = headings.map((heading, index) => {
+    const nextStart = headings[index + 1]?.start ?? text.length
+    let content = text.slice(heading.bodyStart, nextStart).trim()
+    if (index === 0 && preface) content = `${preface}\n\n${content}`.trim()
+    return {
+      key: `file-${Date.now()}-${index + 1}`,
+      chapter_no: heading.chapterNo,
+      title: heading.title,
+      content,
+    }
+  })
+  return { hasHeadings: true, chapters }
+}
+
+function parseNovelHeading(line: string): { chapter_no: number; title: string } | null {
+  // 步骤 1：移除 Markdown 标题符号；步骤 2：解析标题号并保留标题文本。
+  const normalized = line.trim().replace(/^#{1,3}\s*/, '')
+  const chineseMatch = normalized.match(/^第\s*([0-9０-９〇○零一二两三四五六七八九十百千万]+)\s*[章回](?:\s*[:：、.．\-—]?\s*(.*))?$/)
+  if (chineseMatch) {
+    const chapterNo = parseChineseChapterNumber(chineseMatch[1])
+    if (chapterNo > 0) return { chapter_no: chapterNo, title: chineseMatch[2]?.trim() || `第${chapterNo}章` }
+  }
+  const englishMatch = normalized.match(/^(?:chapter|ch\.?)\s*([0-9０-９]+)(?:\s*[:：、.．\-—]?\s*(.*))?$/i)
+  if (englishMatch) {
+    const chapterNo = Number(englishMatch[1].replace(/[０-９]/g, (value) => String(value.charCodeAt(0) - 0xFF10)))
+    if (chapterNo > 0) return { chapter_no: chapterNo, title: englishMatch[2]?.trim() || `Chapter ${chapterNo}` }
+  }
+  return null
+}
+
+function parseChineseChapterNumber(rawValue: string): number {
+  // 步骤 1：兼容全角阿拉伯数字；步骤 2：把常见中文数词换算为章号。
+  const value = rawValue.replace(/[０-９]/g, (digit) => String(digit.charCodeAt(0) - 0xFF10))
+  if (/^\d+$/.test(value)) return Number(value)
+
+  const digits: Record<string, number> = { 零: 0, 〇: 0, ○: 0, 一: 1, 二: 2, 两: 2, 三: 3, 四: 4, 五: 5, 六: 6, 七: 7, 八: 8, 九: 9 }
+  if ([...value].every((char) => char in digits)) return Number([...value].map((char) => digits[char]).join(''))
+
+  const smallUnits: Record<string, number> = { 十: 10, 百: 100, 千: 1000 }
+  let total = 0
+  let section = 0
+  let current = 0
+  for (const char of value) {
+    if (char in digits) {
+      current = digits[char]
+    } else if (smallUnits[char]) {
+      section += (current || 1) * smallUnits[char]
+      current = 0
+    } else if (char === '万') {
+      total += (section + current || 1) * 10000
+      section = 0
+      current = 0
+    } else {
+      return 0
+    }
+  }
+  return total + section + current
+}
+
+// 步骤 1：把内部任务状态映射为界面文案；步骤 2：供进度列表统一展示。
+function batchTaskStateLabel(state: BatchTaskState) {
+  const labels: Record<BatchTaskState, string> = {
+    waiting: '等待', saving: '保存中', analyzing: '分析中', imported: '已导入',
+    done: '已完成', skipped: '已跳过', failed: '失败', stopped: '未处理',
+  }
+  return labels[state]
+}
+
+function requestStopBatch() {
+  // 步骤 1：标记停止意图；步骤 2：当前正在请求的章节结束后停止队列。
+  batchStopRequested.value = true
+}
+
+function closeImportDialog() {
+  // 步骤 1：只允许在处理结束后关闭；步骤 2：清理本次文件预览和任务状态。
+  if (batchRunning.value) return
+  importDialogVisible.value = false
+  batchStarted.value = false
+  novelFileName.value = ''
+  parsedNovelChapters.value = []
+  batchTasks.value = []
+  batchStopRequested.value = false
+}
+
+async function startExistingBackfill() {
+  // 步骤 1：重新读取章节正文和分析状态；步骤 2：把有正文且没有摘要的章节排入顺序队列。
+  const projectId = projectStore.currentProject?.id
+  if (!projectId || batchRunning.value) return
+  batchRunning.value = true
+  try {
+    const [chapterList, statusList] = await Promise.all([
+      listResource<ChapterItem>(projectId, 'chapters'),
+      getChapterAnalysisStatus(projectId),
+    ])
+    chapters.value = chapterList
+    analysisStatus.value = statusList
+    const chaptersById = new Map(chapterList.map((chapter) => [chapter.id, chapter]))
+    const tasks = statusList
+      .filter((status) => status.has_content && !status.has_summary)
+      .map((status) => {
+        const chapter = chaptersById.get(status.chapter_id)
+        return chapter ? {
+          key: `chapter-${chapter.id}`,
+          chapter_id: chapter.id,
+          chapter_no: chapter.chapter_no,
+          title: chapter.title,
+          content: chapter.content,
+          state: 'waiting' as BatchTaskState,
+        } : null
+      })
+      .filter((task): task is MemoryBatchTask => task !== null)
+    if (!tasks.length) {
+      notify.info('没有待补充记忆的章节')
+      return
+    }
+    batchLabel.value = '补充已有章节记忆'
+    batchTasks.value = tasks
+    batchStarted.value = true
+    batchStopRequested.value = false
+    importDialogVisible.value = true
+    await runAnalysisQueue(tasks, projectId)
+    await loadMemories(true)
+  } catch (error) {
+    console.error('准备章节记忆回填失败', error)
+    notify.error('读取章节状态失败，请稍后重试')
+  } finally {
+    batchRunning.value = false
+  }
+}
+
+async function startNovelImport() {
+  // 步骤 1：校验项目和预览结果；步骤 2：逐章保存正文；步骤 3：按顺序分析并刷新记忆中心。
+  const projectId = projectStore.currentProject?.id
+  if (!projectId || !canStartImport.value || batchRunning.value) return
+
+  const existingByNo = new Map<number, ChapterItem[]>()
+  chapters.value.forEach((chapter) => {
+    const items = existingByNo.get(chapter.chapter_no) || []
+    items.push(chapter)
+    existingByNo.set(chapter.chapter_no, items)
+  })
+  const statusById = new Map(analysisStatus.value.map((status) => [status.chapter_id, status]))
+  const tasks: MemoryBatchTask[] = parsedNovelChapters.value.map((chapter, index) => {
+    const existing = existingByNo.get(chapter.chapter_no)?.[0]
+    return {
+      key: chapter.key || `import-${index}`,
+      chapter_no: chapter.chapter_no,
+      title: chapter.title.trim() || `第${chapter.chapter_no}章`,
+      content: chapter.content.trim(),
+      existing_chapter_id: existing?.id,
+      chapter_id: existing?.id,
+      state: 'waiting',
+    }
+  })
+
+  batchLabel.value = analyzeAfterImport.value ? '导入并补充记忆' : '导入小说章节'
+  batchTasks.value = tasks
+  batchStarted.value = true
+  batchRunning.value = true
+  batchStopRequested.value = false
+
+  try {
+    // 步骤 1：保留已有正文；步骤 2：只填充空章节；步骤 3：对缺少摘要的正文排队分析。
+    for (const task of tasks) {
+      if (batchStopRequested.value) {
+        task.state = 'stopped'
+        continue
+      }
+      const existing = task.existing_chapter_id
+        ? existingByNo.get(task.chapter_no)?.find((chapter) => chapter.id === task.existing_chapter_id)
+        : undefined
+      if (existing && (existing.content.trim() || statusById.get(existing.id)?.has_summary)) {
+        const status = statusById.get(existing.id)
+        task.title = existing.title
+        task.content = existing.content
+        task.state = analyzeAfterImport.value && existing.content.trim() && !status?.has_summary ? 'waiting' : 'skipped'
+        continue
+      }
+
+      task.state = 'saving'
+      const payload = {
+        project_id: projectId,
+        outline_id: existing?.outline_id ?? null,
+        chapter_no: task.chapter_no,
+        title: task.title,
+        content: task.content,
+        status: existing?.status || 'draft',
+      }
+      try {
+        const savedChapter = existing
+          ? await updateResource<ChapterItem>('chapters', existing.id, payload)
+          : await createResource<ChapterItem>('chapters', payload)
+        task.chapter_id = savedChapter.id
+        task.state = analyzeAfterImport.value ? 'waiting' : 'imported'
+      } catch (error) {
+        task.state = 'failed'
+        task.error = requestErrorMessage(error)
+      }
+    }
+
+    // 步骤 2：正文全部安全落库后，再按章号顺序分析，保证后章能读取前章摘要。
+    if (analyzeAfterImport.value && !batchStopRequested.value) {
+      await runAnalysisQueue(tasks.filter((task) => task.state === 'waiting' && task.chapter_id), projectId)
+    } else if (batchStopRequested.value) {
+      tasks.filter((task) => task.state === 'waiting').forEach((task) => { task.state = 'stopped' })
+    }
+
+    await loadMemories(true)
+  } finally {
+    batchRunning.value = false
+    if (batchFailedCount.value) notify.warning(batchCompletionMessage.value)
+    else notify.success(batchCompletionMessage.value)
+  }
+}
+
+async function runAnalysisQueue(tasks: MemoryBatchTask[], projectId: number) {
+  // 步骤 1：按章节号稳定排序；步骤 2：逐章分析，记录成功、失败或停止状态。
+  const queue = [...tasks].sort((a, b) => a.chapter_no - b.chapter_no || a.key.localeCompare(b.key))
+  for (let index = 0; index < queue.length; index += 1) {
+    const task = queue[index]
+    if (batchStopRequested.value) {
+      queue.slice(index).forEach((pending) => { pending.state = 'stopped' })
+      break
+    }
+    if (!task.chapter_id || !task.content.trim()) {
+      task.state = 'failed'
+      task.error = '章节正文为空或尚未保存'
+      continue
+    }
+
+    task.state = 'analyzing'
+    task.error = ''
+    try {
+      const result = await analyzeChapter({
+        project_id: projectId,
+        chapter_id: task.chapter_id,
+        content: task.content,
+      })
+      if (result.analysis_status === 'unavailable') {
+        throw new Error('模型暂不可用，章节正文已保留；请检查 API 配置后重试')
+      }
+      task.state = 'done'
+    } catch (error) {
+      task.state = 'failed'
+      task.error = requestErrorMessage(error)
+    }
+  }
+}
+
+async function retryFailedTasks() {
+  // 步骤 1：仅重试已经有章节 ID 的分析失败项；保存失败项可重新选择原文件续导。
+  const failedTasks = batchTasks.value.filter((task) => task.state === 'failed' && task.chapter_id)
+  if (!failedTasks.length) {
+    notify.info('正文保存失败的章节可重新选择原文件；已导入正文会自动跳过')
+    return
+  }
+  const projectId = projectStore.currentProject?.id
+  if (!projectId || batchRunning.value) return
+  failedTasks.forEach((task) => { task.state = 'waiting'; task.error = '' })
+  batchStopRequested.value = false
+  batchLabel.value = '重试失败章节记忆'
+  batchRunning.value = true
+  try {
+    await runAnalysisQueue(failedTasks, projectId)
+    await loadMemories(true)
+  } finally {
+    batchRunning.value = false
+  }
+}
+
+function requestErrorMessage(error: unknown) {
+  // 步骤 1：优先展示后端业务错误；步骤 2：无具体错误时给出可操作的通用提示。
+  const responseData = (error as { response?: { data?: { detail?: unknown } } })?.response?.data
+  if (typeof responseData?.detail === 'string') return responseData.detail
+  if (error instanceof Error && error.message) return error.message.slice(0, 180)
+  return '处理失败，请重试'
+}
+
 async function loadMemories(silent = false) {
   // 步骤 1：等待项目选择完成；步骤 2：并行读取章节、摘要和长期条目。
   const projectId = projectStore.currentProject?.id
@@ -497,7 +1068,7 @@ async function loadMemories(silent = false) {
   loading.value = true
   try {
     const offset = activeIndex.value === 'items' ? (memoryPage.value - 1) * memoryPageSize : 0
-    const [chapterList, summaryList, memoryItemPage] = await Promise.all([
+    const [chapterList, summaryList, memoryItemPage, statusList] = await Promise.all([
       listResource<ChapterItem>(projectId, 'chapters'),
       getChapterSummaries(projectId, 50),
       getLongTermMemoryItems(projectId, {
@@ -506,10 +1077,12 @@ async function loadMemories(silent = false) {
         keyword: activeIndex.value === 'items' ? keyword.value : '',
         memoryType: activeIndex.value === 'items' ? memoryTypeFilter.value : null,
       }),
+      getChapterAnalysisStatus(projectId),
     ])
     if (requestSequence !== memoryLoadSequence || projectId !== projectStore.currentProject?.id) return
     const memoryItemList = memoryItemPage.items
     chapters.value = chapterList
+    analysisStatus.value = statusList
     summaries.value = summaryList
     memoryItems.value = memoryItemList
     memoryItemTotal.value = memoryItemPage.all_total
@@ -1107,5 +1680,252 @@ onBeforeUnmount(() => {
   color: #10b981;
   font-size: 12px;
   flex-shrink: 0;
+}
+
+.hidden-file-input {
+  display: none;
+}
+
+.memory-import-body {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-height: 0;
+}
+
+.novel-file-row,
+.batch-progress-heading,
+.preview-heading,
+.memory-import-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.novel-file-row {
+  padding: 12px;
+  border: 1px solid var(--n-border-color, #2a2f3a);
+  border-radius: 8px;
+  background: var(--n-color-1, #1e2228);
+}
+
+.novel-file-name {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.novel-file-icon {
+  font-size: 22px;
+}
+
+.novel-file-name div {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.novel-file-name strong,
+.novel-file-name span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.novel-file-name strong {
+  color: var(--n-text-color-1, #e5e7eb);
+  font-size: 13px;
+}
+
+.novel-file-name div span,
+.preview-heading span {
+  color: var(--n-text-color-3, #6b7280);
+  font-size: 11px;
+}
+
+.import-options {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid var(--n-border-color, #2a2f3a);
+  border-radius: 8px;
+}
+
+.import-option-hint {
+  color: var(--n-text-color-3, #6b7280);
+  font-size: 12px;
+}
+
+.import-option {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.option-label {
+  width: 88px;
+  flex: 0 0 auto;
+  color: var(--n-text-color-2, #9ca3af);
+  font-size: 12px;
+}
+
+.novel-preview,
+.memory-batch-progress {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-height: 0;
+}
+
+.preview-heading strong,
+.batch-progress-heading strong {
+  color: var(--n-text-color-1, #e5e7eb);
+  font-size: 13px;
+}
+
+.preview-alert {
+  margin: 0;
+}
+
+.novel-preview-scroll {
+  height: min(42vh, 420px);
+  border: 1px solid var(--n-border-color, #2a2f3a);
+  border-radius: 8px;
+}
+
+.novel-chapter-list,
+.batch-task-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 8px;
+}
+
+.novel-chapter-preview {
+  padding: 10px;
+  border: 1px solid var(--n-border-color, #2a2f3a);
+  border-radius: 7px;
+  background: var(--n-color-1, #1e2228);
+}
+
+.novel-chapter-fields {
+  display: grid;
+  grid-template-columns: 145px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+}
+
+.novel-chapter-excerpt {
+  margin: 8px 0 0;
+  color: var(--n-text-color-3, #6b7280);
+  font-size: 11px;
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+}
+
+.batch-progress-heading span {
+  color: var(--n-text-color-3, #6b7280);
+  font-size: 12px;
+}
+
+.batch-running-hint {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  color: var(--n-text-color-3, #6b7280);
+  font-size: 11px;
+}
+
+.batch-task-scroll {
+  height: min(46vh, 460px);
+  border: 1px solid var(--n-border-color, #2a2f3a);
+  border-radius: 8px;
+}
+
+.batch-task-row {
+  display: grid;
+  grid-template-columns: 58px minmax(150px, 1fr) minmax(0, 1.4fr);
+  align-items: center;
+  gap: 10px;
+  min-height: 36px;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--n-border-color, #2a2f3a);
+  font-size: 11px;
+}
+
+.batch-task-row strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--n-text-color-2, #9ca3af);
+}
+
+.batch-task-state {
+  color: var(--n-text-color-3, #6b7280);
+}
+
+.batch-task-state.state-done,
+.batch-task-state.state-imported {
+  color: #36ad75;
+}
+
+.batch-task-state.state-analyzing,
+.batch-task-state.state-saving {
+  color: #63e2b7;
+}
+
+.batch-task-state.state-failed {
+  color: #e88080;
+}
+
+.batch-task-error {
+  overflow: hidden;
+  color: #e88080;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.memory-import-actions {
+  justify-content: flex-end;
+  padding-top: 2px;
+}
+
+@media (max-width: 1100px) {
+  .header-right {
+    flex-wrap: wrap;
+    justify-content: flex-end;
+  }
+
+  .batch-task-row {
+    grid-template-columns: 58px minmax(0, 1fr);
+  }
+
+  .batch-task-error {
+    grid-column: 2;
+    white-space: normal;
+  }
+}
+
+@media (max-width: 700px) {
+  .novel-chapter-fields {
+    grid-template-columns: 1fr;
+  }
+
+  .import-option {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .batch-running-hint {
+    align-items: flex-start;
+    flex-direction: column;
+  }
 }
 </style>

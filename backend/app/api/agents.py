@@ -6,7 +6,7 @@ from collections.abc import Iterator
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
-from sqlalchemy import desc
+from sqlalchemy import desc, func
 
 from app.agents.context import build_context_preview
 from app.agents.workflows import analyze_chapter, check_consistency, draft_chapter, draft_chapter_stream, polish_chapter, analyze_volume
@@ -78,6 +78,54 @@ def chapter_summaries(project_id: int, limit: int = 20) -> list[dict]:
             "new_foreshadowings": row.new_foreshadowings,
             "timeline_events": row.timeline_events,
             "created_at": row.created_at.isoformat() if row.created_at else None,
+        }
+        for row in rows
+    ]
+
+
+@router.get("/{project_id}/analysis-status")
+def chapter_analysis_status(project_id: int) -> list[dict]:
+    """读取章节记忆补充状态，供批量回填和进度统计使用。
+
+    步骤 1：按项目读取章节基本信息和正文长度，不传输整章正文。
+    步骤 2：关联摘要记录，标记章节是否已经完成过分析。
+    步骤 3：按章节号排序，返回前端可直接用于续跑的状态清单。
+    """
+    with get_business_db() as db:
+        summary_query = (
+            db.query(ChapterSummary.chapter_id.label("chapter_id"))
+            .filter(
+                ChapterSummary.summary.isnot(None),
+                ChapterSummary.summary != "",
+                ~ChapterSummary.summary.like("开发模式摘要%"),
+            )
+            .distinct()
+            .subquery()
+        )
+        rows = (
+            db.query(
+                Chapter.id,
+                Chapter.chapter_no,
+                Chapter.title,
+                Chapter.status,
+                func.coalesce(func.length(Chapter.content), 0).label("content_length"),
+                summary_query.c.chapter_id.label("analyzed_chapter_id"),
+            )
+            .outerjoin(summary_query, summary_query.c.chapter_id == Chapter.id)
+            .filter(Chapter.project_id == project_id)
+            .order_by(Chapter.chapter_no.asc(), Chapter.id.asc())
+            .all()
+        )
+
+    return [
+        {
+            "chapter_id": row.id,
+            "chapter_no": row.chapter_no,
+            "title": row.title,
+            "status": row.status,
+            "content_length": row.content_length or 0,
+            "has_content": (row.content_length or 0) > 0,
+            "has_summary": row.analyzed_chapter_id is not None,
         }
         for row in rows
     ]

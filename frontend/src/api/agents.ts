@@ -26,6 +26,22 @@ export async function getChapterSummaries(projectId: number, limit = 20) {
   return data
 }
 
+export interface ChapterAnalysisStatus {
+  chapter_id: number
+  chapter_no: number
+  title: string
+  status: string
+  content_length: number
+  has_content: boolean
+  has_summary: boolean
+}
+
+export async function getChapterAnalysisStatus(projectId: number) {
+  // 只读取章节记忆回填状态和正文长度，避免为统计进度重复传输整章正文。
+  const { data } = await apiClient.get<ChapterAnalysisStatus[]>(`/agents/${projectId}/analysis-status`)
+  return data
+}
+
 export async function getContextPreview(projectId: number, chapterNo: number, outlineId?: number | null) {
   // 上下文包预览只读不写，用于生成前确认 Agent 实际会读取哪些资料。
   const { data } = await apiClient.get<ContextPreview>(`/agents/${projectId}/context-preview`, {
@@ -120,6 +136,8 @@ export async function analyzeChapter(payload: Record<string, unknown>) {
     world_changes: string
     new_foreshadowings: string
     timeline_events: string
+    pending_change_count?: number
+    analysis_status?: 'complete' | 'unavailable'
   }>('/agents/chapter-analyze', payload)
   return data
 }

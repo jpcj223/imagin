@@ -2930,6 +2930,9 @@ async function analyze(options: { showToast?: boolean } = {}) {
       chapter_id: chapterId.value,
       content: draft.value,
     })
+    if (result.analysis_status === 'unavailable') {
+      throw new Error('模型暂不可用，章节正文已保留；请检查 API 配置后重试')
+    }
     analysis.value = result.analysis
     setAnalysisSections(result)
     await loadAgentLogs()
@@ -2940,7 +2943,7 @@ async function analyze(options: { showToast?: boolean } = {}) {
     return true
   } catch (error) {
     addEvent('分析失败', errorMessage(error), 'error')
-    message.error('章节分析失败')
+    message.error(errorMessage(error) || '章节分析失败')
     return false
   }
 }
