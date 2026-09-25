@@ -20,8 +20,13 @@
             <span class="stat-num success">{{ activeDictCount }}</span>
             <span class="stat-label">启用中</span>
           </div>
+          <div class="stat-divider"></div>
+          <div class="stat">
+            <span class="stat-num warning">{{ dictionaries.length - activeDictCount }}</span>
+            <span class="stat-label">已停用</span>
+          </div>
         </div>
-        <n-button type="primary" @click="openDictCreate">
+        <n-button type="primary" :disabled="loading" @click="openDictCreate">
           <template #icon>＋</template>
           新增字典
         </n-button>
@@ -48,6 +53,7 @@
           ghost-class="dict-ghost"
           chosen-class="dict-chosen"
           class="dict-list"
+          @start="beginDictionaryDrag"
           @end="saveDictionaryOrder"
         >
           <template #item="{ element: dict }">
@@ -84,11 +90,12 @@
             </div>
             <div class="panel-sub" v-if="selectedDict">
               {{ selectedDict.description || selectedDict.dict_code }} · 拖动标签卡片调整顺序
+              <span class="item-status-summary">启用 {{ activeItemCount }} · 停用 {{ dictItems.length - activeItemCount }}</span>
             </div>
           </div>
           <div v-if="selectedDict" class="panel-actions">
-            <n-button size="small" @click="openDictEdit">编辑字典</n-button>
-            <n-button size="small" type="primary" @click="openItemCreate">
+            <n-button size="small" :disabled="itemsLoading" @click="openDictEdit">编辑字典</n-button>
+            <n-button size="small" type="primary" :disabled="itemsLoading" @click="openItemCreate">
               <template #icon>＋</template>
               新增标签
             </n-button>
@@ -113,6 +120,7 @@
           ghost-class="item-ghost"
           chosen-class="item-chosen"
           class="item-grid"
+          @start="beginItemDrag"
           @end="saveItemOrder"
         >
           <template #item="{ element: item, index }">
@@ -153,10 +161,10 @@
     </div>
 
     <!-- 字典编辑弹窗 -->
-    <n-modal v-model:show="dictModal" preset="card" :title="isDictEdit ? '编辑字典' : '新增字典'" style="width: 460px">
+    <n-modal v-model:show="dictModal" preset="card" :title="isDictEdit ? '编辑字典' : '新增字典'" style="width: min(520px, 92vw)">
       <n-form :model="dictForm" label-placement="left" label-width="90px">
         <n-form-item label="字典编码">
-          <n-input v-model:value="dictForm.dict_code" placeholder="如: novel_type" :disabled="isDictEdit" />
+          <n-input v-model:value="dictForm.dict_code" placeholder="如: novel_type" :disabled="isDictEdit" maxlength="64" />
         </n-form-item>
         <n-form-item label="字典名称">
           <n-input v-model:value="dictForm.dict_name" placeholder="如: 小说类型" />
@@ -173,7 +181,12 @@
       </n-form>
       <template #footer>
         <div style="text-align: right">
-          <n-button v-if="isDictEdit" type="error" style="float: left" @click="handleDictDelete">删除字典</n-button>
+          <n-popconfirm v-if="isDictEdit" @positive-click="handleDictDelete">
+            <template #trigger>
+              <n-button type="error" style="float: left" :loading="dictDeleting">删除字典</n-button>
+            </template>
+            删除后，该字典及其全部标签都会移除。确定继续吗？
+          </n-popconfirm>
           <n-button style="margin-right: 8px" @click="dictModal = false">取消</n-button>
           <n-button type="primary" :loading="dictSaving" @click="handleDictSave">确定</n-button>
         </div>
@@ -181,7 +194,7 @@
     </n-modal>
 
     <!-- 字典项编辑弹窗 -->
-    <n-modal v-model:show="itemModal" preset="card" :title="isItemEdit ? '编辑字典项' : '新增字典项'" style="width: 460px">
+    <n-modal v-model:show="itemModal" preset="card" :title="isItemEdit ? '编辑字典项' : '新增字典项'" style="width: min(520px, 92vw)">
       <n-form :model="itemForm" label-placement="left" label-width="90px">
         <n-form-item label="标签">
           <n-input v-model:value="itemForm.item_label" placeholder="显示名称" />
@@ -233,9 +246,13 @@ const loading = ref(false)
 const itemsLoading = ref(false)
 const dictionaryOrderSaving = ref(false)
 const itemOrderSaving = ref(false)
+const dictDeleting = ref(false)
 const dictionaries = ref<Dictionary[]>([])
 const dictItems = ref<DictItem[]>([])
 const selectedDictId = ref(0)
+const dictionaryOrderSnapshot = ref<number[]>([])
+const itemOrderSnapshot = ref<number[]>([])
+let itemRequestId = 0
 
 const dictModal = ref(false)
 const dictSaving = ref(false)
@@ -267,13 +284,18 @@ const statusOptions = [
 
 const selectedDict = computed(() => dictionaries.value.find((d) => d.id === selectedDictId.value))
 const activeDictCount = computed(() => dictionaries.value.filter((d) => d.status === 'active').length)
+const activeItemCount = computed(() => dictItems.value.filter((item) => item.status === 'active').length)
 
 async function loadDicts() {
   loading.value = true
   try {
     dictionaries.value = await fetchDictionaries()
-    if (dictionaries.value.length > 0 && !selectedDictId.value) {
-      selectDict(dictionaries.value[0])
+    const selected = dictionaries.value.find((dict) => dict.id === selectedDictId.value) || dictionaries.value[0]
+    if (selected) {
+      await selectDict(selected)
+    } else {
+      selectedDictId.value = 0
+      dictItems.value = []
     }
   } catch (e: any) {
     message.error(e?.response?.data?.detail || '字典列表加载失败')
@@ -284,27 +306,43 @@ async function loadDicts() {
 
 async function selectDict(dict: Dictionary) {
   selectedDictId.value = dict.id
+  dictItems.value = []
+  const requestId = ++itemRequestId
   itemsLoading.value = true
   try {
     // 管理页同时读取启用和停用标签，保证停用数据也能编辑与参与排序。
-    dictItems.value = await fetchDictItems(dict.dict_code, true)
+    const items = await fetchDictItems(dict.dict_code, true)
+    if (requestId === itemRequestId && selectedDictId.value === dict.id) dictItems.value = items
   } catch (e: any) {
-    message.error(e?.response?.data?.detail || '字典标签加载失败')
+    if (requestId === itemRequestId) message.error(e?.response?.data?.detail || '字典标签加载失败')
   } finally {
-    itemsLoading.value = false
+    if (requestId === itemRequestId) itemsLoading.value = false
   }
+}
+
+function beginDictionaryDrag() {
+  dictionaryOrderSnapshot.value = dictionaries.value.map((dict) => dict.id)
+}
+
+function beginItemDrag() {
+  itemOrderSnapshot.value = dictItems.value.map((item) => item.id)
 }
 
 // 字典列表拖动结束后，将完整顺序一次性保存到核心库。
 async function saveDictionaryOrder() {
   if (dictionaryOrderSaving.value || dictionaries.value.length < 2) return
+  const orderedIds = dictionaries.value.map((dict) => dict.id)
+  if (orderedIds.every((id, index) => id === dictionaryOrderSnapshot.value[index])) return
   dictionaryOrderSaving.value = true
   try {
-    dictionaries.value = await reorderDictionaries(dictionaries.value.map((dict) => dict.id))
+    dictionaries.value = await reorderDictionaries(orderedIds)
     message.success('字典顺序已保存')
   } catch (e: any) {
     message.error(e?.response?.data?.detail || '字典排序保存失败，正在恢复原顺序')
-    dictionaries.value = await fetchDictionaries()
+    const dictById = new Map(dictionaries.value.map((dict) => [dict.id, dict]))
+    dictionaries.value = dictionaryOrderSnapshot.value
+      .map((id) => dictById.get(id))
+      .filter((dict): dict is Dictionary => Boolean(dict))
   } finally {
     dictionaryOrderSaving.value = false
   }
@@ -314,13 +352,22 @@ async function saveDictionaryOrder() {
 async function saveItemOrder() {
   const dict = selectedDict.value
   if (!dict || itemOrderSaving.value || dictItems.value.length < 2) return
+  const requestId = itemRequestId
+  const orderedIds = dictItems.value.map((item) => item.id)
+  if (orderedIds.every((id, index) => id === itemOrderSnapshot.value[index])) return
   itemOrderSaving.value = true
   try {
-    dictItems.value = await reorderDictItems(dict.id, dictItems.value.map((item) => item.id))
+    const orderedItems = await reorderDictItems(dict.id, orderedIds)
+    if (requestId === itemRequestId && selectedDictId.value === dict.id) dictItems.value = orderedItems
     message.success('标签顺序已保存')
   } catch (e: any) {
     message.error(e?.response?.data?.detail || '标签排序保存失败，正在恢复原顺序')
-    await selectDict(dict)
+    if (requestId === itemRequestId && selectedDictId.value === dict.id) {
+      const itemById = new Map(dictItems.value.map((item) => [item.id, item]))
+      dictItems.value = itemOrderSnapshot.value
+        .map((id) => itemById.get(id))
+        .filter((item): item is DictItem => Boolean(item))
+    }
   } finally {
     itemOrderSaving.value = false
   }
@@ -364,11 +411,12 @@ async function handleDictSave() {
       await updateDictionary(selectedDict.value.id, { ...dictForm })
       message.success('更新成功')
     } else {
-      await createDictionary({ ...dictForm })
+      const created = await createDictionary({ ...dictForm })
+      selectedDictId.value = created.id
       message.success('创建成功')
     }
     dictModal.value = false
-    loadDicts()
+    await loadDicts()
   } catch (e: any) {
     message.error(e?.response?.data?.detail || '操作失败')
   } finally {
@@ -378,15 +426,18 @@ async function handleDictSave() {
 
 async function handleDictDelete() {
   if (!selectedDict.value) return
+  dictDeleting.value = true
   try {
     await deleteDictionary(selectedDict.value.id)
     message.success('删除成功')
     selectedDictId.value = 0
     dictItems.value = []
     dictModal.value = false
-    loadDicts()
+    await loadDicts()
   } catch (e: any) {
     message.error(e?.response?.data?.detail || '删除失败')
+  } finally {
+    dictDeleting.value = false
   }
 }
 
@@ -433,7 +484,7 @@ async function handleItemSave() {
       message.success('创建成功')
     }
     itemModal.value = false
-    if (selectedDict.value) selectDict(selectedDict.value)
+    if (selectedDict.value) await selectDict(selectedDict.value)
   } catch (e: any) {
     message.error(e?.response?.data?.detail || '操作失败')
   } finally {
@@ -445,7 +496,7 @@ async function handleItemDelete(id: number) {
   try {
     await deleteDictItem(id)
     message.success('删除成功')
-    if (selectedDict.value) selectDict(selectedDict.value)
+    if (selectedDict.value) await selectDict(selectedDict.value)
   } catch (e: any) {
     message.error(e?.response?.data?.detail || '删除失败')
   }
@@ -490,6 +541,13 @@ onMounted(loadDicts)
   font-size: 12px;
   color: var(--n-text-color-3, #6b7280);
   margin-top: 4px;
+}
+
+.item-status-summary {
+  display: inline-block;
+  margin-left: 10px;
+  color: var(--n-text-color-3, #8490a3);
+  white-space: nowrap;
 }
 
 .dict-list-head {
@@ -878,6 +936,10 @@ onMounted(loadDicts)
 }
 
 @media (max-width: 760px) {
+  .dict-manage-page {
+    padding: 18px 14px 28px;
+  }
+
   .dict-layout {
     grid-template-columns: minmax(0, 1fr);
   }
@@ -899,6 +961,11 @@ onMounted(loadDicts)
   .panel-actions {
     width: 100%;
     justify-content: flex-end;
+  }
+
+  .item-status-summary {
+    display: block;
+    margin: 5px 0 0;
   }
 }
 </style>
