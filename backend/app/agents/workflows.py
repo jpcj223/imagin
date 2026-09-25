@@ -276,10 +276,13 @@ def draft_chapter_stream(
 def analyze_chapter(project_id: int, chapter_id: int, content: str) -> dict:
     """用统一的分析 Agent 保存摘要并创建待审核变化提案。
 
-    步骤 1：验证章节归属并读取章节号、版本来源和项目资料上下文。
-    步骤 2：调用 V3 共用分析器，产出结构化章节变化。
-    步骤 3：将自然语言实体名解析为本项目 ID，生成字段受限的提案。
-    步骤 4：在一个业务库事务内更新摘要、写入提案和记录分析日志。
+    步骤 1：验证章节归属并读取章节号和版本来源。
+    步骤 2：组装项目资料上下文。
+    步骤 3：阻止开发兜底正文进入分析流程。
+    步骤 4：调用 V3 共用分析器并识别模型兜底状态。
+    步骤 5：模型不可用时只记录失败，不创建章节摘要或提案。
+    步骤 6：将自然语言实体名解析为本项目 ID，生成字段受限的提案。
+    步骤 7：在一个业务库事务内更新摘要、写入提案和记录分析日志。
     """
     from app.agents_v3.presets import get_agent
     from app.services.chapter_change_proposals import (
@@ -305,17 +308,43 @@ def analyze_chapter(project_id: int, chapter_id: int, content: str) -> dict:
         ).order_by(GenerationVersion.id.desc()).first()
         version_id = version.version_id if version and (chapter.content or "") == content else None
 
-    # 步骤 1：复用项目上下文，避免手动分析只看到正文却无法识别角色/组织。
+    # 步骤 2：复用项目上下文，避免手动分析只看到正文却无法识别角色/组织。
     analysis_context = build_chapter_context(project_id, chapter_no, outline_id)
     analysis_context.update({"content": content, "chapter_no": chapter_no})
 
-    # 步骤 2：旧版手动分析入口复用 V3 Agent 和结构化输出契约。
+    # 步骤 3：识别旧版和 V3 的开发兜底正文，避免用户手动点分析时把样例当成小说事实。
+    if "【开发模式草稿】" in content or (
+        "开发模式草稿" in content and "配置 API 后" in content
+    ):
+        unavailable_message = "当前正文是开发模式兜底稿，未运行章节分析；配置模型后请重新生成并分析。"
+        with get_business_db() as db:
+            db.add(GenerationLog(
+                project_id=project_id,
+                task_type="chapter_analyze",
+                request=f"chapter_id={chapter_id}",
+                response=unavailable_message,
+                status="failed",
+            ))
+            db.commit()
+        return {
+            "chapter_id": chapter_id,
+            "analysis": unavailable_message,
+            "summary": unavailable_message,
+            "character_changes": "",
+            "world_changes": "",
+            "new_foreshadowings": "",
+            "timeline_events": "",
+            "pending_change_count": 0,
+            "analysis_status": "unavailable",
+        }
+
+    # 步骤 4：旧版手动分析入口复用 V3 Agent 和结构化输出契约。
     analyzer = get_agent("analyzer", "default")
     try:
         result = analyzer.run(analysis_context, {"temperature": 0.2})
     except LLMError:
         # 保留旧入口在未配置模型时的可用反馈；空结构化结果不会创建或写回任何提案。
-        fallback_summary = "开发模式摘要：本章内容已保存，等待配置模型后重新分析。"
+        fallback_summary = "模型服务不可用，本次未保存章节分析；配置模型后可重新分析。"
         result = {
             "analysis_text": fallback_summary,
             "summary": fallback_summary,
@@ -326,6 +355,19 @@ def analyze_chapter(project_id: int, chapter_id: int, content: str) -> dict:
             "structured_analysis": {},
             "analysis_status": "unavailable",
         }
+    if str(result.get("source", "")).startswith("fallback:"):
+        # 步骤 5：DynamicAgent 会吞掉模型异常并返回兜底文本，旧入口也必须阻止假沉淀。
+        unavailable_message = "模型服务不可用，本次未保存章节分析；配置模型后可重新分析。"
+        result.update({
+            "analysis_text": unavailable_message,
+            "summary": unavailable_message,
+            "character_changes": "",
+            "world_changes": "",
+            "new_foreshadowings": "",
+            "timeline_events": "",
+            "structured_analysis": {},
+            "analysis_status": "unavailable",
+        })
     analysis = result.get("analysis_text") or result.get("content", "")
     sections = {
         "summary": result.get("summary") or analysis,
@@ -336,7 +378,7 @@ def analyze_chapter(project_id: int, chapter_id: int, content: str) -> dict:
     }
     structured = result.get("structured_analysis", {})
 
-    # 步骤 3：模型不可用时只返回明确状态，不把开发占位文本保存成正式章节记忆。
+    # 步骤 5：模型不可用时只返回明确状态，不把开发占位文本保存成正式章节记忆。
     if result.get("analysis_status") == "unavailable":
         with get_business_db() as db:
             db.add(GenerationLog(
@@ -355,12 +397,12 @@ def analyze_chapter(project_id: int, chapter_id: int, content: str) -> dict:
             "analysis_status": "unavailable",
         }
 
-    # 步骤 4：只将唯一匹配到的实体变化转成提案；模糊名称不自动改写设定。
+    # 步骤 6：只将唯一匹配到的实体变化转成提案；模糊名称不自动改写设定。
     with get_business_db() as db:
         catalog = load_entity_catalog(db, project_id)
         proposal_drafts = build_proposal_drafts(structured, catalog, chapter_no)
 
-        # 步骤 5：章节摘要与候选变化在同一事务提交。
+        # 步骤 7：章节摘要与候选变化在同一事务提交。
         existing = db.query(ChapterSummary).filter(
             ChapterSummary.chapter_id == chapter_id,
         ).first()

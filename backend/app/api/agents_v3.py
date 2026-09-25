@@ -736,7 +736,28 @@ def _auto_update_memory(
 
     mm = MemoryManager(project_id)
 
-    # 步骤 1：从结构化分析解析可审核提案；旧版文本结果不会直接更改资料卡。
+    # 步骤 1：分析 Agent 使用开发兜底结果时，仅记录失败状态，不沉淀虚构摘要或提案。
+    if session_context.get("analysis_status") == "unavailable":
+        from app.db.session import get_business_db
+        from app.models.business import GenerationLog
+
+        with get_business_db() as db:
+            db.add(GenerationLog(
+                project_id=project_id,
+                task_type="chapter_analyze",
+                request=f"chapter_id={chapter_id}; run_id={run_id or ''}",
+                response=session_context.get("analysis_message", "模型服务不可用，未保存分析。"),
+                status="failed",
+            ))
+            db.commit()
+
+        # 即使分析失败，成功生成的正文仍计入使用统计，但不会伪造分析数据。
+        content = session_context.get("final_content") or session_context.get("draft_content", "")
+        if content:
+            mm.record_generation(len(content))
+        return 0
+
+    # 步骤 2：从结构化分析解析可审核提案；旧版文本结果不会直接更改资料卡。
     from app.services.chapter_change_proposals import build_proposal_drafts, create_proposals
 
     structured_analysis = session_context.get("structured_analysis", {})
@@ -747,7 +768,7 @@ def _auto_update_memory(
         chapter_no,
     )
 
-    # 步骤 2：章节摘要和提案同库提交，确保候选来源与摘要保持一致。
+    # 步骤 3：章节摘要和提案同库提交，确保候选来源与摘要保持一致。
     summary = session_context.get("chapter_summary", "")
     pending_count = 0
     if summary or proposal_drafts:
@@ -774,7 +795,7 @@ def _auto_update_memory(
                 else:
                     db.add(ChapterSummary(chapter_id=chapter_id, **changes))
 
-            # 步骤 3：提案只进入 pending 状态，不自动覆盖人物、组织或其他正式资料。
+            # 步骤 4：提案只进入 pending 状态，不自动覆盖人物、组织或其他正式资料。
             if proposal_drafts:
                 saved_proposals = create_proposals(
                     db=db,
@@ -788,7 +809,7 @@ def _auto_update_memory(
                 session_context["pending_change_count"] = pending_count
             db.commit()
 
-    # 步骤 4：将统计与最终正文绑定；精修流程已将正文放在 final_content 中。
+    # 步骤 5：将统计与最终正文绑定；精修流程已将正文放在 final_content 中。
     content = session_context.get("final_content") or session_context.get("draft_content", "")
     if content:
         mm.record_generation(len(content))

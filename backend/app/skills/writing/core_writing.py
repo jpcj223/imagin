@@ -35,8 +35,13 @@ class CoreWritingSkill(BaseSkill):
     required_context = ["project", "outline", "characters"]
 
     def pre_process(self, context, params):
-        """构建写作上下文文本。"""
-        # 把结构化上下文压缩成写作资料包
+        """构建写作上下文文本。
+
+        步骤 1：整理世界观、大纲、人物和记忆资料。
+        步骤 2：把规划结果加入正文提示；快速写作模板使用明确的无规划说明。
+        步骤 3：压缩结构化设定，供 Writer Prompt 统一引用。
+        """
+        # 步骤 1：把结构化上下文压缩成写作资料包。
         project = context.get("project", {})
         world = context.get("world", {})
         outline = context.get("outline", {})
@@ -46,6 +51,10 @@ class CoreWritingSkill(BaseSkill):
         recent_summaries = context.get("recent_summaries", [])
         long_term_memories = context.get("long_term_memories", [])
 
+        # 步骤 2：规划结果为空时说明当前模板直接写作，不展示空白的计划区。
+        writing_plan = context.get("writing_plan") or "快速写作模式：没有独立规划步骤，请直接依据本章大纲安排剧情。"
+
+        # 步骤 3：生成统一资料包，Writer Prompt 会同时单独引用 writing_plan。
         context_text = f"""
 项目：{project.get("name", "")}
 世界观：{_format_world(world)}
@@ -57,6 +66,7 @@ class CoreWritingSkill(BaseSkill):
 已确认长期记忆：{_format_long_term_memories(long_term_memories)}
 """.strip()
 
+        context["writing_plan"] = writing_plan
         context["_writing_context"] = context_text
         return context
 

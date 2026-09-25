@@ -15,6 +15,10 @@ def create_writer_agent(variant: str = "default", **extra_params) -> BaseAgent:
     Args:
         variant: 变体名称（default/shuangwen/wenqing/fast）
         **extra_params: 额外参数
+
+    步骤 1：装配章节正文 Prompt 和核心写作 Skill。
+    步骤 2：注入可选的规划结果，让智能模式的 Planner 输出实际指导正文。
+    步骤 3：应用写作变体与额外参数并返回 Agent。
     """
     from .variants import VariantManager
 
@@ -32,6 +36,7 @@ def create_writer_agent(variant: str = "default", **extra_params) -> BaseAgent:
             "请生成第 {chapter_no} 章正文。\n\n"
             "节奏等级：{rhythm_level}\n"
             "用户补充要求：{instruction}\n\n"
+            "本章规划：{writing_plan}\n\n"
             "写作资料包：\n{_writing_context}\n\n"
             "要求：\n"
             "1. 输出中文小说正文。\n"

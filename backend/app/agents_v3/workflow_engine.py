@@ -99,7 +99,7 @@ BUILTIN_TEMPLATES: dict[str, WorkflowTemplate] = {
                 variant="fast",
                 label="写作",
                 params={},
-                output_mapping={"content": "draft_content"},
+                output_mapping={"content": "draft_content", "source": "draft_source"},
             ),
         ],
     ),
@@ -123,7 +123,7 @@ BUILTIN_TEMPLATES: dict[str, WorkflowTemplate] = {
                 variant="default",
                 label="写作",
                 depends_on=["planner"],
-                output_mapping={"content": "draft_content"},
+                output_mapping={"content": "draft_content", "source": "draft_source"},
             ),
             WorkflowStep(
                 step_id="analyzer",
@@ -140,6 +140,8 @@ BUILTIN_TEMPLATES: dict[str, WorkflowTemplate] = {
                     "new_foreshadowings": "new_foreshadowings",
                     "timeline_events": "timeline_events",
                     "structured_analysis": "structured_analysis",
+                    "analysis_status": "analysis_status",
+                    "analysis_message": "analysis_message",
                     "analysis_entity_catalog": "analysis_entity_catalog",
                 },
             ),
@@ -165,7 +167,7 @@ BUILTIN_TEMPLATES: dict[str, WorkflowTemplate] = {
                 variant="default",
                 label="写作",
                 depends_on=["planner"],
-                output_mapping={"content": "draft_content"},
+                output_mapping={"content": "draft_content", "source": "draft_source"},
             ),
             WorkflowStep(
                 step_id="polisher",
@@ -176,7 +178,7 @@ BUILTIN_TEMPLATES: dict[str, WorkflowTemplate] = {
                 params={"mode": "flow"},
                 # 步骤 1：将草稿映射到精修 Agent 的 original_content 输入。
                 input_mapping={"original_content": "draft_content"},
-                output_mapping={"content": "polished_content"},
+                output_mapping={"content": "polished_content", "source": "polished_source"},
             ),
             WorkflowStep(
                 step_id="analyzer",
@@ -193,6 +195,8 @@ BUILTIN_TEMPLATES: dict[str, WorkflowTemplate] = {
                     "new_foreshadowings": "new_foreshadowings",
                     "timeline_events": "timeline_events",
                     "structured_analysis": "structured_analysis",
+                    "analysis_status": "analysis_status",
+                    "analysis_message": "analysis_message",
                     "analysis_entity_catalog": "analysis_entity_catalog",
                 },
             ),
@@ -284,13 +288,22 @@ class WorkflowEngine:
         # 恢复步骤状态
         for step_id, status_str in state["step_statuses"].items():
             if step_id in self.step_statuses:
-                self.step_statuses[step_id] = StepStatus(status_str)
+                # 步骤 1：恢复时把上次运行中或失败的步骤重新排队，保留已完成步骤结果。
+                # 客户端断开时后端无法收到取消通知，因此数据库里的 running 也必须可重试。
+                if status_str in {StepStatus.RUNNING.value, StepStatus.FAILED.value}:
+                    self.step_statuses[step_id] = StepStatus.PENDING
+                else:
+                    self.step_statuses[step_id] = StepStatus(status_str)
 
         # 恢复步骤结果
         self.step_results = state["step_results"]
 
         # 恢复会话上下文
         self.session_context = state["session_context"]
+
+        # 步骤 2：续跑时保持工作流可执行状态；已完成步骤仍由快照恢复，不会重复生成。
+        if self.status in {WorkflowStatus.RUNNING, WorkflowStatus.FAILED}:
+            self.status = WorkflowStatus.PAUSED
 
     def restart_from_step(self, step_id: str) -> None:
         """从指定步骤开始重跑。
@@ -398,10 +411,54 @@ class WorkflowEngine:
             # 步骤 2：只把匹配需要的 ID 和名称放进运行状态，避免复制整份设定正文。
             return load_entity_catalog(db, self.project_id)
 
+    def _fallback_analysis_result(self) -> dict[str, Any] | None:
+        """判断分析正文是否来自开发兜底稿，并生成不可沉淀的明确结果。
+
+        步骤 1：按最终分析正文选择精修稿或写作稿的来源标记。
+        步骤 2：若正文是开发兜底文本，则跳过模型分析并返回不可用状态。
+        """
+        # 步骤 1：精修稿继承写作稿事实，即使精修 Agent 成功也不能把兜底正文当成真实章节。
+        sources = [self.session_context.get("draft_source", "")]
+        if self.session_context.get("polished_content"):
+            sources.append(self.session_context.get("polished_source", ""))
+        if not any(str(source).startswith("fallback:") for source in sources):
+            return None
+
+        return {
+            "content": "",
+            "analysis_text": "",
+            "summary": "",
+            "character_changes": "",
+            "world_changes": "",
+            "new_foreshadowings": "",
+            "timeline_events": "",
+            "structured_analysis": {},
+            "analysis_status": "unavailable",
+            "analysis_message": "本章正文来自开发模式兜底稿，未运行章节分析；配置模型后请重新生成并分析。",
+            "source": "fallback: 正文来源为开发模式兜底稿",
+        }
+
     def _save_step_output(self, step: WorkflowStep, result: dict[str, Any]) -> None:
         """保存步骤输出到会话记忆和数据库。"""
+        # 步骤 1：阻止空写作/精修结果被标记为完成并继续流入版本保存。
+        if step.agent_type in {"writer", "polisher"} and not str(result.get("content", "")).strip():
+            raise ValueError(f"{step.label or step.step_id}未返回正文内容")
+
         if step.agent_type == "analyzer":
-            # 步骤 1：将实体解析目录随分析输出一起持久化，断点续跑后仍可解析提案。
+            # 步骤 2：模型调用失败时，兜底文本只用于界面诊断，不能成为正式章节分析。
+            if str(result.get("source", "")).startswith("fallback:"):
+                result["analysis_status"] = "unavailable"
+                result.setdefault("analysis_message", "模型服务不可用，本次未保存章节分析；配置模型后可重新分析。")
+                result["summary"] = ""
+                result["character_changes"] = ""
+                result["world_changes"] = ""
+                result["new_foreshadowings"] = ""
+                result["timeline_events"] = ""
+                result["structured_analysis"] = {}
+            else:
+                result.setdefault("analysis_status", "completed")
+                result.setdefault("analysis_message", "")
+            # 步骤 3：将实体解析目录随分析输出一起持久化，断点续跑后仍可解析提案。
             result.setdefault(
                 "analysis_entity_catalog",
                 self.session_context.get("analysis_entity_catalog", {}),
@@ -510,8 +567,11 @@ class WorkflowEngine:
                     params.update(step.params)
 
                     # 创建并执行 Agent
-                    agent = get_agent(step.agent_type, step.variant)
-                    result = agent.run(context, params)
+                    # 步骤 2：开发兜底正文不能再进入分析器，避免虚构摘要和设定提案。
+                    result = self._fallback_analysis_result() if step.agent_type == "analyzer" else None
+                    if result is None:
+                        agent = get_agent(step.agent_type, step.variant)
+                        result = agent.run(context, params)
 
                     # 保存结果
                     self._save_step_output(step, result)
@@ -603,7 +663,12 @@ class WorkflowEngine:
                     input_snapshot=context_preview,
                 )
 
-                yield {"type": "step_start", "step_id": step.step_id, "label": step.label}
+                yield {
+                    "type": "step_start",
+                    "step_id": step.step_id,
+                    "label": step.label,
+                    "run_id": self.run_id,
+                }
 
                 try:
                     context = self._build_step_context(step, chapter_no, outline_id)
@@ -616,11 +681,16 @@ class WorkflowEngine:
                     params = {"instruction": instruction, "rhythm_level": rhythm_level}
                     params.update(step.params)
 
-                    agent = get_agent(step.agent_type, step.variant)
+                    # 步骤 2：兜底正文不调用分析模型；正常内容则执行对应 Agent。
+                    fallback_result = self._fallback_analysis_result() if step.agent_type == "analyzer" else None
+                    agent = get_agent(step.agent_type, step.variant) if fallback_result is None else None
 
                     # 流式执行
                     final_result = None
-                    if hasattr(agent, "run_stream") and agent.meta.supports_streaming:
+                    if fallback_result is not None:
+                        # 步骤 3：保留明确的不可用结果并完成工作流，不调用分析模型。
+                        final_result = {"type": "done", **fallback_result}
+                    elif hasattr(agent, "run_stream") and agent.meta.supports_streaming:
                         for event in agent.run_stream(context, params):
                             if event.get("type") == "delta":
                                 yield {

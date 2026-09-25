@@ -630,7 +630,10 @@
               <!-- 生成后沉淀 -->
               <div class="form-block">
                 <div class="block-title">生成后沉淀</div>
-                <div v-if="!analysisSections.summary && !analysis" class="empty-analysis">
+                <n-alert v-if="analysisStatus === 'unavailable'" type="warning" :show-icon="true">
+                  {{ analysis || '模型服务不可用，本次未保存章节分析；配置模型后可重新分析。' }}
+                </n-alert>
+                <div v-else-if="!analysisSections.summary && !analysis" class="empty-analysis">
                   <div class="empty-icon">📊</div>
                   <p>生成并分析后，这里会展示章节摘要、人物变化、伏笔线索等</p>
                 </div>
@@ -1046,6 +1049,7 @@ const keyword = ref('')
 const draft = ref('')
 const chapterTitle = ref('')
 const analysis = ref('')
+const analysisStatus = ref('')
 const activeTab = ref('params')
 
 // ---- 资料数据 ----
@@ -1820,6 +1824,27 @@ function setAnalysisSections(result: Record<string, unknown>) {
 
 function clearAnalysisSections() {
   setAnalysisSections({})
+  analysisStatus.value = ''
+}
+
+/**
+ * 统一处理生成、续跑和步骤重跑返回的分析结果。
+ * 步骤 1：识别模型不可用状态，清除兜底文本解析出的伪分析字段。
+ * 步骤 2：只将有效分析摘要和各变化分区放入工作台。
+ */
+function applyWorkflowAnalysisResult(result: Record<string, unknown>) {
+  if (result.analysis_status === 'unavailable') {
+    const wasAlreadyUnavailable = analysisStatus.value === 'unavailable'
+    setAnalysisSections({})
+    analysis.value = String(result.analysis_message || '模型服务不可用，本次未保存章节分析；配置模型后可重新分析。')
+    analysisStatus.value = 'unavailable'
+    if (!wasAlreadyUnavailable) addEvent('分析不可用', analysis.value, 'error')
+    return
+  }
+
+  analysisStatus.value = 'completed'
+  analysis.value = String(result.summary || result.content || '')
+  setAnalysisSections(result)
 }
 
 const proposalEntityLabels: Record<ChangeProposalEntityType, string> = {
@@ -2218,6 +2243,7 @@ function selectChapter(item: ChapterItem) {
   draft.value = item.content
   chapterTitle.value = item.title
   analysis.value = ''
+  clearAnalysisSections()
   polishOriginal.value = ''
   consistencyResult.value = null
   addEvent(
@@ -2347,6 +2373,9 @@ async function generateV3(options: { showToast?: boolean } = {}) {
   workflowSteps.value = buildWorkflowSteps(selectedWorkflow.value)
   currentWorkflowStep.value = null
   workflowProgress.value = 0
+  currentRunId.value = null
+  interruptedRunId.value = null
+  isInterrupted.value = false
   showWorkflowPanel.value = true
   activeTab.value = 'params'
 
@@ -2368,8 +2397,11 @@ async function generateV3(options: { showToast?: boolean } = {}) {
         template_name: selectedWorkflow.value,
       },
       {
-        onStepStart: (stepId, label) => {
+        onStepStart: (stepId, label, runId) => {
+          // 步骤 1：收到第一步事件就记下运行 ID，连接中断时用户仍能恢复。
+          if (runId) currentRunId.value = runId
           currentWorkflowStep.value = stepId
+          if (stepId === 'writer') draft.value = ''
           const step = workflowSteps.value.find(s => s.id === stepId)
           if (step) {
             step.status = 'running'
@@ -2394,15 +2426,7 @@ async function generateV3(options: { showToast?: boolean } = {}) {
           addEvent('步骤完成', step?.label ?? stepId, 'success')
 
           // 如果是分析步骤，保存分析结果
-          if (stepId === 'analyzer' && result) {
-            const summary = result.summary || result.content
-            if (summary) analysis.value = summary as string
-            if (result.character_changes) analysisSections.character_changes = result.character_changes as string
-            if (result.world_changes) analysisSections.world_changes = result.world_changes as string
-            if (result.new_foreshadowings) analysisSections.new_foreshadowings = result.new_foreshadowings as string
-            if (result.timeline_events) analysisSections.timeline_events = result.timeline_events as string
-            if (summary) analysisSections.summary = summary as string
-          }
+          if (stepId === 'analyzer' && result) applyWorkflowAnalysisResult(result)
 
           // 如果是精修步骤，把精修结果写入草稿
           if (stepId === 'polisher' && result?.content) {
@@ -2411,9 +2435,24 @@ async function generateV3(options: { showToast?: boolean } = {}) {
         },
         onWorkflowDone: (status, runId, sessionContext) => {
           currentRunId.value = runId
-          workflowProgress.value = 100
+          workflowProgress.value = status === 'completed' ? 100 : workflowProgress.value
           currentWorkflowStep.value = null
-          addEvent('工作流完成', `状态：${status}`, 'success')
+          isInterrupted.value = status !== 'completed'
+          interruptedRunId.value = status === 'completed' ? null : runId
+          addEvent(status === 'completed' ? '工作流完成' : '工作流未完成', `状态：${status}`, status === 'completed' ? 'success' : 'error')
+
+          // 步骤 2：从持久化结果恢复分析面板，覆盖刷新页面或恢复时没有收到 step_done 的情况。
+          if (sessionContext?.analysis_status) {
+            applyWorkflowAnalysisResult({
+              analysis_status: sessionContext.analysis_status,
+              analysis_message: sessionContext.analysis_message,
+              summary: sessionContext.chapter_summary,
+              character_changes: sessionContext.character_changes,
+              world_changes: sessionContext.world_changes,
+              new_foreshadowings: sessionContext.new_foreshadowings,
+              timeline_events: sessionContext.timeline_events,
+            })
+          }
 
           // 从 session_context 获取章节 ID
           if (sessionContext?.chapter_id) {
@@ -2439,6 +2478,7 @@ async function generateV3(options: { showToast?: boolean } = {}) {
     )
 
     if (!result) throw new Error('工作流未返回完成事件')
+    if (result.status !== 'completed') throw new Error(`工作流尚未完成：${result.status}`)
 
     // 自动生成标题
     if (!chapterTitle.value) {
@@ -2461,8 +2501,8 @@ async function generateV3(options: { showToast?: boolean } = {}) {
     return true
   } catch (error) {
     if (!draft.value.trim()) draft.value = previousDraft
-    else {
-      // 有内容说明生成到一半中断了，保存中断状态
+    if (currentRunId.value) {
+      // 步骤 3：即使规划或分析步骤中断、正文为空，也保留运行 ID 供续跑。
       isInterrupted.value = true
       interruptedRunId.value = currentRunId.value
     }
@@ -2498,8 +2538,10 @@ async function resumeGenerateV3() {
         rhythm_level: form.rhythm_level,
       },
       {
-        onStepStart: (stepId, label) => {
+        onStepStart: (stepId, label, runId) => {
+          if (runId) currentRunId.value = runId
           currentWorkflowStep.value = stepId
+          if (stepId === 'writer') draft.value = ''
           const step = workflowSteps.value.find(s => s.id === stepId)
           if (step) {
             step.status = 'running'
@@ -2520,13 +2562,7 @@ async function resumeGenerateV3() {
           workflowProgress.value = (completedCount / workflowSteps.value.length) * 100
           addEvent('步骤完成', step?.label ?? stepId, 'success')
 
-          if (stepId === 'analyzer' && stepResult) {
-            const summary = stepResult.summary || stepResult.content
-            if (summary) analysis.value = summary as string
-            if (stepResult.character_changes) analysisSections.character_changes = stepResult.character_changes as string
-            if (stepResult.world_changes) analysisSections.world_changes = stepResult.world_changes as string
-            if (summary) analysisSections.summary = summary as string
-          }
+          if (stepId === 'analyzer' && stepResult) applyWorkflowAnalysisResult(stepResult)
 
           if (stepId === 'polisher' && stepResult?.content) {
             draft.value = stepResult.content as string
@@ -2534,11 +2570,22 @@ async function resumeGenerateV3() {
         },
         onWorkflowDone: (status, runId, sessionContext) => {
           currentRunId.value = runId
-          workflowProgress.value = 100
+          workflowProgress.value = status === 'completed' ? 100 : workflowProgress.value
           currentWorkflowStep.value = null
-          isInterrupted.value = false
-          interruptedRunId.value = null
-          addEvent('续传完成', `状态：${status}`, 'success')
+          isInterrupted.value = status !== 'completed'
+          interruptedRunId.value = status === 'completed' ? null : runId
+          addEvent(status === 'completed' ? '续传完成' : '续传未完成', `状态：${status}`, status === 'completed' ? 'success' : 'error')
+          if (sessionContext?.analysis_status) {
+            applyWorkflowAnalysisResult({
+              analysis_status: sessionContext.analysis_status,
+              analysis_message: sessionContext.analysis_message,
+              summary: sessionContext.chapter_summary,
+              character_changes: sessionContext.character_changes,
+              world_changes: sessionContext.world_changes,
+              new_foreshadowings: sessionContext.new_foreshadowings,
+              timeline_events: sessionContext.timeline_events,
+            })
+          }
           if (sessionContext?.chapter_id) {
             chapterId.value = sessionContext.chapter_id as number
             form.chapter_id = sessionContext.chapter_id as number
@@ -2562,6 +2609,7 @@ async function resumeGenerateV3() {
     )
 
     if (!result) throw new Error('续传未返回完成事件')
+    if (result.status !== 'completed') throw new Error(`续传尚未完成：${result.status}`)
 
     if (!chapterTitle.value) {
       chapterTitle.value = `第${form.chapter_no}章`
@@ -2580,6 +2628,10 @@ async function resumeGenerateV3() {
     showWorkflowPanel.value = false
     return true
   } catch (error) {
+    if (currentRunId.value) {
+      isInterrupted.value = true
+      interruptedRunId.value = currentRunId.value
+    }
     addEvent('续传失败', errorMessage(error), 'error')
     message.error('续传失败，请重试')
     showWorkflowPanel.value = false
@@ -2632,8 +2684,10 @@ async function handleRestartFromStep(stepId: string) {
         restart_from_step_id: stepId,
       },
       {
-        onStepStart: (sid, label) => {
+        onStepStart: (sid, label, resumedRunId) => {
+          if (resumedRunId) currentRunId.value = resumedRunId
           currentWorkflowStep.value = sid
+          if (sid === 'writer') draft.value = ''
           const s = workflowSteps.value.find(x => x.id === sid)
           if (s) s.status = 'running'
         },
@@ -2647,21 +2701,29 @@ async function handleRestartFromStep(stepId: string) {
           workflowProgress.value = (completedCount / workflowSteps.value.length) * 100
           addEvent('步骤完成', s?.label ?? sid, 'success')
 
-          if (sid === 'analyzer' && stepResult) {
-            const summary = stepResult.summary || stepResult.content
-            if (summary) analysis.value = summary as string
-            if (stepResult.character_changes) analysisSections.character_changes = stepResult.character_changes as string
-            if (summary) analysisSections.summary = summary as string
-          }
+          if (sid === 'analyzer' && stepResult) applyWorkflowAnalysisResult(stepResult)
           if (sid === 'polisher' && stepResult?.content) {
             draft.value = stepResult.content as string
           }
         },
         onWorkflowDone: (status, newRunId, sessionContext) => {
           currentRunId.value = newRunId
-          workflowProgress.value = 100
+          workflowProgress.value = status === 'completed' ? 100 : workflowProgress.value
           currentWorkflowStep.value = null
-          addEvent('重跑完成', `状态：${status}`, 'success')
+          isInterrupted.value = status !== 'completed'
+          interruptedRunId.value = status === 'completed' ? null : newRunId
+          addEvent(status === 'completed' ? '重跑完成' : '重跑未完成', `状态：${status}`, status === 'completed' ? 'success' : 'error')
+          if (sessionContext?.analysis_status) {
+            applyWorkflowAnalysisResult({
+              analysis_status: sessionContext.analysis_status,
+              analysis_message: sessionContext.analysis_message,
+              summary: sessionContext.chapter_summary,
+              character_changes: sessionContext.character_changes,
+              world_changes: sessionContext.world_changes,
+              new_foreshadowings: sessionContext.new_foreshadowings,
+              timeline_events: sessionContext.timeline_events,
+            })
+          }
           if (sessionContext?.chapter_id) {
             chapterId.value = sessionContext.chapter_id as number
             form.chapter_id = sessionContext.chapter_id as number
@@ -2682,11 +2744,16 @@ async function handleRestartFromStep(stepId: string) {
     )
 
     if (!result) throw new Error('重跑未返回完成事件')
+    if (result.status !== 'completed') throw new Error(`重跑尚未完成：${result.status}`)
     await loadResources()
     await loadVersions()
     message.success('重跑完成')
     showWorkflowPanel.value = false
   } catch (error) {
+    if (currentRunId.value) {
+      isInterrupted.value = true
+      interruptedRunId.value = currentRunId.value
+    }
     addEvent('重跑失败', errorMessage(error), 'error')
     message.error('重跑失败')
     showWorkflowPanel.value = false
@@ -2930,11 +2997,15 @@ async function analyze(options: { showToast?: boolean } = {}) {
       chapter_id: chapterId.value,
       content: draft.value,
     })
-    if (result.analysis_status === 'unavailable') {
-      throw new Error('模型暂不可用，章节正文已保留；请检查 API 配置后重试')
-    }
     analysis.value = result.analysis
+    analysisStatus.value = String(result.analysis_status || 'completed')
     setAnalysisSections(result)
+    if (result.analysis_status === 'unavailable') {
+      await loadAgentLogs()
+      addEvent('分析不可用', result.analysis, 'error')
+      message.warning('模型暂不可用；章节正文已保留，请检查 API 配置后重试')
+      return false
+    }
     await loadAgentLogs()
     await loadResources()
     await loadChapterChangeProposals()

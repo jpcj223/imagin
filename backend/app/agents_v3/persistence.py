@@ -119,6 +119,11 @@ class WorkflowPersistence:
 
             if status == "running" and run.started_at is None:
                 run.started_at = datetime.utcnow()
+            if status == "running":
+                # 步骤 1：重试失败的运行时清除旧错误和结束时间，历史失败仍保留在步骤记录中。
+                run.error_message = ""
+                run.failed_at = None
+                run.completed_at = None
             if status == "completed":
                 run.completed_at = datetime.utcnow()
             if status == "failed":

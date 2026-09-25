@@ -130,7 +130,7 @@ export interface LongTermMemoryItem {
 
 // 工作流流式事件类型
 export type WorkflowStreamEvent =
-  | { type: 'step_start'; step_id: string; label: string }
+  | { type: 'step_start'; step_id: string; label: string; run_id?: string }
   | { type: 'delta'; step_id: string; content: string }
   | { type: 'step_done'; step_id: string; result: Record<string, unknown> }
   | { type: 'workflow_done'; status: string; run_id: string; session_context: Record<string, unknown>; step_statuses: Record<string, string> }
@@ -138,7 +138,7 @@ export type WorkflowStreamEvent =
   | { type: 'error'; step_id?: string; message: string; trace?: string }
 
 export interface WorkflowStreamHandlers {
-  onStepStart?: (stepId: string, label: string) => void
+  onStepStart?: (stepId: string, label: string, runId?: string) => void
   onDelta?: (stepId: string, content: string) => void
   onStepDone?: (stepId: string, result: Record<string, unknown>) => void
   onWorkflowDone?: (status: string, runId: string, sessionContext: Record<string, unknown>) => void
@@ -210,7 +210,7 @@ export async function workflowGenerateStream(
       const event = JSON.parse(line) as WorkflowStreamEvent
       switch (event.type) {
         case 'step_start':
-          handlers.onStepStart?.(event.step_id, event.label)
+          handlers.onStepStart?.(event.step_id, event.label, event.run_id)
           break
         case 'delta':
           handlers.onDelta?.(event.step_id, event.content)
@@ -309,7 +309,7 @@ export async function workflowResumeStream(
       const event = JSON.parse(line) as WorkflowStreamEvent
       switch (event.type) {
         case 'step_start':
-          handlers.onStepStart?.(event.step_id, event.label)
+          handlers.onStepStart?.(event.step_id, event.label, event.run_id)
           break
         case 'delta':
           handlers.onDelta?.(event.step_id, event.content)
