@@ -69,7 +69,15 @@
           <div class="panel-sub">拖拽推进 · 一键转态</div>
         </div>
         <div class="kanban-container">
-          <div v-for="column in statusColumns" :key="column.value" class="kanban-column" :class="column.value">
+          <div
+            v-for="column in statusColumns"
+            :key="column.value"
+            class="kanban-column"
+            :class="[column.value, { 'drag-over': dragOverStatus === column.value }]"
+            @dragover="handleColumnDragOver($event, column.value)"
+            @dragleave="handleColumnDragLeave($event, column.value)"
+            @drop="handleColumnDrop($event, column.value)"
+          >
             <div class="column-header">
               <div class="column-title-group">
                 <span class="column-dot"></span>
@@ -88,7 +96,10 @@
                     v-for="item in itemsByStatus(column.value)"
                     :key="item.id"
                     class="kanban-card"
-                    :class="{ active: editingId === item.id, danger: riskOf(item) === 'high', warning: riskOf(item) === 'medium' }"
+                    :class="{ active: editingId === item.id, danger: riskOf(item) === 'high', warning: riskOf(item) === 'medium', dragging: draggingItemId === item.id }"
+                    draggable="true"
+                    @dragstart.stop="handleCardDragStart($event, item)"
+                    @dragend.stop="handleCardDragEnd"
                     @click="selectForeshadowing(item)"
                   >
                     <div class="card-accent"></div>
@@ -384,6 +395,8 @@ const isCreating = ref(false)
 const loading = ref(false)
 const historyItems = ref<ForeshadowingHistory[]>([])
 const historyLoading = ref(false)
+const draggingItemId = ref<number | null>(null)
+const dragOverStatus = ref<string | null>(null)
 // 记录每个伏笔的状态移动历史栈（用于多级回撤），key: 伏笔id, value: 状态历史数组（栈顶为最近一次）
 const statusHistoryMap = new Map<number, string[]>()
 const form = reactive({
@@ -521,6 +534,48 @@ function joinIds(value: number[]) {
 
 function itemsByStatus(status: string) {
   return filteredForeshadowings.value.filter((item) => item.status === status)
+}
+
+function handleCardDragStart(event: DragEvent, item: ForeshadowingItem) {
+  // 步骤 1：记录拖动卡片 ID；步骤 2：通过原生拖放数据传递 ID，兼容浏览器默认拖放机制。
+  draggingItemId.value = item.id
+  dragOverStatus.value = null
+  if (event.dataTransfer) {
+    event.dataTransfer.effectAllowed = 'move'
+    event.dataTransfer.setData('text/plain', String(item.id))
+  }
+}
+
+function handleColumnDragOver(event: DragEvent, status: string) {
+  if (draggingItemId.value == null) return
+  event.preventDefault()
+  if (event.dataTransfer) event.dataTransfer.dropEffect = 'move'
+  dragOverStatus.value = status
+}
+
+function handleColumnDragLeave(event: DragEvent, status: string) {
+  // 指针在列内卡片间移动时不清除高亮，只在离开整列后清除。
+  const column = event.currentTarget as HTMLElement
+  const nextTarget = event.relatedTarget
+  if (nextTarget instanceof Node && column.contains(nextTarget)) return
+  if (dragOverStatus.value === status) dragOverStatus.value = null
+}
+
+async function handleColumnDrop(event: DragEvent, status: string) {
+  // 步骤 1：读取拖动 ID 并立即复位视觉状态；步骤 2：目标状态不同时复用统一迁移逻辑。
+  event.preventDefault()
+  const draggedId = Number(event.dataTransfer?.getData('text/plain')) || draggingItemId.value
+  draggingItemId.value = null
+  dragOverStatus.value = null
+  if (draggedId == null) return
+  const item = foreshadowings.value.find((candidate) => candidate.id === draggedId)
+  if (!item || item.status === status) return
+  await moveStatus(item, status)
+}
+
+function handleCardDragEnd() {
+  draggingItemId.value = null
+  dragOverStatus.value = null
 }
 
 function includesChapter(item: ForeshadowingItem, chapterNo: number) {
@@ -975,7 +1030,7 @@ useProjectDataLoader(load)
 .workbench {
   flex: 1;
   display: grid;
-  grid-template-columns: minmax(720px, 1fr) 380px;
+  grid-template-columns: minmax(0, 1fr) minmax(320px, 380px);
   gap: 14px;
   min-height: 0;
 }
@@ -1043,6 +1098,12 @@ useProjectDataLoader(load)
   min-height: 0;
   overflow: hidden;
   transition: border-color 0.2s ease;
+}
+
+.kanban-column.drag-over {
+  border-color: var(--n-color-primary, #3b82f6);
+  background: linear-gradient(180deg, rgba(59, 130, 246, 0.09), var(--n-color-1, #1e2228) 38%);
+  box-shadow: inset 0 0 0 1px rgba(59, 130, 246, 0.22);
 }
 
 .kanban-column.pending { border-top: 3px solid #6b7280; }
@@ -1133,6 +1194,10 @@ useProjectDataLoader(load)
   transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
   overflow: hidden;
 }
+
+.kanban-card[draggable="true"] { cursor: grab; }
+.kanban-card[draggable="true"]:active { cursor: grabbing; }
+.kanban-card.dragging { opacity: 0.42; transform: scale(0.985); }
 
 .kanban-card:hover {
   border-color: var(--n-color-primary-3, #3b82f6);
@@ -1685,4 +1750,31 @@ useProjectDataLoader(load)
 .history-details summary { cursor: pointer; color: #60a5fa; }
 .history-details p { margin: 7px 0 0; line-height: 1.5; white-space: pre-wrap; }
 .history-status-change { display: flex; gap: 8px; margin-top: 8px; color: var(--n-text-color-1, #f0f0f0); }
+
+@media (max-width: 1280px) {
+  .workbench { grid-template-columns: minmax(0, 1fr) minmax(300px, 340px); }
+  .kanban-container { gap: 9px; padding: 10px; }
+  .column-header { padding: 10px; }
+}
+
+@media (max-width: 960px) {
+  .foreshadowing-page { height: auto; min-height: calc(100vh - 60px); }
+  .workbench { grid-template-columns: minmax(0, 1fr); flex: initial; overflow: visible; }
+  .kanban-panel { min-height: 620px; }
+  .detail-panel { height: min(82vh, 900px); min-height: 620px; }
+  .kanban-container { grid-template-columns: repeat(2, minmax(220px, 1fr)); }
+}
+
+@media (max-width: 600px) {
+  .page-header { align-items: flex-start; flex-direction: column; gap: 12px; }
+  .header-right { width: 100%; justify-content: space-between; }
+  .header-stats { flex: 1; min-width: 0; }
+  .filter-bar { flex-wrap: wrap; }
+  .filter-group { flex: 1 1 100%; }
+  .filter-group :deep(.n-input) { width: 100% !important; }
+  .kanban-container { grid-template-columns: minmax(0, 1fr); }
+  .kanban-panel { min-height: 900px; }
+  .form-grid-2 { grid-template-columns: minmax(0, 1fr); }
+  .detail-panel { min-height: 680px; }
+}
 </style>
