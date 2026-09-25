@@ -33,6 +33,7 @@
                 <span class="item-name">{{ char.name }}</span>
                 <span class="item-completeness">{{ char.completeness }}%</span>
               </div>
+              <div v-if="!(settingIndex?.characters || []).length" class="group-empty">暂无人物档案，请先在人物卡片中创建</div>
             </div>
           </transition>
         </div>
@@ -153,8 +154,8 @@
           </div>
         </div>
         <div class="chat-header-actions">
-          <button class="header-btn" title="导出设定">📤</button>
-          <button class="header-btn" title="设置">⚙️</button>
+          <button class="header-btn" title="导出当前对话" :disabled="!currentSession || !messages.length" @click="exportConversation">📤</button>
+          <button class="header-btn" title="新建设定对话" @click="handleNewChat">＋</button>
         </div>
       </div>
 
@@ -174,7 +175,8 @@
                 {{ msg.role === 'user' ? '你' : '设定共创 Agent' }}
                 <span class="time">{{ formatTime(msg.created_at) }}</span>
               </div>
-              <div class="msg-bubble" v-html="msg.content"></div>
+              <div v-if="msg.role === 'user'" class="msg-bubble">{{ msg.content }}</div>
+              <div v-else class="msg-bubble" v-html="sanitizeMessageHtml(msg.content)"></div>
               <!-- 快速回复（只在最后一条 agent 消息显示） -->
               <div
                 v-if="msg.role === 'assistant' && idx === messages.length - 1 && quickReplies.length > 0 && !isSending"
@@ -208,14 +210,39 @@
           <div class="empty-icon">💬</div>
           <div class="empty-title">开始设定共创</div>
           <div class="empty-desc">
-            从左侧选择一个角色，或点击「新建设定对话」<br>
-            Agent 会通过对话帮你逐步完善设定
+            选择一个目标开始；每次补充都会更新右侧档案，并保留在本项目的对话记忆中。
+          </div>
+          <div class="empty-start-actions">
+            <button class="empty-start-card" @click="openSettingGroup('characters')">
+              <span class="empty-start-icon">👤</span>
+              <span><strong>完善人物</strong><small>{{ settingIndex?.character_count || 0 }} 个人物档案</small></span>
+              <span class="empty-start-arrow">›</span>
+            </button>
+            <button class="empty-start-card" @click="startWorldSetting">
+              <span class="empty-start-icon">🌍</span>
+              <span><strong>完善世界观</strong><small>时代、力量体系与核心规则</small></span>
+              <span class="empty-start-arrow">›</span>
+            </button>
+            <button class="empty-start-card" @click="openSettingGroup('foreshadowing')">
+              <span class="empty-start-icon">🎭</span>
+            <span><strong>完善伏笔</strong><small>{{ (settingIndex?.foreshadowing?.items || []).length }} 条伏笔线索</small></span>
+              <span class="empty-start-arrow">›</span>
+            </button>
+          </div>
+          <div v-if="!settingIndex?.character_count && !(settingIndex?.foreshadowing?.items || []).length" class="empty-start-note">
+            还没有人物或伏笔档案？可以先从世界观开始，或点击左侧“新建设定对话”。
           </div>
         </div>
       </div>
 
       <!-- 输入区 -->
       <div class="chat-input-area">
+        <div v-if="showPromptTemplates && currentSession" class="prompt-template-panel">
+          <div class="prompt-template-heading">选择一个切入方向</div>
+          <button v-for="template in promptTemplates" :key="template" class="prompt-template" @click="insertPromptTemplate(template)">
+            {{ template }}
+          </button>
+        </div>
         <div class="input-wrapper">
           <textarea
             ref="textareaRef"
@@ -228,8 +255,7 @@
             :disabled="!currentSession || isSending"
           ></textarea>
           <div class="input-tools">
-            <button class="tool-btn" title="插入模板">📋</button>
-            <button class="tool-btn" title="上传参考">📎</button>
+            <button class="tool-btn" title="插入设定提问模板" :disabled="!currentSession" @click="showPromptTemplates = !showPromptTemplates">📋</button>
             <button
               class="send-btn"
               title="发送"
@@ -456,9 +482,10 @@ import {
   type SettingChatMessage,
   type SettingIndexResponse,
 } from '@/api/settingCo'
+import { notify } from '@/utils/notify'
 
 const projectStore = useProjectStore()
-const projectId = computed(() => projectStore.currentProject?.id || 1)
+const projectId = computed(() => projectStore.currentProject?.id ?? null)
 
 // 状态
 const settingIndex = ref<SettingIndexResponse | null>(null)
@@ -468,6 +495,7 @@ const messages = ref<SettingChatMessage[]>([])
 const quickReplies = ref<string[]>([])
 const inputMessage = ref('')
 const isSending = ref(false)
+const showPromptTemplates = ref(false)
 const activeTargetType = ref('character')
 const activeTargetId = ref<number | null>(null)
 const settingDetail = ref<Record<string, any> | null>(null)
@@ -475,6 +503,32 @@ const lastUpdatedField = ref<string | null>(null)
 const sessionHasMemory = computed(() => messages.value.some(
   (message) => message.role === 'assistant' && message.memory_written === 1
 ))
+let sessionRequestSequence = 0
+let workspaceRequestSequence = 0
+
+const promptTemplates = computed(() => {
+  const templates: Record<string, string[]> = {
+    character: [
+      '我们先完善外貌特征：这个角色给人的第一印象是什么？有什么容易被记住的细节？',
+      '聊聊性格和行为：他遇到压力、利益冲突或亲近的人时通常会怎么做？',
+      '梳理角色背景：他的出身经历如何影响现在的目标？',
+      '补充角色关系：他最信任、最忌惮或最想保护的人是谁？为什么？',
+    ],
+    world: [
+      '先聊时代背景：故事发生在什么时代，普通人的日常生活是什么样？',
+      '完善核心力量体系：力量从哪里来，使用它要付出什么代价？',
+      '设定世界规则：哪些事情绝对不可能发生？规则被打破会带来什么后果？',
+      '描述整体基调：读者进入这个世界时，你希望感受到什么？',
+    ],
+    foreshadowing: [
+      '这条线索最初会以什么细节出现？读者第一次看到时应该注意到什么？',
+      '线索背后隐藏的真相是什么？哪些信息要暂时保留？',
+      '这条线索计划在什么阶段回收？回收时会改变什么？',
+      '哪些角色知道这件事，哪些角色会误解它？',
+    ],
+  }
+  return templates[currentSession.value?.target_type || 'character'] || templates.character
+})
 
 const expandedGroups = ref({
   characters: true,
@@ -514,9 +568,15 @@ function settingTargetLabel(targetType: string) {
 
 // 加载设定目录
 async function loadSettingIndex() {
+  // 步骤 1：确认当前项目已就绪；步骤 2：仅应用当前项目对应的目录响应。
+  const requestedProjectId = projectId.value
+  if (!requestedProjectId) {
+    settingIndex.value = null
+    return
+  }
   try {
-    const data = await getSettingIndex(projectId.value)
-    settingIndex.value = data
+    const data = await getSettingIndex(requestedProjectId)
+    if (projectId.value === requestedProjectId) settingIndex.value = data
   } catch (e) {
     console.error('加载设定目录失败', e)
   }
@@ -524,26 +584,52 @@ async function loadSettingIndex() {
 
 // 加载最近会话，方便离开页面后继续之前的设定讨论。
 async function loadRecentSessions() {
+  // 步骤 1：以当前项目为范围加载会话；步骤 2：丢弃项目切换后的过期响应。
+  const requestedProjectId = projectId.value
+  if (!requestedProjectId) {
+    recentSessions.value = []
+    return
+  }
   try {
-    const result = await listSessions(projectId.value)
-    recentSessions.value = result.sessions
+    const result = await listSessions(requestedProjectId)
+    if (projectId.value === requestedProjectId) recentSessions.value = result.sessions
   } catch (e) {
     console.error('加载最近设定对话失败', e)
   }
 }
 
+function openSettingGroup(group: 'characters' | 'foreshadowing') {
+  // 步骤 1：展开对应设定目录；步骤 2：提示作者从具体档案开始对话。
+  expandedGroups.value[group] = true
+  notify.info(group === 'characters' ? '已展开左侧人物列表，请选择要完善的人物' : '已展开左侧伏笔列表，请选择要完善的线索')
+}
+
+function startWorldSetting() {
+  // 步骤 1：读取项目世界观总览；步骤 2：不存在总览时让后端在当前项目内创建。
+  const world = settingIndex.value?.world
+  void startChat('world', world?.target_id || 0, world?.name || '世界观总览')
+}
+
 // 开始对话
 async function startChat(targetType: string, targetId: number, targetName: string) {
+  // 步骤 1：校验项目并标记本次切换；步骤 2：创建会话；步骤 3：载入档案与历史列表。
+  const requestedProjectId = projectId.value
+  if (!requestedProjectId) {
+    notify.warning('项目仍在加载，请稍后再开始设定共创')
+    return
+  }
+  const requestSequence = ++sessionRequestSequence
   activeTargetType.value = targetType
   activeTargetId.value = targetId
 
   try {
     const result = await createSession({
-      project_id: projectId.value,
+      project_id: requestedProjectId,
       target_type: targetType,
       target_id: targetId,
       target_name: targetName,
     })
+    if (requestSequence !== sessionRequestSequence || projectId.value !== requestedProjectId) return
 
     currentSession.value = result.session
     activeTargetId.value = result.session.target_id
@@ -562,29 +648,43 @@ async function startChat(targetType: string, targetId: number, targetName: strin
     quickReplies.value = result.opening.quick_replies || []
 
     // 步骤 1：新会话立即出现在历史列表；步骤 2：继续加载关联档案。
-    await loadRecentSessions()
-
-    // 加载设定详情
-    await loadSettingDetail()
+    await Promise.all([loadRecentSessions(), loadSettingDetail()])
 
     // 滚动到底部
-    nextTick(scrollToBottom)
+    await nextTick(scrollToBottom)
   } catch (e) {
     console.error('创建会话失败', e)
+    if (requestSequence === sessionRequestSequence) {
+      activeTargetType.value = currentSession.value?.target_type || 'character'
+      activeTargetId.value = currentSession.value?.target_id || null
+    }
   }
 }
 
 // 恢复历史会话与它绑定的人物、世界观或伏笔档案。
 async function resumeSession(session: SettingChatSession) {
+  // 步骤 1：确认会话属于当前项目；步骤 2：读取消息；步骤 3：忽略过期的切换响应。
+  const requestedProjectId = projectId.value
+  if (!requestedProjectId || session.project_id !== requestedProjectId) {
+    notify.warning('这条对话不属于当前项目，请刷新设定目录')
+    return
+  }
+  const requestSequence = ++sessionRequestSequence
   try {
     const result = await getSession(session.session_id)
+    if (requestSequence !== sessionRequestSequence || projectId.value !== requestedProjectId) return
+    if (result.session.project_id !== requestedProjectId) {
+      notify.warning('会话所属项目已变化，请重新选择')
+      return
+    }
     currentSession.value = result.session
     messages.value = result.messages
     activeTargetType.value = result.session.target_type
     activeTargetId.value = result.session.target_id
     quickReplies.value = []
+    showPromptTemplates.value = false
     await loadSettingDetail()
-    nextTick(scrollToBottom)
+    await nextTick(scrollToBottom)
   } catch (e) {
     console.error('恢复设定对话失败', e)
   }
@@ -592,14 +692,22 @@ async function resumeSession(session: SettingChatSession) {
 
 // 加载设定详情
 async function loadSettingDetail() {
-  if (!currentSession.value?.target_id) return
+  // 步骤 1：固定当前会话和项目；步骤 2：读取其档案；步骤 3：避免旧响应覆盖新目标。
+  const session = currentSession.value
+  const requestedProjectId = projectId.value
+  if (!session?.target_id || !requestedProjectId) {
+    settingDetail.value = null
+    return
+  }
   try {
     const result = await getSettingDetail(
-      currentSession.value.target_type,
-      currentSession.value.target_id,
-      projectId.value
+      session.target_type,
+      session.target_id,
+      requestedProjectId
     )
-    settingDetail.value = result.detail
+    if (currentSession.value?.session_id === session.session_id && projectId.value === requestedProjectId) {
+      settingDetail.value = result.detail
+    }
   } catch (e) {
     console.error('加载设定详情失败', e)
   }
@@ -609,11 +717,14 @@ async function loadSettingDetail() {
 async function handleSend() {
   const msg = inputMessage.value.trim()
   if (!msg || !currentSession.value || isSending.value) return
+  const sendingSession = currentSession.value
+  const sendingProjectId = projectId.value
+  if (!sendingProjectId) return
 
   // 添加用户消息
   messages.value.push({
     id: Date.now(),
-    session_id: currentSession.value.session_id,
+    session_id: sendingSession.session_id,
     role: 'user',
     content: msg,
     thought: '',
@@ -631,12 +742,14 @@ async function handleSend() {
   })
 
   try {
-    const result = await sendMessage(currentSession.value.session_id, msg)
+    const result = await sendMessage(sendingSession.session_id, msg)
+    await loadRecentSessions()
+    if (currentSession.value?.session_id !== sendingSession.session_id || projectId.value !== sendingProjectId) return
 
     // 添加 Agent 回复
     messages.value.push({
       id: Date.now() + 1,
-      session_id: currentSession.value.session_id,
+      session_id: sendingSession.session_id,
       role: 'assistant',
       content: result.reply.content,
       thought: result.reply.thought || '',
@@ -662,19 +775,21 @@ async function handleSend() {
     }
 
     // 刷新目录（完整度可能变了）
-    await Promise.all([loadSettingIndex(), loadRecentSessions()])
+    await loadSettingIndex()
   } catch (e) {
     console.error('发送消息失败', e)
-    messages.value.push({
-      id: Date.now() + 1,
-      session_id: currentSession.value.session_id,
-      role: 'assistant',
-      content: '抱歉，网络出了点问题，请稍后再试～',
-      thought: '',
-      extracted_fields: '[]',
-      memory_written: 0,
-      created_at: new Date().toISOString(),
-    })
+    if (currentSession.value?.session_id === sendingSession.session_id && projectId.value === sendingProjectId) {
+      messages.value.push({
+        id: Date.now() + 1,
+        session_id: sendingSession.session_id,
+        role: 'assistant',
+        content: '本轮没有收到服务端回复。你刚才的内容已保留在当前界面，请检查连接后重试。',
+        thought: '',
+        extracted_fields: '[]',
+        memory_written: 0,
+        created_at: new Date().toISOString(),
+      })
+    }
   } finally {
     isSending.value = false
     nextTick(scrollToBottom)
@@ -687,13 +802,97 @@ function sendQuickReply(text: string) {
   handleSend()
 }
 
+function insertPromptTemplate(text: string) {
+  // 步骤 1：把提问模板放入输入框而不是直接发送；步骤 2：聚焦输入框供作者继续改写。
+  inputMessage.value = text
+  showPromptTemplates.value = false
+  void nextTick(() => {
+    autoResize()
+    textareaRef.value?.focus()
+  })
+}
+
+function exportConversation() {
+  // 步骤 1：把消息转换为纯文本 Markdown；步骤 2：生成本地下载，不上传对话内容。
+  const session = currentSession.value
+  if (!session || !messages.value.length) return
+  const lines = [
+    `# ${session.target_name}｜设定共创`,
+    '',
+    `目标类型：${settingTargetLabel(session.target_type)}`,
+    `导出时间：${new Date().toLocaleString('zh-CN')}`,
+    '',
+  ]
+  messages.value.forEach((message) => {
+    const role = message.role === 'user' ? '作者' : '设定共创 Agent'
+    const content = message.role === 'user' ? message.content : htmlToPlainText(message.content)
+    lines.push(`## ${role} · ${formatTime(message.created_at)}`, content, '')
+  })
+  const blob = new Blob([`\uFEFF${lines.join('\n')}`], { type: 'text/markdown;charset=utf-8' })
+  const url = URL.createObjectURL(blob)
+  const link = document.createElement('a')
+  const safeName = session.target_name.replace(/[\\/:*?"<>|]/g, '_') || '设定对话'
+  link.href = url
+  link.download = `${safeName}-设定共创.md`
+  link.click()
+  window.setTimeout(() => URL.revokeObjectURL(url), 1000)
+}
+
+function htmlToPlainText(value: string) {
+  // 步骤 1：使用 HTML 解析器移除消息标签；步骤 2：整理空行并保留可读文本。
+  if (typeof DOMParser === 'undefined') return value.replace(/<[^>]*>/g, '')
+  const parsed = new DOMParser().parseFromString(value, 'text/html')
+  parsed.body.querySelectorAll('br').forEach((node) => node.replaceWith(document.createTextNode('\n')))
+  parsed.body.querySelectorAll('li').forEach((node) => node.insertBefore(document.createTextNode('• '), node.firstChild))
+  parsed.body.querySelectorAll('div, p, li').forEach((node) => node.appendChild(document.createTextNode('\n')))
+  return (parsed.body.textContent || '').replace(/[ \t]+\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim()
+}
+
+function sanitizeMessageHtml(value: string) {
+  // 步骤 1：只保留对话排版需要的标签与样式类；步骤 2：剥除脚本、事件属性和链接。
+  if (typeof DOMParser === 'undefined') {
+    return htmlToPlainText(value).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+  }
+  const parsed = new DOMParser().parseFromString(value, 'text/html')
+  const safeTags = new Set(['DIV', 'P', 'UL', 'LI', 'STRONG', 'BR', 'SPAN'])
+  const safeClasses = new Set(['thought-tag', 'question-highlight', 'question-list', 'memory-note', 'icon'])
+  const removedTags = new Set(['SCRIPT', 'STYLE', 'IFRAME', 'OBJECT', 'SVG', 'MATH'])
+  const output = document.createElement('div')
+
+  const appendSafeNode = (parent: HTMLElement, node: Node) => {
+    if (node.nodeType === Node.TEXT_NODE) {
+      parent.appendChild(document.createTextNode(node.textContent || ''))
+      return
+    }
+    if (!(node instanceof HTMLElement)) return
+    if (removedTags.has(node.tagName)) return
+    if (!safeTags.has(node.tagName)) {
+      Array.from(node.childNodes).forEach((child) => appendSafeNode(parent, child))
+      return
+    }
+    const clean = document.createElement(node.tagName.toLowerCase())
+    const allowedClasses = (node.getAttribute('class') || '').split(/\s+/).filter((name) => safeClasses.has(name))
+    if (allowedClasses.length) clean.className = allowedClasses.join(' ')
+    Array.from(node.childNodes).forEach((child) => appendSafeNode(clean, child))
+    parent.appendChild(clean)
+  }
+
+  Array.from(parsed.body.childNodes).forEach((node) => appendSafeNode(output, node))
+  return output.innerHTML
+}
+
 // 新建对话
 function handleNewChat() {
+  // 步骤 1：使未完成的会话切换响应失效；步骤 2：清理输入、消息和实时设定状态。
+  sessionRequestSequence += 1
   currentSession.value = null
   messages.value = []
   quickReplies.value = []
   settingDetail.value = null
   activeTargetId.value = null
+  activeTargetType.value = 'character'
+  inputMessage.value = ''
+  showPromptTemplates.value = false
 }
 
 // 滚动到底部
@@ -767,21 +966,44 @@ function extractPersonalityTags(text: string): string[] {
   return tags.slice(0, 6)
 }
 
-onMounted(() => {
-  // 步骤 1：同时恢复设定目录和最近会话，保证页面进入后即可续聊。
-  Promise.all([loadSettingIndex(), loadRecentSessions()])
+async function loadWorkspace(restoreLatestSession: boolean) {
+  // 步骤 1：固定当前项目并并行加载目录、历史；步骤 2：可选恢复最近一条会话。
+  const requestedProjectId = projectId.value
+  if (!requestedProjectId) return
+  const requestSequence = ++workspaceRequestSequence
+  await Promise.all([loadSettingIndex(), loadRecentSessions()])
+  if (requestSequence !== workspaceRequestSequence || projectId.value !== requestedProjectId) return
+  if (restoreLatestSession && !currentSession.value && recentSessions.value.length) {
+    await resumeSession(recentSessions.value[0])
+  }
+}
+
+onMounted(async () => {
+  // 步骤 1：确保项目状态已恢复；步骤 2：加载共创目录并恢复最近会话。
+  if (!projectStore.currentProject) await projectStore.loadDefaultProject()
+  if (!projectStore.currentProject) {
+    notify.warning('请先创建或选择一个小说项目')
+    return
+  }
+  await loadWorkspace(true)
 })
 
 watch(projectId, (newProjectId, oldProjectId) => {
-  if (!newProjectId || newProjectId === oldProjectId) return
+  if (newProjectId === oldProjectId) return
   // 步骤 1：切换项目后清空上一项目会话状态；步骤 2：重新加载新项目目录和历史。
+  sessionRequestSequence += 1
+  workspaceRequestSequence += 1
   currentSession.value = null
   messages.value = []
   quickReplies.value = []
   settingDetail.value = null
   activeTargetId.value = null
+  activeTargetType.value = 'character'
   recentSessions.value = []
-  void Promise.all([loadSettingIndex(), loadRecentSessions()])
+  settingIndex.value = null
+  inputMessage.value = ''
+  showPromptTemplates.value = false
+  if (newProjectId) void loadWorkspace(true)
 })
 </script>
 
@@ -1124,6 +1346,11 @@ watch(projectId, (newProjectId, oldProjectId) => {
   border-color: var(--border-strong);
 }
 
+.header-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
 /* 消息区 */
 .chat-messages {
   flex: 1;
@@ -1199,6 +1426,7 @@ watch(projectId, (newProjectId, oldProjectId) => {
   line-height: 1.7;
   color: var(--text-primary);
   position: relative;
+  overflow-wrap: anywhere;
 }
 
 .message.agent .msg-bubble {
@@ -1211,6 +1439,7 @@ watch(projectId, (newProjectId, oldProjectId) => {
   background: linear-gradient(135deg, rgba(99, 102, 241, 0.3), rgba(139, 92, 246, 0.3));
   border: 1px solid rgba(99, 102, 241, 0.4);
   border-top-right-radius: 4px;
+  white-space: pre-wrap;
 }
 
 /* Agent 消息内的富文本样式 */
@@ -1355,6 +1584,83 @@ watch(projectId, (newProjectId, oldProjectId) => {
   text-align: center;
   line-height: 1.6;
   opacity: 0.7;
+  max-width: 520px;
+}
+
+.empty-start-actions {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  width: min(680px, 100%);
+  margin-top: 8px;
+}
+
+.empty-start-card {
+  min-height: 76px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px;
+  text-align: left;
+  color: var(--text-primary);
+  background: rgba(255, 255, 255, 0.035);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease, transform 0.15s ease;
+}
+
+.empty-start-card:hover {
+  background: rgba(99, 102, 241, 0.1);
+  border-color: rgba(99, 102, 241, 0.45);
+  transform: translateY(-1px);
+}
+
+.empty-start-card:focus-visible,
+.prompt-template:focus-visible {
+  outline: 2px solid var(--border-strong);
+  outline-offset: 2px;
+}
+
+.empty-start-icon {
+  width: 34px;
+  height: 34px;
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+  background: rgba(99, 102, 241, 0.12);
+  border-radius: 9px;
+  font-size: 17px;
+}
+
+.empty-start-card strong,
+.empty-start-card small {
+  display: block;
+}
+
+.empty-start-card strong {
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.empty-start-card small {
+  margin-top: 4px;
+  color: var(--text-muted);
+  font-size: 10px;
+  line-height: 1.4;
+}
+
+.empty-start-arrow {
+  margin-left: auto;
+  color: var(--text-muted);
+  font-size: 20px;
+}
+
+.empty-start-note {
+  max-width: 560px;
+  color: var(--text-muted);
+  font-size: 10px;
+  text-align: center;
 }
 
 /* 输入区 */
@@ -1364,6 +1670,42 @@ watch(projectId, (newProjectId, oldProjectId) => {
   background: rgba(15, 22, 41, 0.6);
   backdrop-filter: blur(8px);
   flex-shrink: 0;
+}
+
+.prompt-template-panel {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin: 0 0 9px;
+  padding: 9px 10px;
+  background: rgba(99, 102, 241, 0.07);
+  border: 1px solid rgba(99, 102, 241, 0.2);
+  border-radius: 8px;
+}
+
+.prompt-template-heading {
+  width: 100%;
+  color: var(--text-muted);
+  font-size: 10px;
+}
+
+.prompt-template {
+  padding: 6px 9px;
+  color: var(--text-secondary);
+  background: rgba(255, 255, 255, 0.045);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  font-size: 10px;
+  line-height: 1.45;
+  text-align: left;
+  cursor: pointer;
+}
+
+.prompt-template:hover {
+  color: var(--text-primary);
+  border-color: var(--border-strong);
+  background: rgba(99, 102, 241, 0.12);
 }
 
 .input-wrapper {
@@ -1425,6 +1767,11 @@ watch(projectId, (newProjectId, oldProjectId) => {
   color: var(--text-secondary);
 }
 
+.tool-btn:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
 .send-btn {
   width: 32px;
   height: 32px;
@@ -1467,6 +1814,13 @@ watch(projectId, (newProjectId, oldProjectId) => {
   border-radius: 3px;
   font-size: 9px;
   font-family: 'JetBrains Mono', monospace;
+}
+
+@media (max-width: 900px) {
+  .empty-start-actions {
+    grid-template-columns: 1fr;
+    max-width: 420px;
+  }
 }
 
 /* ===== 右侧面板 ===== */
