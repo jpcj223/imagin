@@ -463,9 +463,17 @@ export async function updateUserPreferences(projectId: number, preferences: Reco
  * 步骤 1：请求项目范围内的记忆条目。
  * 步骤 2：限制单次返回数量，避免记忆中心加载过重。
  */
-export async function getLongTermMemoryItems(projectId: number, limit = 100) {
-  const { data } = await apiClient.get<{ items: LongTermMemoryItem[]; total: number }>('/agents/v3/memory/items', {
-    params: { project_id: projectId, limit },
+export async function getLongTermMemoryItems(
+  projectId: number,
+  options: { limit?: number; offset?: number; keyword?: string; memoryType?: string | null } = {},
+) {
+  const { limit = 100, offset = 0, keyword = '', memoryType } = options
+  const { data } = await apiClient.get<{
+    items: LongTermMemoryItem[]
+    total: number
+    all_total: number
+  }>('/agents/v3/memory/items', {
+    params: { project_id: projectId, limit, offset, keyword: keyword || undefined, memory_type: memoryType || undefined },
   })
-  return data.items
+  return data
 }

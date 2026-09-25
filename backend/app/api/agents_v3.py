@@ -18,6 +18,7 @@ from collections.abc import Iterator
 from fastapi import APIRouter
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
+from sqlalchemy import func, or_
 
 from app.agents_v3.persistence import WorkflowPersistence
 from app.agents_v3.presets import get_agent
@@ -470,28 +471,58 @@ def store_memory(payload: MemoryStoreRequest) -> dict:
 
 
 @router.get("/memory/items")
-def list_memory_items(project_id: int, limit: int = 100) -> dict:
+def list_memory_items(
+    project_id: int,
+    limit: int = 100,
+    offset: int = 0,
+    keyword: str | None = None,
+    memory_type: str | None = None,
+) -> dict:
     """按项目读取已沉淀的长期记忆条目。
 
-    步骤 1：把查询数量限制在合理范围，避免一次加载过多正文。
-    步骤 2：按项目隔离并优先返回近期更新、重要性高的记忆。
-    步骤 3：序列化为稳定响应，供长期记忆中心展示来源和内容。
+    步骤 1：把单页大小和偏移限制在合理范围，并限定当前项目。
+    步骤 2：在数据库侧按关键词和记忆类型筛选，统计筛选数与项目总数。
+    步骤 3：按近期更新和重要性排序并只返回当前页。
+    步骤 4：序列化为稳定响应，供长期记忆中心展示和分页。
     """
     from app.db.repository import rows_to_dicts
     from app.db.session import get_business_db
     from app.models.business import MemoryItem
 
     safe_limit = max(1, min(limit, 200))
+    safe_offset = max(0, offset)
     with get_business_db() as db:
+        base_query = db.query(MemoryItem).filter(MemoryItem.project_id == project_id)
+        all_total = base_query.with_entities(func.count(MemoryItem.id)).scalar() or 0
+        filtered_query = base_query
+        if memory_type:
+            if memory_type == "general":
+                filtered_query = filtered_query.filter(or_(
+                    MemoryItem.memory_type == "general",
+                    MemoryItem.memory_type.is_(None),
+                    MemoryItem.memory_type == "",
+                ))
+            else:
+                filtered_query = filtered_query.filter(MemoryItem.memory_type == memory_type)
+        search_term = (keyword or "").strip()
+        if search_term:
+            search_pattern = f"%{search_term}%"
+            filtered_query = filtered_query.filter(or_(
+                MemoryItem.title.ilike(search_pattern),
+                MemoryItem.content.ilike(search_pattern),
+                MemoryItem.content_summary.ilike(search_pattern),
+                MemoryItem.source_ref.ilike(search_pattern),
+            ))
+        total = filtered_query.with_entities(func.count(MemoryItem.id)).scalar() or 0
         rows = (
-            db.query(MemoryItem)
-            .filter(MemoryItem.project_id == project_id)
-            .order_by(MemoryItem.updated_at.desc(), MemoryItem.importance.desc())
+            filtered_query
+            .order_by(MemoryItem.updated_at.desc(), MemoryItem.importance.desc(), MemoryItem.id.desc())
             .limit(safe_limit)
+            .offset(safe_offset)
             .all()
         )
         items = rows_to_dicts(rows)
-    return {"items": items, "total": len(items)}
+    return {"items": items, "total": total, "all_total": all_total}
 
 
 @router.get("/memory/{memory_id}")

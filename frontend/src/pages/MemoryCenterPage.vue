@@ -30,11 +30,16 @@
           </div>
           <div class="stat-divider"></div>
           <div class="stat">
+            <span class="stat-num">{{ memoryItemTotal }}</span>
+            <span class="stat-label">长期条目</span>
+          </div>
+          <div class="stat-divider"></div>
+          <div class="stat">
             <span class="stat-num">{{ coverageRate }}%</span>
             <span class="stat-label">覆盖率</span>
           </div>
         </div>
-        <n-button @click="loadMemories">
+        <n-button @click="() => loadMemories()">
           <template #icon>🔄</template>
           刷新记忆
         </n-button>
@@ -48,7 +53,7 @@
         <div class="panel-head">
           <h2>{{ activeIndex === 'summaries' ? '摘要索引' : '长期记忆' }}</h2>
           <div class="index-actions">
-            <n-tag size="tiny" type="default">{{ activeIndex === 'summaries' ? filteredSummaries.length : filteredMemoryItems.length }} 条</n-tag>
+            <n-tag size="tiny" type="default">{{ activeIndex === 'summaries' ? filteredSummaries.length : memoryPageTotal }} 条</n-tag>
             <n-button size="tiny" secondary @click="switchIndex">
               {{ activeIndex === 'summaries' ? '查看记忆条目' : '查看章节摘要' }}
             </n-button>
@@ -59,6 +64,7 @@
             <template #prefix>🔍</template>
           </n-input>
           <n-select v-if="activeIndex === 'summaries'" v-model:value="chapterFilter" clearable :options="chapterOptions" placeholder="按章节筛选" />
+          <n-select v-else v-model:value="memoryTypeFilter" clearable :options="memoryTypeOptions" placeholder="按记忆类型筛选" />
         </div>
         <n-scrollbar class="list-scroll">
           <div v-if="loading" class="list-loading">
@@ -73,7 +79,7 @@
           <div v-else-if="activeIndex === 'items' && filteredMemoryItems.length === 0" class="list-empty">
             <div class="empty-icon">🧠</div>
             <p>暂无长期记忆条目</p>
-            <p class="empty-sub">章节分析提案审核通过后会沉淀到这里</p>
+            <p class="empty-sub">设定共创确认写回后、或章节变化审核通过后会沉淀到这里</p>
           </div>
           <template v-else>
             <div v-if="activeIndex === 'summaries'" class="summary-list">
@@ -110,6 +116,15 @@
             </div>
           </template>
         </n-scrollbar>
+        <div v-if="activeIndex === 'items' && memoryPageTotal > memoryPageSize" class="memory-pagination">
+          <n-pagination
+            :page="memoryPage"
+            :page-size="memoryPageSize"
+            :item-count="memoryPageTotal"
+            size="small"
+            @update:page="changeMemoryPage"
+          />
+        </div>
       </aside>
 
       <!-- 中间：记忆详情 -->
@@ -183,6 +198,8 @@
               <div class="card-content">
                 <p>来源类型：{{ sourceTypeLabel(selectedMemoryItem.source_type) }}</p>
                 <p>来源引用：{{ selectedMemoryItem.source_ref || '无' }}</p>
+                <p v-if="selectedMemoryMetadata.target_type">目标类型：{{ settingTargetLabel(String(selectedMemoryMetadata.target_type)) }}</p>
+                <p v-if="selectedMemoryMetadata.target_id">目标档案 ID：{{ selectedMemoryMetadata.target_id }}</p>
                 <p>记录 ID：{{ selectedMemoryItem.memory_id }}</p>
               </div>
             </div>
@@ -218,7 +235,7 @@
             </div>
             <div class="strategy-item ready">
               <strong>关键词过滤</strong>
-              <p>当前用 SQLite 普通查询结果做前端筛选，足够支撑轻量创作。</p>
+              <p>长期条目按关键词和类型在数据库侧筛选，再分页读取。</p>
             </div>
             <div class="strategy-item">
               <strong>未来向量检索边界</strong>
@@ -247,7 +264,7 @@
             </div>
             <div class="stat-cell">
               <span>长期条目</span>
-              <strong>{{ memoryItems.length }}</strong>
+              <strong>{{ memoryItemTotal }}</strong>
             </div>
           </div>
         </div>
@@ -282,7 +299,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { getChapterSummaries } from '@/api/agents'
 import { getLongTermMemoryItems, type LongTermMemoryItem } from '@/api/agentsV3'
 import { listResource } from '@/api/resources'
@@ -295,12 +312,21 @@ const projectStore = useProjectStore()
 const activeIndex = ref<'summaries' | 'items'>('summaries')
 const keyword = ref('')
 const chapterFilter = ref<number | null>(null)
+const memoryTypeFilter = ref<string | null>(null)
 const summaries = ref<ChapterSummary[]>([])
 const memoryItems = ref<LongTermMemoryItem[]>([])
+const memoryItemTotal = ref(0)
+const memoryPageTotal = ref(0)
+const memoryPage = ref(1)
+const memoryPageSize = 50
 const chapters = ref<ChapterItem[]>([])
 const selectedSummary = ref<ChapterSummary | null>(null)
 const selectedMemoryItem = ref<LongTermMemoryItem | null>(null)
 const loading = ref(false)
+const hasLoadedMemories = ref(false)
+let memoryLoadSequence = 0
+let currentProjectId: number | null = null
+let memoryFilterTimer: ReturnType<typeof setTimeout> | null = null
 
 const chapterOptions = computed(() =>
   chapters.value.map((item) => ({
@@ -308,6 +334,10 @@ const chapterOptions = computed(() =>
     value: item.chapter_no
   }))
 )
+const memoryTypeOptions = [
+  'character', 'relationship', 'organization', 'foreshadowing', 'foreshadow', 'world_setting',
+  'setting', 'general', 'timeline', 'timeline_event', 'chapter',
+].map((value) => ({ label: memoryTypeLabel(value), value }))
 
 const chapterCount = computed(() => chapters.value.length)
 const summaryCount = computed(() => summaries.value.length)
@@ -334,7 +364,8 @@ const filteredMemoryItems = computed(() => {
       .filter(Boolean)
       .join(' ')
       .toLowerCase()
-    return !text || haystack.includes(text)
+    const matchesType = !memoryTypeFilter.value || (item.memory_type || 'general') === memoryTypeFilter.value
+    return matchesType && (!text || haystack.includes(text))
   })
 })
 
@@ -383,6 +414,7 @@ function switchIndex() {
   activeIndex.value = activeIndex.value === 'summaries' ? 'items' : 'summaries'
   keyword.value = ''
   chapterFilter.value = null
+  memoryTypeFilter.value = null
   // 步骤 2：优先保留当前有效选择，否则选择新索引中的第一条。
   if (activeIndex.value === 'items' && !memoryItems.value.some((item) => item.memory_id === selectedMemoryItem.value?.memory_id)) {
     selectedMemoryItem.value = memoryItems.value[0] ?? null
@@ -392,6 +424,26 @@ function switchIndex() {
   }
 }
 
+watch([activeIndex, keyword, memoryTypeFilter], () => {
+  // 步骤 1：章节摘要使用本地过滤；长期条目使用全量数据库过滤并回到第一页。
+  if (activeIndex.value !== 'items' || !hasLoadedMemories.value) return
+  memoryPage.value = 1
+  if (memoryFilterTimer) clearTimeout(memoryFilterTimer)
+  memoryFilterTimer = setTimeout(() => {
+    void loadMemories(true)
+  }, 250)
+})
+
+const selectedMemoryMetadata = computed<Record<string, unknown>>(() => {
+  if (!selectedMemoryItem.value?.metadata_json) return {}
+  try {
+    const parsed = JSON.parse(selectedMemoryItem.value.metadata_json)
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {}
+  } catch {
+    return {}
+  }
+})
+
 function memoryTypeLabel(value: string | null | undefined) {
   const labels: Record<string, string> = {
     character: '人物记忆',
@@ -399,6 +451,8 @@ function memoryTypeLabel(value: string | null | undefined) {
     organization: '组织记忆',
     foreshadowing: '伏笔记忆',
     world_setting: '世界观记忆',
+    setting: '设定记忆',
+    general: '通用记忆',
     timeline: '时间线事件',
     timeline_event: '时间线事件',
     chapter: '章节记忆',
@@ -413,36 +467,84 @@ function sourceTypeLabel(value: string | null | undefined) {
     auto_generated: '自动生成',
     extracted: '内容提取',
     manual: '手动记录',
+    setting_co: '设定共创',
   }
   const key = value || ''
   return labels[key] || key || '未知来源'
 }
 
-async function loadMemories() {
-  const projectId = projectStore.currentProject!.id
+function settingTargetLabel(value: string) {
+  const labels: Record<string, string> = { character: '人物', world: '世界观', foreshadowing: '伏笔' }
+  return labels[value] || value || '未知'
+}
+
+async function loadMemories(silent = false) {
+  // 步骤 1：等待项目选择完成；步骤 2：并行读取章节、摘要和长期条目。
+  const projectId = projectStore.currentProject?.id
+  if (!projectId) return
+  if (currentProjectId !== projectId) {
+    // 步骤 1：切换项目时清除上一项目的选中项和分页状态。
+    currentProjectId = projectId
+    memoryPage.value = 1
+    selectedSummary.value = null
+    selectedMemoryItem.value = null
+    hasLoadedMemories.value = false
+    keyword.value = ''
+    chapterFilter.value = null
+    memoryTypeFilter.value = null
+  }
+  const requestSequence = ++memoryLoadSequence
   loading.value = true
   try {
-    const [chapterList, summaryList, memoryItemList] = await Promise.all([
+    const offset = activeIndex.value === 'items' ? (memoryPage.value - 1) * memoryPageSize : 0
+    const [chapterList, summaryList, memoryItemPage] = await Promise.all([
       listResource<ChapterItem>(projectId, 'chapters'),
       getChapterSummaries(projectId, 50),
-      getLongTermMemoryItems(projectId, 100),
+      getLongTermMemoryItems(projectId, {
+        limit: memoryPageSize,
+        offset,
+        keyword: activeIndex.value === 'items' ? keyword.value : '',
+        memoryType: activeIndex.value === 'items' ? memoryTypeFilter.value : null,
+      }),
     ])
+    if (requestSequence !== memoryLoadSequence || projectId !== projectStore.currentProject?.id) return
+    const memoryItemList = memoryItemPage.items
     chapters.value = chapterList
     summaries.value = summaryList
     memoryItems.value = memoryItemList
+    memoryItemTotal.value = memoryItemPage.all_total
+    memoryPageTotal.value = memoryItemPage.total
+    // 步骤 3：摘要为空但已有设定记忆时，首次进入直接展示有内容的索引。
+    if (!hasLoadedMemories.value && summaryList.length === 0 && memoryItemList.length > 0) {
+      activeIndex.value = 'items'
+    }
+    hasLoadedMemories.value = true
     if (!selectedSummary.value || !summaryList.some((item) => item.id === selectedSummary.value?.id)) {
       selectedSummary.value = summaryList[0] ?? null
     }
     if (!selectedMemoryItem.value || !memoryItemList.some((item) => item.memory_id === selectedMemoryItem.value?.memory_id)) {
       selectedMemoryItem.value = memoryItemList[0] ?? null
     }
-    notify.success('长期记忆已刷新')
+    if (!silent) notify.success('长期记忆已刷新')
+  } catch (error) {
+    if (requestSequence !== memoryLoadSequence) return
+    console.error('加载长期记忆失败', error)
+    notify.error('长期记忆加载失败，请稍后重试')
   } finally {
-    loading.value = false
+    if (requestSequence === memoryLoadSequence) loading.value = false
   }
 }
 
+async function changeMemoryPage(page: number) {
+  // 步骤 1：更新页码；步骤 2：静默加载当前页，避免翻页时弹出刷新提示。
+  memoryPage.value = page
+  await loadMemories(true)
+}
+
 useProjectDataLoader(loadMemories)
+onBeforeUnmount(() => {
+  if (memoryFilterTimer) clearTimeout(memoryFilterTimer)
+})
 </script>
 
 <style scoped>
@@ -593,6 +695,22 @@ useProjectDataLoader(loadMemories)
 .list-scroll {
   flex: 1;
   min-height: 0;
+}
+
+.memory-pagination {
+  display: flex;
+  justify-content: center;
+  padding: 10px 8px;
+  border-top: 1px solid var(--n-border-color, #2a2f3a);
+  flex-shrink: 0;
+}
+
+.memory-pagination {
+  display: flex;
+  justify-content: center;
+  padding: 10px 8px;
+  border-top: 1px solid var(--n-border-color, #2a2f3a);
+  flex-shrink: 0;
 }
 
 .list-loading {
