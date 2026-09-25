@@ -8,7 +8,7 @@
           <span>设定目录</span>
           <span class="ver-badge">L3 记忆</span>
         </div>
-        <div class="panel-subtitle">对话自动沉淀到项目记忆</div>
+        <div class="panel-subtitle">提取到字段后写回档案并沉淀记忆</div>
       </div>
 
       <div class="setting-groups">
@@ -73,12 +73,41 @@
             <div v-if="expandedGroups.foreshadowing" class="group-items">
               <div
                 v-for="item in settingIndex?.foreshadowing?.items || []"
-                :key="item.key"
-                class="setting-item disabled"
+                :key="item.id"
+                class="setting-item"
+                :class="{ active: activeTargetId === item.id && activeTargetType === 'foreshadowing' }"
+                @click="startChat('foreshadowing', item.id, item.name)"
               >
                 <span class="item-status" :class="item.status"></span>
-                <span class="item-name">{{ item.label }}</span>
+                <span class="item-name">{{ item.name }}</span>
+                <span class="item-completeness">{{ item.completeness }}%</span>
               </div>
+              <div v-if="!(settingIndex?.foreshadowing?.items || []).length" class="group-empty">暂无伏笔，请先在伏笔看板创建</div>
+            </div>
+          </transition>
+        </div>
+
+        <div class="setting-group">
+          <div class="group-header" @click="expandedGroups.sessions = !expandedGroups.sessions">
+            <span class="group-arrow" :class="{ expanded: expandedGroups.sessions }">▸</span>
+            <span class="group-icon">🕘</span>
+            <span>最近对话</span>
+            <span class="group-progress">{{ recentSessions.length }}</span>
+          </div>
+          <transition name="expand">
+            <div v-if="expandedGroups.sessions" class="group-items">
+              <div
+                v-for="session in recentSessions"
+                :key="session.session_id"
+                class="setting-item session-item"
+                :class="{ active: currentSession?.session_id === session.session_id }"
+                @click="resumeSession(session)"
+              >
+                <span class="item-status" :class="session.status === 'active' ? 'partial' : 'empty'"></span>
+                <span class="item-name">{{ session.target_name || session.title }}</span>
+                <span class="session-type">{{ settingTargetLabel(session.target_type) }}</span>
+              </div>
+              <div v-if="recentSessions.length === 0" class="group-empty">还没有历史对话</div>
             </div>
           </transition>
         </div>
@@ -93,7 +122,7 @@
           <span class="footer-icon">🧠</span>
           <div class="footer-text">
             <div class="footer-title">对话即记忆</div>
-            <div class="footer-desc">每次对话自动写入 L3 项目记忆</div>
+            <div class="footer-desc">提取到的字段会写回档案并沉淀为 L3 记忆</div>
           </div>
         </div>
       </div>
@@ -116,10 +145,10 @@
             <template v-if="currentSession">
               正在完善「{{ currentSession.target_name }}」的设定 ·
               完整度 {{ currentSession.completeness }}% ·
-              已写入 L3 项目记忆
+              {{ sessionHasMemory ? '本会话已沉淀项目记忆' : '等待提取可写入字段' }}
             </template>
             <template v-else>
-              选择左侧角色开始对话式设定完善
+            选择左侧人物、世界观或伏笔，开始对话式设定完善
             </template>
           </div>
         </div>
@@ -228,7 +257,7 @@
           实时设定卡片
         </div>
         <div class="right-subtitle">
-          {{ settingDetail?.name || '选择角色或世界观查看' }}
+          {{ settingDetail?.name || '选择人物、世界观或伏笔查看' }}
         </div>
       </div>
 
@@ -258,6 +287,40 @@
               <div class="field-value" :class="{ partial: !settingDetail[field.key] }">
                 {{ settingDetail[field.key] || '待补充...' }}
               </div>
+            </div>
+          </div>
+          <div class="card-footer-badge">
+            <span class="memory-level-badge l3">📁 L3 项目记忆</span>
+          </div>
+        </template>
+
+        <template v-else-if="settingDetail && currentSession?.target_type === 'foreshadowing'">
+          <div class="completeness">
+            <div class="completeness-header">
+              <span class="completeness-label">伏笔设定完整度</span>
+              <span class="completeness-value">{{ settingDetail.completeness || 0 }}%</span>
+            </div>
+            <div class="completeness-bar">
+              <div class="completeness-fill" :style="{ width: (settingDetail.completeness || 0) + '%' }"></div>
+            </div>
+          </div>
+          <div v-for="field in foreshadowingDetailFields" :key="field.key" class="setting-card" :class="{ 'just-updated': lastUpdatedField === field.key }">
+            <div class="card-header">
+              <span class="card-icon">{{ field.icon }}</span>
+              <span class="card-title">{{ field.label }}</span>
+              <span v-if="lastUpdatedField === field.key" class="card-badge">刚更新</span>
+            </div>
+            <div class="card-field">
+              <div class="field-value" :class="{ partial: !settingDetail[field.key] }">
+                {{ settingDetail[field.key] || '待补充...' }}
+              </div>
+            </div>
+          </div>
+          <div class="setting-card">
+            <div class="card-header"><span class="card-icon">⏳</span><span class="card-title">生命周期</span></div>
+            <div class="card-field">
+              <div class="field-value">{{ foreshadowingStatusLabel(settingDetail.status) }}</div>
+              <div class="field-label">计划回收章节：{{ settingDetail.payoff_chapter ? `第 ${settingDetail.payoff_chapter} 章` : '尚未安排' }}</div>
             </div>
           </div>
           <div class="card-footer-badge">
@@ -372,7 +435,7 @@
 
         <div v-else class="right-empty">
           <div class="right-empty-icon">📋</div>
-          <div>选择左侧角色或世界观查看设定</div>
+          <div>选择左侧人物、世界观或伏笔查看设定</div>
         </div>
       </div>
     </div>
@@ -380,12 +443,13 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, nextTick, onMounted } from 'vue'
+import { ref, computed, nextTick, onMounted, watch } from 'vue'
 import { useProjectStore } from '@/stores/project'
 import {
   getSettingIndex,
   createSession,
   getSession,
+  listSessions,
   sendMessage,
   getSettingDetail,
   type SettingChatSession,
@@ -398,6 +462,7 @@ const projectId = computed(() => projectStore.currentProject?.id || 1)
 
 // 状态
 const settingIndex = ref<SettingIndexResponse | null>(null)
+const recentSessions = ref<SettingChatSession[]>([])
 const currentSession = ref<SettingChatSession | null>(null)
 const messages = ref<SettingChatMessage[]>([])
 const quickReplies = ref<string[]>([])
@@ -407,11 +472,15 @@ const activeTargetType = ref('character')
 const activeTargetId = ref<number | null>(null)
 const settingDetail = ref<Record<string, any> | null>(null)
 const lastUpdatedField = ref<string | null>(null)
+const sessionHasMemory = computed(() => messages.value.some(
+  (message) => message.role === 'assistant' && message.memory_written === 1
+))
 
 const expandedGroups = ref({
   characters: true,
   world: false,
   foreshadowing: false,
+  sessions: false,
 })
 
 const messagesRef = ref<HTMLElement | null>(null)
@@ -424,6 +493,24 @@ const worldDetailFields = [
   { key: 'synopsis', label: '世界观简介', icon: '🗺️' },
   { key: 'core_rules', label: '核心规则', icon: '📏' },
 ]
+const foreshadowingDetailFields = [
+  { key: 'keyword', label: '线索关键词', icon: '🔎' },
+  { key: 'description', label: '线索内容', icon: '🧩' },
+  { key: 'notes', label: '作者备注', icon: '🗒️' },
+]
+
+function foreshadowingStatusLabel(status: string) {
+  const labels: Record<string, string> = {
+    pending: '待埋设', planted: '已埋设', developing: '发展中',
+    payoff_pending: '待回收', resolved: '已回收', abandoned: '已废弃',
+  }
+  return labels[status] || status || '未设置'
+}
+
+function settingTargetLabel(targetType: string) {
+  const labels: Record<string, string> = { character: '人物', world: '世界', foreshadowing: '伏笔' }
+  return labels[targetType] || '设定'
+}
 
 // 加载设定目录
 async function loadSettingIndex() {
@@ -432,6 +519,16 @@ async function loadSettingIndex() {
     settingIndex.value = data
   } catch (e) {
     console.error('加载设定目录失败', e)
+  }
+}
+
+// 加载最近会话，方便离开页面后继续之前的设定讨论。
+async function loadRecentSessions() {
+  try {
+    const result = await listSessions(projectId.value)
+    recentSessions.value = result.sessions
+  } catch (e) {
+    console.error('加载最近设定对话失败', e)
   }
 }
 
@@ -464,6 +561,9 @@ async function startChat(targetType: string, targetId: number, targetName: strin
     ]
     quickReplies.value = result.opening.quick_replies || []
 
+    // 步骤 1：新会话立即出现在历史列表；步骤 2：继续加载关联档案。
+    await loadRecentSessions()
+
     // 加载设定详情
     await loadSettingDetail()
 
@@ -471,6 +571,22 @@ async function startChat(targetType: string, targetId: number, targetName: strin
     nextTick(scrollToBottom)
   } catch (e) {
     console.error('创建会话失败', e)
+  }
+}
+
+// 恢复历史会话与它绑定的人物、世界观或伏笔档案。
+async function resumeSession(session: SettingChatSession) {
+  try {
+    const result = await getSession(session.session_id)
+    currentSession.value = result.session
+    messages.value = result.messages
+    activeTargetType.value = result.session.target_type
+    activeTargetId.value = result.session.target_id
+    quickReplies.value = []
+    await loadSettingDetail()
+    nextTick(scrollToBottom)
+  } catch (e) {
+    console.error('恢复设定对话失败', e)
   }
 }
 
@@ -546,7 +662,7 @@ async function handleSend() {
     }
 
     // 刷新目录（完整度可能变了）
-    loadSettingIndex()
+    await Promise.all([loadSettingIndex(), loadRecentSessions()])
   } catch (e) {
     console.error('发送消息失败', e)
     messages.value.push({
@@ -652,7 +768,20 @@ function extractPersonalityTags(text: string): string[] {
 }
 
 onMounted(() => {
-  loadSettingIndex()
+  // 步骤 1：同时恢复设定目录和最近会话，保证页面进入后即可续聊。
+  Promise.all([loadSettingIndex(), loadRecentSessions()])
+})
+
+watch(projectId, (newProjectId, oldProjectId) => {
+  if (!newProjectId || newProjectId === oldProjectId) return
+  // 步骤 1：切换项目后清空上一项目会话状态；步骤 2：重新加载新项目目录和历史。
+  currentSession.value = null
+  messages.value = []
+  quickReplies.value = []
+  settingDetail.value = null
+  activeTargetId.value = null
+  recentSessions.value = []
+  void Promise.all([loadSettingIndex(), loadRecentSessions()])
 })
 </script>
 
@@ -757,6 +886,13 @@ onMounted(() => {
   padding-left: 24px;
 }
 
+.group-empty {
+  padding: 7px 8px;
+  color: var(--text-muted);
+  font-size: 10px;
+  line-height: 1.5;
+}
+
 .setting-item {
   display: flex;
   align-items: center;
@@ -805,6 +941,12 @@ onMounted(() => {
   font-size: 9px;
   color: var(--text-muted);
   font-family: 'JetBrains Mono', monospace;
+}
+
+.session-type {
+  flex-shrink: 0;
+  color: var(--text-muted);
+  font-size: 9px;
 }
 
 .new-chat-btn {

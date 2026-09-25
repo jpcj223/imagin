@@ -9,9 +9,8 @@ import uuid
 from typing import Any
 
 from app.core.llm import chat_completion
-from app.memory.manager import MemoryManager
 from app.db.session import get_business_db
-from app.models.business import Character, SettingChatMessage, WorldSetting
+from app.models.business import Character, Foreshadowing, MemoryItem, SettingChatMessage, WorldSetting
 from app.db.repository import row_to_dict
 
 
@@ -40,9 +39,9 @@ SETTING_FIELD_TEMPLATES: dict[str, list[dict[str, Any]]] = {
         {"key": "core_rules", "label": "核心规则", "category": "规则", "priority": 2},
     ],
     "foreshadowing": [
-        {"key": "main_plot", "label": "主线伏笔", "category": "主线", "priority": 1},
-        {"key": "character_secrets", "label": "人物秘密", "category": "人物", "priority": 2},
-        {"key": "world_mysteries", "label": "世界谜团", "category": "世界", "priority": 3},
+        {"key": "keyword", "label": "线索关键词", "category": "识别", "priority": 1},
+        {"key": "description", "label": "线索内容", "category": "内容", "priority": 1},
+        {"key": "notes", "label": "作者备注", "category": "幕后", "priority": 2},
     ],
 }
 
@@ -56,7 +55,6 @@ class SettingCoAgent:
     def __init__(self, project_id: int, user_id: int = 1):
         self.project_id = project_id
         self.user_id = user_id
-        self.memory = MemoryManager(project_id, user_id)
 
     # ------------------------------------------------------------------
     # 生成开场白
@@ -212,26 +210,10 @@ class SettingCoAgent:
         # 2. 如果有提取到的设定，写入数据库和记忆
         memory_written = False
         if extracted and target_id:
-            self._apply_extracted_fields(target_type, target_id, extracted)
-            # 步骤 1：将本轮确认提取出的事实实际写入项目记忆，再向界面报告成功。
-            memory_content = "\n".join(
-                f"{field.get('label') or field.get('key')}：{field.get('value')}"
-                for field in extracted
+            # 步骤 1：目标档案和 L3 记忆在一个事务中更新；两者成功后才报告已沉淀。
+            memory_written = self._apply_extracted_fields(
+                target_type, target_id, extracted, session_id, target_name
             )
-            try:
-                self.memory.store_memory(
-                    memory_type="setting",
-                    title=f"{target_name or '设定'}设定补充",
-                    content=memory_content,
-                    importance=75,
-                    source_type="setting_co",
-                    source_ref=session_id,
-                    metadata={"target_type": target_type, "target_id": target_id},
-                )
-                memory_written = True
-            except Exception as exc:
-                # 步骤 2：记忆写入失败不回滚已保存的设定字段，也不伪报成功。
-                print(f"[SettingCoAgent] 写入项目记忆失败: {exc}")
 
         # 3. 生成回复
         reply_result = self._generate_reply(
@@ -345,14 +327,28 @@ highlights 是可选的，如果提取的内容有特殊价值（如伏笔潜力
             result = json.loads(result_text)
             extracted = result.get("extracted", [])
 
-            # 过滤掉无效项
-            valid_keys = {f["key"] for f in fields}
-            extracted = [
-                e for e in extracted
-                if e.get("key") in valid_keys and e.get("value")
-            ]
-
-            return extracted
+            # 步骤 1：只接纳模板内字段，并把模型输出规范成稳定的字符串结构。
+            field_by_key = {field["key"]: field for field in fields}
+            normalized = []
+            for item in extracted if isinstance(extracted, list) else []:
+                if not isinstance(item, dict):
+                    continue
+                key = str(item.get("key") or "")
+                template = field_by_key.get(key)
+                value = item.get("value")
+                if not template or not isinstance(value, (str, int, float)) or not str(value).strip():
+                    continue
+                # 步骤 2：字段名称使用系统模板，避免模型输出错误标签导致保存或展示失败。
+                normalized.append({
+                    "key": key,
+                    "label": template["label"],
+                    "category": template["category"],
+                    "value": str(value).strip(),
+                    "confidence": item.get("confidence", 0.7),
+                    "highlights": [str(tag) for tag in item.get("highlights", []) if isinstance(tag, (str, int, float))]
+                    if isinstance(item.get("highlights", []), list) else [],
+                })
+            return normalized
 
         except Exception as e:
             # LLM 调用失败时返回空
@@ -387,8 +383,8 @@ highlights 是可选的，如果提取的内容有特殊价值（如伏笔潜力
             summary_parts = []
             for cat, items in by_category.items():
                 items_html = "".join(
-                    f"· {e['label']}：{e['value'][:80]}"
-                    f"{'（' + '、'.join(e['highlights']) + '）' if e.get('highlights') else ''}<br>"
+                    f"· {e.get('label') or e.get('key', '设定')}：{str(e.get('value', ''))[:80]}"
+                    f"{'（' + '、'.join(str(tag) for tag in e['highlights']) + '）' if e.get('highlights') else ''}<br>"
                     for e in items
                 )
                 summary_parts.append(
@@ -461,17 +457,34 @@ highlights 是可选的，如果提取的内容有特殊价值（如伏笔潜力
         target_type: str,
         target_id: int,
         extracted: list[dict[str, Any]],
-    ) -> None:
-        """将提取到的字段写入数据库。"""
-        if target_type not in {"character", "world"}:
-            return
+        session_id: str,
+        target_name: str,
+    ) -> bool:
+        """在同一事务内更新目标档案并合并本会话的项目记忆。
+
+        步骤 1：按项目校验目标记录并选择允许更新的字段。
+        步骤 2：将提取值写回对应档案，忽略未知字段和空内容。
+        步骤 3：按会话查找或创建一条记忆，并合并各轮确认字段。
+        步骤 4：一次性提交档案与记忆，避免界面出现半成功状态。
+        """
+        if target_type not in {"character", "world", "foreshadowing"}:
+            return False
+
+        memory_type_by_target = {
+            "character": "character",
+            "world": "world_setting",
+            "foreshadowing": "foreshadowing",
+        }
 
         with get_business_db() as db:
             if target_type == "character":
-                target = db.query(Character).filter(Character.id == target_id).first()
+                target = db.query(Character).filter(
+                    Character.id == target_id,
+                    Character.project_id == self.project_id,
+                ).first()
                 field_mapping = {field["key"]: field["key"] for field in SETTING_FIELD_TEMPLATES["character"]}
                 replace_fields = {"name"}
-            else:
+            elif target_type == "world":
                 target = (
                     db.query(WorldSetting)
                     .filter(
@@ -490,26 +503,106 @@ highlights 是可选的，如果提取的内容有特殊价值（如伏笔潜力
                     "core_rules": "extra",
                 }
                 replace_fields = {"name", "era", "power_system", "atmosphere"}
+            else:
+                target = db.query(Foreshadowing).filter(
+                    Foreshadowing.id == target_id,
+                    Foreshadowing.project_id == self.project_id,
+                ).first()
+                field_mapping = {"keyword": "keyword", "description": "description", "notes": "notes"}
+                replace_fields = {"keyword"}
 
             if not target:
-                return
+                return False
 
+            persisted_fields: dict[str, str] = {}
             for field in extracted:
-                key = field["key"]
-                value = field["value"]
+                key = str(field.get("key") or "")
+                value = str(field.get("value") or "").strip()
                 column = field_mapping.get(key)
-                if not column or not hasattr(target, column):
+                if not value or not column or not hasattr(target, column):
                     continue
 
                 # 步骤 2：名称和概要字段采用最新明确回答；长文本字段保留已记录的补充事实。
                 current_value = getattr(target, column) or ""
-                if key in replace_fields or not current_value or value in current_value:
+                if key in replace_fields or not current_value:
                     merged_value = value
+                elif value in current_value:
+                    merged_value = current_value
                 else:
                     merged_value = f"{current_value}\n{value}"
                 setattr(target, column, merged_value)
+                template = next(
+                    (item for item in SETTING_FIELD_TEMPLATES[target_type] if item["key"] == key),
+                    None,
+                )
+                persisted_fields[key] = value
+                field["label"] = field.get("label") or (template["label"] if template else key)
 
+            if not persisted_fields:
+                return False
+
+            # 步骤 3：同一会话始终维护一条结构化记忆，避免每轮对话生成重复条目。
+            memory_type = memory_type_by_target[target_type]
+            memory = db.query(MemoryItem).filter(
+                MemoryItem.project_id == self.project_id,
+                MemoryItem.user_id == self.user_id,
+                MemoryItem.source_type == "setting_co",
+                MemoryItem.source_ref == session_id,
+                # 步骤 1：兼容旧版统一使用 setting 类型的共创记忆，并在续聊时升级为具体类型。
+                MemoryItem.memory_type.in_([memory_type, "setting"]),
+            ).first()
+            metadata: dict[str, Any] = {}
+            if memory and memory.metadata_json:
+                try:
+                    metadata = json.loads(memory.metadata_json)
+                except (TypeError, json.JSONDecodeError):
+                    metadata = {}
+            field_values = metadata.get("field_values", {})
+            if not isinstance(field_values, dict):
+                field_values = {}
+            labels = metadata.get("field_labels", {})
+            if not isinstance(labels, dict):
+                labels = {}
+            for field in extracted:
+                key = str(field.get("key") or "")
+                if key in persisted_fields:
+                    field_values[key] = persisted_fields[key]
+                    labels[key] = field.get("label") or key
+            memory_content = "\n".join(
+                f"{labels.get(key, key)}：{value}" for key, value in field_values.items()
+            )
+            memory_metadata = {
+                "target_type": target_type,
+                "target_id": target_id,
+                "field_values": field_values,
+                "field_labels": labels,
+            }
+            memory_title = f"{target_name or '设定'}设定记忆"
+            if memory:
+                memory.memory_type = memory_type
+                memory.title = memory_title
+                memory.content = memory_content
+                memory.content_summary = memory_content[:240]
+                memory.metadata_json = json.dumps(memory_metadata, ensure_ascii=False)
+                memory.importance = 75
+            else:
+                db.add(MemoryItem(
+                    memory_id=str(uuid.uuid4()),
+                    project_id=self.project_id,
+                    user_id=self.user_id,
+                    memory_type=memory_type,
+                    title=memory_title,
+                    content=memory_content,
+                    content_summary=memory_content[:240],
+                    importance=75,
+                    source_type="setting_co",
+                    source_ref=session_id,
+                    metadata_json=json.dumps(memory_metadata, ensure_ascii=False),
+                ))
+
+            # 步骤 4：目标不存在或没有有效提取值时不会报告写入成功。
             db.commit()
+            return True
 
     @staticmethod
     def _world_data_from_row(world: WorldSetting) -> dict[str, Any]:
@@ -558,7 +651,10 @@ highlights 是可选的，如果提取的内容有特殊价值（如伏笔潜力
         """获取设定对象的详细数据。"""
         if target_type == "character":
             with get_business_db() as db:
-                char = db.query(Character).filter(Character.id == target_id).first()
+                char = db.query(Character).filter(
+                    Character.id == target_id,
+                    Character.project_id == self.project_id,
+                ).first()
                 if not char:
                     return {}
                 data = row_to_dict(char)
@@ -580,5 +676,17 @@ highlights 是可选的，如果提取的内容有特殊价值（如伏笔潜力
                     return {}
                 data = self._world_data_from_row(world)
                 data["completeness"] = self.calculate_completeness("world", data)
+                return data
+        if target_type == "foreshadowing":
+            with get_business_db() as db:
+                item = db.query(Foreshadowing).filter(
+                    Foreshadowing.id == target_id,
+                    Foreshadowing.project_id == self.project_id,
+                ).first()
+                if not item:
+                    return {}
+                data = row_to_dict(item)
+                data["name"] = item.keyword
+                data["completeness"] = self.calculate_completeness("foreshadowing", data)
                 return data
         return {}

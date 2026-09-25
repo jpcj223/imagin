@@ -19,6 +19,7 @@ from app.models.business import (
     SettingChatSession,
     SettingChatMessage,
     Character,
+    Foreshadowing,
     WorldSetting,
 )
 from app.db.repository import row_to_dict, rows_to_dicts
@@ -67,7 +68,15 @@ def list_sessions(project_id: int, target_type: str | None = None):
 
 @router.post("/sessions")
 def create_session(req: CreateSessionRequest):
-    """创建新的设定共创会话。"""
+    """创建新的设定共创会话。
+
+    步骤 1：限制会话目标类型并验证目标属于当前项目。
+    步骤 2：世界观总览在不存在时创建，其余目标必须选择现有档案。
+    步骤 3：保存会话及开场消息，并返回目标当前缺失字段。
+    """
+    if req.target_type not in {"character", "world", "foreshadowing"}:
+        raise HTTPException(status_code=422, detail="不支持的设定类型")
+
     session_id = f"sc_{uuid.uuid4().hex[:16]}"
     target_id = req.target_id
     target_name = req.target_name
@@ -98,15 +107,28 @@ def create_session(req: CreateSessionRequest):
                 db.add(world)
                 db.flush()
             target_id = world.id
-            target_name = target_name or world.title or "世界观总览"
-        elif req.target_type == "character" and target_id and not target_name:
+            target_name = world.title or target_name or "世界观总览"
+        elif req.target_type == "character":
+            if not target_id:
+                raise HTTPException(status_code=422, detail="请先选择一个角色档案")
             char = (
                 db.query(Character)
                 .filter(Character.id == target_id, Character.project_id == req.project_id)
                 .first()
             )
-            if char:
-                target_name = char.name
+            if not char:
+                raise HTTPException(status_code=404, detail="角色不存在或不属于当前项目")
+            target_name = char.name
+        elif req.target_type == "foreshadowing":
+            if not target_id:
+                raise HTTPException(status_code=422, detail="请先选择一条伏笔线索")
+            item = db.query(Foreshadowing).filter(
+                Foreshadowing.id == target_id,
+                Foreshadowing.project_id == req.project_id,
+            ).first()
+            if not item:
+                raise HTTPException(status_code=404, detail="伏笔不存在或不属于当前项目")
+            target_name = item.keyword
 
         # 步骤 2：创建会话并保留目标记录 ID，后续回答才能准确写回。
         session = SettingChatSession(
@@ -133,6 +155,8 @@ def create_session(req: CreateSessionRequest):
                 existing_data = row_to_dict(char)
         elif req.target_type == "world" and target_id:
             existing_data = agent.get_setting_detail("world", target_id)
+        elif req.target_type == "foreshadowing" and target_id:
+            existing_data = agent.get_setting_detail("foreshadowing", target_id)
 
         opening = agent.generate_opening(
             target_type=req.target_type,
@@ -244,10 +268,10 @@ def send_message(session_id: str, req: SendMessageRequest):
             )
         except Exception as e:
             traceback.print_exc()
-            # 出错时返回友好提示
+            # 步骤 1：内部保留错误日志；步骤 2：界面只收到可恢复提示，不暴露服务细节。
             result = {
-                "reply": f"抱歉，处理时出了点问题：{str(e)}\n\n你可以重新描述一下，或者换个话题继续聊～",
-                "thought": f"Error: {str(e)}",
+                "reply": "抱歉，本轮设定整理暂时失败。刚才的消息已保留，你可以稍后重试。",
+                "thought": "本轮设定整理失败，未确认任何字段写回。",
                 "extracted_fields": [],
                 "memory_written": False,
                 "quick_replies": ["重新描述一下", "换个话题"],
@@ -267,7 +291,7 @@ def send_message(session_id: str, req: SendMessageRequest):
         db.add(assistant_msg)
 
         # 步骤 1：根据已写回的目标资料刷新会话完整度。
-        if session.target_type in {"character", "world"} and session.target_id:
+        if session.target_type in {"character", "world", "foreshadowing"} and session.target_id:
             detail = agent.get_setting_detail(session.target_type, session.target_id)
             session.completeness = detail.get("completeness", session.completeness)
 
@@ -277,7 +301,7 @@ def send_message(session_id: str, req: SendMessageRequest):
 
         # 返回最新的设定数据（供右侧卡片更新）
         setting_detail = {}
-        if session.target_type in {"character", "world"} and session.target_id:
+        if session.target_type in {"character", "world", "foreshadowing"} and session.target_id:
             setting_detail = agent.get_setting_detail(
                 session.target_type, session.target_id
             )
@@ -394,13 +418,34 @@ def get_setting_index(project_id: int):
             ],
         }
 
-    # 伏笔
+    # 步骤 1：把实际伏笔档案作为共创目标，而不是展示不可点击的静态字段。
+    with get_business_db() as db:
+        foreshadowings = (
+            db.query(Foreshadowing)
+            .filter(Foreshadowing.project_id == project_id)
+            .order_by(Foreshadowing.updated_at.desc(), Foreshadowing.id.desc())
+            .limit(100)
+            .all()
+        )
+        foreshadowing_items = []
+        for item in foreshadowings:
+            detail = row_to_dict(item)
+            completeness = agent.calculate_completeness("foreshadowing", detail)
+            status = "complete" if completeness >= 80 else "partial" if completeness >= 30 else "empty"
+            foreshadowing_items.append({
+                "id": item.id,
+                "name": item.keyword,
+                "completeness": completeness,
+                "status": status,
+                "lifecycle_status": item.status,
+            })
+
     result["foreshadowing"] = {
-        "completeness": 20,
-        "items": [
-            {"key": "main_plot", "label": "主线伏笔", "status": "empty"},
-            {"key": "character_secrets", "label": "人物秘密", "status": "empty"},
-        ],
+        "completeness": (
+            int(sum(item["completeness"] for item in foreshadowing_items) / len(foreshadowing_items))
+            if foreshadowing_items else 0
+        ),
+        "items": foreshadowing_items,
     }
 
     return result

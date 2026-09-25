@@ -46,6 +46,10 @@ export interface SettingIndexItem {
   status: 'complete' | 'partial' | 'empty'
 }
 
+export interface SettingForeshadowingIndexItem extends SettingIndexItem {
+  lifecycle_status: string
+}
+
 export interface SettingIndexResponse {
   characters: SettingIndexItem[]
   character_count: number
@@ -58,7 +62,7 @@ export interface SettingIndexResponse {
   }
   foreshadowing: {
     completeness: number
-    items: { key: string; label: string; status: string }[]
+    items: SettingForeshadowingIndexItem[]
   }
 }
 
