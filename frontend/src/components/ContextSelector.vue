@@ -575,6 +575,7 @@ function foreshadowingStatusLabel(status: string): string {
     pending: '待埋',
     planted: '已埋',
     developing: '发展中',
+    payoff_pending: '待回收',
     resolved: '已回收',
     abandoned: '已废弃',
   }

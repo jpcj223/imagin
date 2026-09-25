@@ -244,11 +244,11 @@ class MemoryRetriever:
             return items
 
     def _get_foreshadowings(self, query: str = "", top_k: int = 8) -> list[dict]:
-        """获取相关伏笔（待埋+已埋+发展中）。"""
+        """获取相关伏笔（待埋、已埋、发展中和待回收）。"""
         with get_business_db() as db:
             query_obj = db.query(Foreshadowing).filter(
                 Foreshadowing.project_id == self.project_id,
-                Foreshadowing.status.in_(["pending", "planted", "developing"]),
+                Foreshadowing.status.in_(["pending", "planted", "developing", "payoff_pending"]),
             )
 
             if query:

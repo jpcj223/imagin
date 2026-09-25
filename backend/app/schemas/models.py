@@ -163,12 +163,15 @@ class ForeshadowingSave(BaseModel):
     project_id: int = Field(description="所属项目 ID")
     keyword: str = Field(description="伏笔关键词，用于快速识别")
     description: str = Field(description="伏笔内容、出现方式和意义")
-    status: str = Field(default="pending", description="状态：pending/planted/developing/resolved/abandoned")
-    importance: str = Field(default="medium", description="重要性：low/medium/high")
-    planted_chapter: int | None = Field(default=None, description="首次埋下伏笔的章节号")
-    payoff_chapter: int | None = Field(default=None, description="计划或实际回收伏笔的章节号")
-    effective_from: int | None = Field(default=None, description="伏笔开始生效的章节号")
-    expires_at: int | None = Field(default=None, description="伏笔过期或失效章节号")
+    status: Literal["pending", "planted", "developing", "payoff_pending", "resolved", "abandoned"] = Field(
+        default="pending",
+        description="状态：待埋设、已埋设、发展中、待回收、已回收、废弃",
+    )
+    importance: Literal["low", "medium", "high"] = Field(default="medium", description="重要性：low/medium/high")
+    planted_chapter: int | None = Field(default=None, ge=1, description="首次埋下伏笔的章节号")
+    payoff_chapter: int | None = Field(default=None, ge=1, description="计划回收伏笔的章节号")
+    effective_from: int | None = Field(default=None, ge=1, description="伏笔开始生效的章节号")
+    expires_at: int | None = Field(default=None, ge=1, description="伏笔过期或失效章节号")
     notes: str = Field(default="", description="备注信息")
     related_character_ids: str = Field(default="", description="关联角色 ID，逗号分隔")
     related_organization_ids: str = Field(default="", description="关联组织 ID，逗号分隔")

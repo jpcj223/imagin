@@ -52,7 +52,7 @@ class CoreAnalysisSkill(BaseSkill):
 3. 人物 changes 只使用人物卡字段：name、role_type、mbti、mbti_primary、mbti_secondary、appearance、personality、background、motivation、arc、identity、faction、weakness、secret、dialogue_style、ai_notes、status。
 4. 组织 changes 只使用组织资料字段：parent_id、name、org_type、location、slogan、description、level、power_level、member_count、status、hierarchy、resources、goal、core_members、impact、risk_notes、hidden_secrets、active_from_chapter、disbanded_chapter、hierarchy_system、hierarchy_levels。
 5. 组织同盟/敌对关系变化单独写入 organization_relations；source_name 和 target_name 必须是上下文中的组织名称，relation_type 只能是 alliance 或 hostility。已有组织对关系更新时用 update，并填写 target_effective_from_chapter 以定位原关系；不允许把旧的 allies/enemies 文本字段当作结构化关系变化。
-6. 伏笔 changes 只使用 keyword、description、status、importance、planted_chapter、payoff_chapter、effective_from、expires_at、notes、related_character_ids、related_organization_ids、related_outline_ids、replaced_by_id。
+6. 伏笔 changes 只使用 keyword、description、status、importance、planted_chapter、payoff_chapter、effective_from、expires_at、notes、related_character_ids、related_organization_ids、related_outline_ids、replaced_by_id。status 只能是 pending、planted、developing、payoff_pending、resolved、abandoned；resolved 表示正文已明确完成回收。
 7. 世界观 changes 只使用 era、geography、atmosphere、rules、extra、title、category、tags、importance、related_chapters、related_characters、related_organizations、related_foreshadowings、conflict_notes。
    category 使用 geography、era、power_system、rules、items、weapons、medicine、creatures、organizations、other 之一。
 8. relationships 描述人物关系新增或明确变化；已有 source-target 关系变化时使用 update，相同关系不要重复提出；人物名必须与上下文资料或正文中的明确新人物一致，不编造数据库 ID。

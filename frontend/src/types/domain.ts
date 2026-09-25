@@ -444,6 +444,8 @@ export interface OrganizationHistory {
   created_at: string | null
 }
 
+export type ForeshadowingStatus = 'pending' | 'planted' | 'developing' | 'payoff_pending' | 'resolved' | 'abandoned'
+
 export interface ForeshadowingItem {
   /** 伏笔 ID。 */
   id: number
@@ -453,13 +455,13 @@ export interface ForeshadowingItem {
   keyword: string
   /** 伏笔内容、出现方式和意义。 */
   description: string
-  /** 状态：pending/planted/developing/resolved/abandoned。 */
-  status: string
+  /** 状态：待埋设、已埋设、发展中、待回收、已回收、废弃。 */
+  status: ForeshadowingStatus
   /** 重要性：low/medium/high。 */
   importance: string
   /** 首次埋下伏笔的章节号。 */
   planted_chapter: number | null
-  /** 计划或实际回收伏笔的章节号。 */
+  /** 计划回收伏笔的章节号。 */
   payoff_chapter: number | null
   /** 伏笔开始生效的章节号。 */
   effective_from: number | null

@@ -119,7 +119,7 @@ def build_chapter_context(project_id: int, chapter_no: int, outline_id: int | No
             db.query(Foreshadowing)
             .filter(
                 Foreshadowing.project_id == project_id,
-                Foreshadowing.status.in_(["pending", "planted", "developing"]),
+                Foreshadowing.status.in_(["pending", "planted", "developing", "payoff_pending"]),
             )
             .order_by(desc(Foreshadowing.importance), desc(Foreshadowing.id))
             .limit(12)

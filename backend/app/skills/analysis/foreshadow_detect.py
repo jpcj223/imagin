@@ -29,6 +29,8 @@ class ForeshadowDetectSkill(BaseSkill):
 【伏笔分析要求】
 - 识别本章新埋设的伏笔，给出关键词和描述
 - 识别本章推进了哪些已有伏笔，状态如何变化
+- 伏笔状态只使用 pending、planted、developing、payoff_pending、resolved、abandoned
+- 只有正文明确完成回收时才标记 resolved；尚待揭示或收束的线索标记 payoff_pending
 - 判断伏笔的重要程度（高/中/低）
 - 推测伏笔可能的回收时机
 """.strip()

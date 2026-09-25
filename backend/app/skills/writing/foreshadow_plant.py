@@ -29,6 +29,7 @@ class ForeshadowPlantSkill(BaseSkill):
 【伏笔要求】
 - 本章涉及的伏笔要自然融入剧情，不要生硬地提及
 - 待埋伏笔可以适当埋设，已埋设的伏笔可以推进发展
+- 待回收伏笔应优先承接已有铺垫；若本章没有回收计划，不要强行揭晓
 - 伏笔的揭示要有节奏，不要一口气全说出来
 - 注意伏笔的前后呼应，不要前后矛盾
 """.strip()
@@ -45,6 +46,7 @@ class ForeshadowPlantSkill(BaseSkill):
         pending = [f for f in foreshadowings if f.get("status") == "pending"]
         planted = [f for f in foreshadowings if f.get("status") == "planted"]
         developing = [f for f in foreshadowings if f.get("status") == "developing"]
+        payoff_pending = [f for f in foreshadowings if f.get("status") == "payoff_pending"]
 
         foreshadow_context = []
         if pending:
@@ -56,6 +58,9 @@ class ForeshadowPlantSkill(BaseSkill):
         if developing:
             items = "、".join(f.get("keyword", "") for f in developing[:3])
             foreshadow_context.append(f"发展中伏笔：{items}（继续推进）")
+        if payoff_pending:
+            items = "、".join(f.get("keyword", "") for f in payoff_pending[:3])
+            foreshadow_context.append(f"待回收伏笔：{items}（优先承接，不要无故搁置）")
 
         if foreshadow_context:
             context["_foreshadow_notes"] = "\n".join(foreshadow_context)

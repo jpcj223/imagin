@@ -6,6 +6,16 @@ from sqlalchemy import Column, DateTime, ForeignKey, Integer, String, Text, func
 from app.db.session import Base
 
 
+FORESHADOWING_STATUSES = frozenset({
+    "pending",
+    "planted",
+    "developing",
+    "payoff_pending",
+    "resolved",
+    "abandoned",
+})
+
+
 class Foreshadowing(Base):
     """伏笔记录。"""
 

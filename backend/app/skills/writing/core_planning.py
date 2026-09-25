@@ -49,7 +49,7 @@ class CorePlanningSkill(BaseSkill):
 
         if foreshadowings:
             pending = [f.get("keyword", "") for f in foreshadowings[:5]
-                       if f.get("status") in ("pending", "planted") and f.get("keyword")]
+                       if f.get("status") in ("pending", "planted", "payoff_pending") and f.get("keyword")]
             if pending:
                 extra_info.append(f"待处理伏笔：{', '.join(pending)}")
 

@@ -1252,6 +1252,7 @@ function foreshadowStatusLabel(status?: string): string {
     pending: '待埋设',
     planted: '已埋设',
     developing: '发展中',
+    payoff_pending: '待回收',
     resolved: '已回收',
     abandoned: '已废弃',
   }
@@ -1340,7 +1341,7 @@ function autoRecommendContext() {
       fIds.push(f.id)
       continue
     }
-    if ((f.status === 'planted' || f.status === 'developing') && fIds.length < 5) {
+    if ((f.status === 'planted' || f.status === 'developing' || f.status === 'payoff_pending') && fIds.length < 5) {
       fIds.push(f.id)
     }
   }
@@ -1801,6 +1802,7 @@ function foreshadowTagType(status: string): 'default' | 'success' | 'info' | 'wa
     pending: 'warning',
     planted: 'info',
     developing: 'info',
+    payoff_pending: 'warning',
     resolved: 'success',
     abandoned: 'default',
   }

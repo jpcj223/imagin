@@ -22,6 +22,7 @@ from app.models.business import (
     WorldSetting,
     WorkflowRun,
 )
+from app.models.business.foreshadowing import FORESHADOWING_STATUSES
 from app.services.organization_history import (
     capture_organization_relation_snapshot,
     capture_organization_snapshot,
@@ -343,8 +344,12 @@ def _validate_value(entity_type: str, operation: str, target_id: int | None, val
             raise ValueError("新增伏笔必须提供关键词和描述")
     if entity_type == "foreshadowing" and "keyword" in value and not value.get("keyword"):
         raise ValueError("伏笔关键词不能为空")
-    if entity_type == "foreshadowing" and value.get("status") not in (None, "pending", "planted", "developing", "resolved", "abandoned"):
-        raise ValueError("伏笔状态必须是 pending、planted、developing、resolved 或 abandoned")
+    if (
+        entity_type == "foreshadowing"
+        and value.get("status") is not None
+        and value.get("status") not in FORESHADOWING_STATUSES
+    ):
+        raise ValueError("伏笔状态必须是 pending、planted、developing、payoff_pending、resolved 或 abandoned")
     if entity_type in {"foreshadowing", "world_setting"} and value.get("importance") not in (None, "low", "medium", "high"):
         raise ValueError("重要性必须是 low、medium 或 high")
     if entity_type == "world_setting" and operation == "create":

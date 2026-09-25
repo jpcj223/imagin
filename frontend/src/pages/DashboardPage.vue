@@ -282,7 +282,7 @@ const foreshadowStats = computed(() => {
   const s = dashboard.value.foreshadowing_by_status || {}
   return {
     pending: s['pending'] || 0,
-    planted: s['planted'] || s['developing'] || 0,
+    planted: (s['planted'] || 0) + (s['developing'] || 0) + (s['payoff_pending'] || 0),
     developing: s['developing'] || 0,
     resolved: s['resolved'] || 0,
     abandoned: s['abandoned'] || 0,

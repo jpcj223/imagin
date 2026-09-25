@@ -16,6 +16,7 @@ from app.models.business import (
     Outline,
     WorldSetting,
 )
+from app.models.business.foreshadowing import FORESHADOWING_STATUSES
 from app.schemas.models import (
     CharacterSave,
     ChapterSave,
@@ -788,6 +789,18 @@ def update_resource(resource: str, item_id: int, payload: dict) -> dict:
     if table == "organizations":
         # 组织卡片更新和历史快照共用一个事务，防止只保存一半。
         return _update_organization_with_history(item_id, payload)
+    if table == "foreshadowings":
+        # 步骤 1：状态和重要性必须来自看板使用的统一选项。
+        if "status" in payload and (
+            not isinstance(payload["status"], str)
+            or payload["status"] not in FORESHADOWING_STATUSES
+        ):
+            raise HTTPException(status_code=422, detail="伏笔状态不在支持范围内")
+        if "importance" in payload and (
+            not isinstance(payload["importance"], str)
+            or payload["importance"] not in {"low", "medium", "high"}
+        ):
+            raise HTTPException(status_code=422, detail="伏笔重要性必须是 low、medium 或 high")
     updated = update_row(table, item_id, payload)
     if not updated:
         raise HTTPException(status_code=404, detail="资源不存在")
