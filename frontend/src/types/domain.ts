@@ -108,6 +108,12 @@ export interface ChapterSummary {
   new_foreshadowings: string
   /** 时间线事件。 */
   timeline_events: string
+  /** 生成该摘要的工作流运行 ID；人工分析可能为空。 */
+  source_run_id: string | null
+  /** 分析所依据的正文版本 ID；未保存正文的人工分析可能为空。 */
+  source_version_id: string | null
+  /** 正文版本号；兼容历史摘要时可能为空。 */
+  source_version_number: number | null
   /** 摘要创建时间。 */
   created_at: string
 }

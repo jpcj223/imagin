@@ -4,7 +4,7 @@ import json
 import traceback
 from collections.abc import Iterator
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter
 from fastapi.responses import StreamingResponse
 from sqlalchemy import desc, func
 
@@ -12,7 +12,7 @@ from app.agents.context import build_context_preview
 from app.agents.workflows import analyze_chapter, check_consistency, draft_chapter, draft_chapter_stream, polish_chapter, analyze_volume
 from app.db.repository import rows_to_dicts
 from app.db.session import get_business_db
-from app.models.business import Chapter, ChapterSummary, GenerationLog
+from app.models.business import Chapter, ChapterSummary, GenerationLog, GenerationVersion
 from app.schemas.models import ChapterAnalyzeRequest, ChapterDraftRequest, ConsistencyCheckRequest, PolishRequest, VolumeAnalyzeRequest
 
 
@@ -57,9 +57,13 @@ def chapter_summaries(project_id: int, limit: int = 20) -> list[dict]:
                 ChapterSummary.world_changes,
                 ChapterSummary.new_foreshadowings,
                 ChapterSummary.timeline_events,
+                ChapterSummary.source_run_id,
+                ChapterSummary.source_version_id,
+                GenerationVersion.version_number.label("source_version_number"),
                 ChapterSummary.created_at,
             )
             .join(Chapter, Chapter.id == ChapterSummary.chapter_id)
+            .outerjoin(GenerationVersion, GenerationVersion.version_id == ChapterSummary.source_version_id)
             .filter(Chapter.project_id == project_id)
             .order_by(desc(Chapter.chapter_no), desc(ChapterSummary.id))
             .limit(safe_limit)
@@ -77,6 +81,9 @@ def chapter_summaries(project_id: int, limit: int = 20) -> list[dict]:
             "world_changes": row.world_changes,
             "new_foreshadowings": row.new_foreshadowings,
             "timeline_events": row.timeline_events,
+            "source_run_id": row.source_run_id,
+            "source_version_id": row.source_version_id,
+            "source_version_number": row.source_version_number,
             "created_at": row.created_at.isoformat() if row.created_at else None,
         }
         for row in rows

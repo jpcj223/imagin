@@ -133,7 +133,7 @@ export type WorkflowStreamEvent =
   | { type: 'step_start'; step_id: string; label: string; run_id?: string }
   | { type: 'delta'; step_id: string; content: string }
   | { type: 'step_done'; step_id: string; result: Record<string, unknown> }
-  | { type: 'workflow_done'; status: string; run_id: string; session_context: Record<string, unknown>; step_statuses: Record<string, string> }
+  | { type: 'workflow_done'; status: string; run_id: string; chapter_id?: number | null; version_id?: string | null; session_context: Record<string, unknown>; step_statuses: Record<string, string> }
   | { type: 'change_proposals_ready'; chapter_id: number; pending_count: number }
   | { type: 'error'; step_id?: string; message: string; trace?: string }
 

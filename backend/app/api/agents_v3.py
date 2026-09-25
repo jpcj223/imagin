@@ -15,7 +15,7 @@ import json
 import traceback
 from collections.abc import Iterator
 
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy import func, or_
@@ -226,6 +226,8 @@ def workflow_generate_stream(payload: WorkflowGenerateRequest) -> StreamingRespo
                 # 记录最终结果
                 if event.get("type") == "workflow_done":
                     final_result = event
+                    # 步骤 1：暂存最终事件，确保正文、版本和分析先持久化再通知界面成功。
+                    continue
 
                 yield json.dumps(event, ensure_ascii=False) + "\n"
 
@@ -241,7 +243,11 @@ def workflow_generate_stream(payload: WorkflowGenerateRequest) -> StreamingRespo
                     chapter_id=payload.chapter_id,
                     result=final_result,
                 )
-                # 步骤 2：让前端获得最终章节 ID，再加载待审核提案列表。
+                # 步骤 2：把保存结果带入完成事件，前端可立即锁定本章与正文版本。
+                final_result["chapter_id"] = persisted["chapter_id"]
+                final_result["version_id"] = persisted["version_id"]
+                yield json.dumps(final_result, ensure_ascii=False) + "\n"
+                # 步骤 3：让前端获得最终章节 ID，再加载待审核提案列表。
                 if persisted["chapter_id"]:
                     yield json.dumps(
                         {
@@ -251,6 +257,9 @@ def workflow_generate_stream(payload: WorkflowGenerateRequest) -> StreamingRespo
                         },
                         ensure_ascii=False,
                     ) + "\n"
+            elif final_result:
+                # 步骤 4：失败或暂停事件无需持久化成功结果，仍要明确通知前端。
+                yield json.dumps(final_result, ensure_ascii=False) + "\n"
 
         except Exception as exc:  # noqa: BLE001
             yield json.dumps(
@@ -276,6 +285,14 @@ def workflow_resume(payload: WorkflowResumeRequest) -> dict:
     run_info = WorkflowPersistence.get_run(payload.run_id)
     if not run_info:
         return {"error": "Run not found", "run_id": payload.run_id}
+
+    # 步骤 1：已完成且已有版本的运行不可直接续跑，避免重复创建相同版本和提案。
+    if (
+        run_info.get("status") == "completed"
+        and not payload.restart_from_step_id
+        and _has_persisted_generation_version(payload.run_id)
+    ):
+        raise HTTPException(status_code=409, detail="该工作流已完成；如需修改，请从指定步骤重跑。")
 
     template_name = run_info.get("template_name", "smart_mode")
     project_id = run_info.get("project_id")
@@ -323,6 +340,18 @@ def workflow_resume_stream(payload: WorkflowResumeRequest) -> StreamingResponse:
                 ) + "\n"
                 return
 
+            # 步骤 1：已持久化的完成运行不能再次续跑，以免重复写入版本和提案。
+            if (
+                run_info.get("status") == "completed"
+                and not payload.restart_from_step_id
+                and _has_persisted_generation_version(payload.run_id)
+            ):
+                yield json.dumps(
+                    {"type": "error", "message": "该工作流已完成；如需修改，请从指定步骤重跑。"},
+                    ensure_ascii=False,
+                ) + "\n"
+                return
+
             template_name = run_info.get("template_name", "smart_mode")
             project_id = run_info.get("project_id")
 
@@ -349,6 +378,8 @@ def workflow_resume_stream(payload: WorkflowResumeRequest) -> StreamingResponse:
                     content_buffer.append(event.get("content", ""))
                 if event.get("type") == "workflow_done":
                     final_result = event
+                    # 步骤 2：暂存完成事件，待正文和分析全部保存后再反馈成功状态。
+                    continue
                 yield json.dumps(event, ensure_ascii=False) + "\n"
 
             if final_result and final_result.get("status") == "completed":
@@ -362,7 +393,11 @@ def workflow_resume_stream(payload: WorkflowResumeRequest) -> StreamingResponse:
                     chapter_id=run_info.get("chapter_id"),
                     result=final_result,
                 )
-                # 步骤 2：通知前端章节已保存，可加载本章的提案列表。
+                # 步骤 3：完成事件返回本次保存的章节与正文版本。
+                final_result["chapter_id"] = persisted["chapter_id"]
+                final_result["version_id"] = persisted["version_id"]
+                yield json.dumps(final_result, ensure_ascii=False) + "\n"
+                # 步骤 4：通知前端章节已保存，可加载本章的提案列表。
                 if persisted["chapter_id"]:
                     yield json.dumps(
                         {
@@ -372,6 +407,9 @@ def workflow_resume_stream(payload: WorkflowResumeRequest) -> StreamingResponse:
                         },
                         ensure_ascii=False,
                     ) + "\n"
+            elif final_result:
+                # 步骤 5：未完成运行直接反馈暂停或失败状态。
+                yield json.dumps(final_result, ensure_ascii=False) + "\n"
 
         except Exception as exc:
             yield json.dumps(
@@ -663,6 +701,18 @@ def _create_generation_version(
     )
 
 
+def _has_persisted_generation_version(run_id: str) -> bool:
+    """检查运行是否已经保存过正文版本，避免普通续跑重复落库。"""
+    # 步骤 1：按运行 ID 查找版本快照；显式步骤重跑不调用此保护，可产生新版本。
+    from app.db.session import get_business_db
+    from app.models.business import GenerationVersion
+
+    with get_business_db() as db:
+        return db.query(GenerationVersion.id).filter(
+            GenerationVersion.run_id == run_id,
+        ).first() is not None
+
+
 def _persist_completed_workflow_output(
     project_id: int,
     chapter_no: int,
@@ -679,6 +729,9 @@ def _persist_completed_workflow_output(
     """
     session_context = result.setdefault("session_context", {})
     content = session_context.get("final_content") or session_context.get("draft_content", "")
+    if not str(content).strip():
+        # 步骤 1：completed 但没有正文不是可保存成稿，阻止空版本和空分析进入记忆库。
+        raise ValueError("工作流已结束，但没有可保存的最终正文。请从写作步骤重跑。")
     resolved_chapter_id = chapter_id
     version_id = None
 
@@ -803,6 +856,8 @@ def _auto_update_memory(
                     "world_changes": session_context.get("world_changes", ""),
                     "new_foreshadowings": session_context.get("new_foreshadowings", ""),
                     "timeline_events": session_context.get("timeline_events", ""),
+                    "source_run_id": run_id,
+                    "source_version_id": version_id,
                 }
                 if existing:
                     for key, value in changes.items():

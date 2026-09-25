@@ -426,6 +426,9 @@ def analyze_chapter(project_id: int, chapter_id: int, content: str) -> dict:
             "world_changes": sections["world_changes"],
             "new_foreshadowings": sections["new_foreshadowings"],
             "timeline_events": sections["timeline_events"],
+            # 步骤 1：人工分析只绑定与当前正文完全一致的版本，草稿不冒充正式版本。
+            "source_run_id": version.run_id if version_id and version else None,
+            "source_version_id": version_id,
         }
         if existing:
             for field_name, value in summary_fields.items():
@@ -437,7 +440,7 @@ def analyze_chapter(project_id: int, chapter_id: int, content: str) -> dict:
             db=db,
             project_id=project_id,
             chapter_id=chapter_id,
-            run_id=None,
+            run_id=version.run_id if version_id and version else None,
             version_id=version_id,
             drafts=proposal_drafts,
         )

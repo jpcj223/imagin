@@ -2412,6 +2412,45 @@ async function generateAndAnalyze() {
   }
 }
 
+/** 统一回填工作流完成状态，确保编辑器显示与持久化一致的最终正文。 */
+function applyWorkflowCompletion(
+  status: string,
+  runId: string,
+  sessionContext: Record<string, unknown>,
+  actionLabel: string,
+) {
+  // 步骤 1：回填运行状态和进度，区分已完成与可继续恢复的运行。
+  currentRunId.value = runId
+  workflowProgress.value = status === 'completed' ? 100 : workflowProgress.value
+  currentWorkflowStep.value = null
+  isInterrupted.value = status !== 'completed'
+  interruptedRunId.value = status === 'completed' ? null : runId
+  addEvent(status === 'completed' ? `${actionLabel}完成` : `${actionLabel}未完成`, `状态：${status}`, status === 'completed' ? 'success' : 'error')
+
+  // 步骤 2：完成后使用后端确认的最终稿，避免精修稿或恢复后的正文留在旧状态。
+  if (status === 'completed') {
+    const finalContent = sessionContext.final_content || sessionContext.draft_content
+    if (typeof finalContent === 'string' && finalContent.trim()) draft.value = finalContent
+  }
+
+  // 步骤 3：从持久化结果回填分析和章节关联，覆盖刷新后没有收到步骤事件的情况。
+  if (sessionContext.analysis_status) {
+    applyWorkflowAnalysisResult({
+      analysis_status: sessionContext.analysis_status,
+      analysis_message: sessionContext.analysis_message,
+      summary: sessionContext.chapter_summary,
+      character_changes: sessionContext.character_changes,
+      world_changes: sessionContext.world_changes,
+      new_foreshadowings: sessionContext.new_foreshadowings,
+      timeline_events: sessionContext.timeline_events,
+    })
+  }
+  if (typeof sessionContext.chapter_id === 'number') {
+    chapterId.value = sessionContext.chapter_id
+    form.chapter_id = sessionContext.chapter_id
+  }
+}
+
 // ---- v3 工作流生成 ----
 async function generateV3(options: { showToast?: boolean } = {}) {
   const { showToast = true } = options
@@ -2505,31 +2544,7 @@ async function generateV3(options: { showToast?: boolean } = {}) {
           }
         },
         onWorkflowDone: (status, runId, sessionContext) => {
-          currentRunId.value = runId
-          workflowProgress.value = status === 'completed' ? 100 : workflowProgress.value
-          currentWorkflowStep.value = null
-          isInterrupted.value = status !== 'completed'
-          interruptedRunId.value = status === 'completed' ? null : runId
-          addEvent(status === 'completed' ? '工作流完成' : '工作流未完成', `状态：${status}`, status === 'completed' ? 'success' : 'error')
-
-          // 步骤 2：从持久化结果恢复分析面板，覆盖刷新页面或恢复时没有收到 step_done 的情况。
-          if (sessionContext?.analysis_status) {
-            applyWorkflowAnalysisResult({
-              analysis_status: sessionContext.analysis_status,
-              analysis_message: sessionContext.analysis_message,
-              summary: sessionContext.chapter_summary,
-              character_changes: sessionContext.character_changes,
-              world_changes: sessionContext.world_changes,
-              new_foreshadowings: sessionContext.new_foreshadowings,
-              timeline_events: sessionContext.timeline_events,
-            })
-          }
-
-          // 从 session_context 获取章节 ID
-          if (sessionContext?.chapter_id) {
-            chapterId.value = sessionContext.chapter_id as number
-            form.chapter_id = sessionContext.chapter_id as number
-          }
+          applyWorkflowCompletion(status, runId, sessionContext, '工作流')
         },
         onChangeProposalsReady: (savedChapterId, pendingCount) => {
           chapterId.value = savedChapterId
@@ -2641,27 +2656,7 @@ async function resumeGenerateV3() {
           }
         },
         onWorkflowDone: (status, runId, sessionContext) => {
-          currentRunId.value = runId
-          workflowProgress.value = status === 'completed' ? 100 : workflowProgress.value
-          currentWorkflowStep.value = null
-          isInterrupted.value = status !== 'completed'
-          interruptedRunId.value = status === 'completed' ? null : runId
-          addEvent(status === 'completed' ? '续传完成' : '续传未完成', `状态：${status}`, status === 'completed' ? 'success' : 'error')
-          if (sessionContext?.analysis_status) {
-            applyWorkflowAnalysisResult({
-              analysis_status: sessionContext.analysis_status,
-              analysis_message: sessionContext.analysis_message,
-              summary: sessionContext.chapter_summary,
-              character_changes: sessionContext.character_changes,
-              world_changes: sessionContext.world_changes,
-              new_foreshadowings: sessionContext.new_foreshadowings,
-              timeline_events: sessionContext.timeline_events,
-            })
-          }
-          if (sessionContext?.chapter_id) {
-            chapterId.value = sessionContext.chapter_id as number
-            form.chapter_id = sessionContext.chapter_id as number
-          }
+          applyWorkflowCompletion(status, runId, sessionContext, '续传')
         },
         onChangeProposalsReady: (savedChapterId, pendingCount) => {
           chapterId.value = savedChapterId
@@ -2780,27 +2775,7 @@ async function handleRestartFromStep(stepId: string) {
           }
         },
         onWorkflowDone: (status, newRunId, sessionContext) => {
-          currentRunId.value = newRunId
-          workflowProgress.value = status === 'completed' ? 100 : workflowProgress.value
-          currentWorkflowStep.value = null
-          isInterrupted.value = status !== 'completed'
-          interruptedRunId.value = status === 'completed' ? null : newRunId
-          addEvent(status === 'completed' ? '重跑完成' : '重跑未完成', `状态：${status}`, status === 'completed' ? 'success' : 'error')
-          if (sessionContext?.analysis_status) {
-            applyWorkflowAnalysisResult({
-              analysis_status: sessionContext.analysis_status,
-              analysis_message: sessionContext.analysis_message,
-              summary: sessionContext.chapter_summary,
-              character_changes: sessionContext.character_changes,
-              world_changes: sessionContext.world_changes,
-              new_foreshadowings: sessionContext.new_foreshadowings,
-              timeline_events: sessionContext.timeline_events,
-            })
-          }
-          if (sessionContext?.chapter_id) {
-            chapterId.value = sessionContext.chapter_id as number
-            form.chapter_id = sessionContext.chapter_id as number
-          }
+          applyWorkflowCompletion(status, newRunId, sessionContext, '重跑')
         },
         onChangeProposalsReady: (savedChapterId, pendingCount) => {
           chapterId.value = savedChapterId
@@ -2820,6 +2795,7 @@ async function handleRestartFromStep(stepId: string) {
     if (result.status !== 'completed') throw new Error(`重跑尚未完成：${result.status}`)
     await loadResources()
     await loadVersions()
+    await loadChapterChangeProposals()
     message.success('重跑完成')
     showWorkflowPanel.value = false
   } catch (error) {

@@ -162,6 +162,18 @@
               <span>第 {{ selectedSummary.chapter_no }} 章</span>
               <span class="dot">·</span>
               <span>{{ formatDate(selectedSummary.created_at) }}</span>
+              <template v-if="selectedSummary.source_version_id">
+                <span class="dot">·</span>
+                <span>依据正文版本 {{ selectedSummary.source_version_number ? 'v' + selectedSummary.source_version_number : selectedSummary.source_version_id.slice(0, 8) }}</span>
+              </template>
+              <template v-if="selectedSummary.source_run_id">
+                <span class="dot">·</span>
+                <span>工作流 {{ selectedSummary.source_run_id.slice(0, 8) }}</span>
+              </template>
+              <template v-if="!selectedSummary.source_version_id">
+                <span class="dot">·</span>
+                <span>未绑定正文版本</span>
+              </template>
             </p>
             <div class="summary-content">
               <h3>章节摘要</h3>
@@ -870,18 +882,18 @@ async function startExistingBackfill() {
     const chaptersById = new Map(chapterList.map((chapter) => [chapter.id, chapter]))
     const tasks = statusList
       .filter((status) => status.has_content && !status.has_summary)
-      .map((status) => {
+      .flatMap((status): MemoryBatchTask[] => {
         const chapter = chaptersById.get(status.chapter_id)
-        return chapter ? {
+        // 步骤 1：将仍存在的章节转换为任务；步骤 2：用空数组跳过不匹配项，保持任务类型明确。
+        return chapter ? [{
           key: `chapter-${chapter.id}`,
           chapter_id: chapter.id,
           chapter_no: chapter.chapter_no,
           title: chapter.title,
           content: chapter.content,
           state: 'waiting' as BatchTaskState,
-        } : null
+        }] : []
       })
-      .filter((task): task is MemoryBatchTask => task !== null)
     if (!tasks.length) {
       notify.info('没有待补充记忆的章节')
       return
