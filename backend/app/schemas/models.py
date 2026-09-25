@@ -205,6 +205,10 @@ class ChapterDraftRequest(BaseModel):
     chapter_id: int | None = Field(default=None, description="指定覆盖的已有章节 ID")
     instruction: str = Field(default="", description="用户对本章的补充目标或限制")
     rhythm_level: str = Field(default="3 - 适中", description="章节节奏等级")
+    context_selection: dict[str, list[int]] | None = Field(
+        default=None,
+        description="作者明确选择的角色、组织、世界观和伏笔 ID；不提供时使用自动推荐",
+    )
 
 
 class ChapterAnalyzeRequest(BaseModel):

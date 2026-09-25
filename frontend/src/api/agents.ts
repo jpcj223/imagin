@@ -42,10 +42,21 @@ export async function getChapterAnalysisStatus(projectId: number) {
   return data
 }
 
-export async function getContextPreview(projectId: number, chapterNo: number, outlineId?: number | null) {
+export async function getContextPreview(
+  projectId: number,
+  chapterNo: number,
+  outlineId?: number | null,
+  query = '',
+  selection?: Record<string, number[]>,
+) {
   // 上下文包预览只读不写，用于生成前确认 Agent 实际会读取哪些资料。
   const { data } = await apiClient.get<ContextPreview>(`/agents/${projectId}/context-preview`, {
-    params: { chapter_no: chapterNo, outline_id: outlineId ?? undefined }
+    params: {
+      chapter_no: chapterNo,
+      outline_id: outlineId ?? undefined,
+      query: query || undefined,
+      selection: selection ? JSON.stringify(selection) : undefined,
+    }
   })
   return data
 }

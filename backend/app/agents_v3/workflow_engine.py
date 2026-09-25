@@ -382,6 +382,7 @@ class WorkflowEngine:
             outline_id=outline_id,
             query=query,
             top_k=10,
+            selection=self.session_context.get("context_selection"),
         )
 
         # 从会话记忆中映射输入（L2 会话记忆）
@@ -505,8 +506,14 @@ class WorkflowEngine:
             output_preview=output_preview,
         )
 
-    def run(self, chapter_no: int, outline_id: int | None = None, instruction: str = "",
-            rhythm_level: str = "medium") -> dict[str, Any]:
+    def run(
+        self,
+        chapter_no: int,
+        outline_id: int | None = None,
+        instruction: str = "",
+        rhythm_level: str = "medium",
+        context_selection: dict[str, list[int]] | None = None,
+    ) -> dict[str, Any]:
         """同步执行工作流。
 
         Args:
@@ -521,6 +528,8 @@ class WorkflowEngine:
         self.status = WorkflowStatus.RUNNING
         self.session_context["instruction"] = instruction
         self.session_context["rhythm_level"] = rhythm_level
+        if context_selection is not None:
+            self.session_context["context_selection"] = context_selection
 
         WorkflowPersistence.update_run_status(
             run_id=self.run_id,
@@ -541,7 +550,12 @@ class WorkflowEngine:
                 )
 
                 # 创建步骤记录
-                context_preview = {"chapter_no": chapter_no, "instruction": instruction}
+                context_preview = {
+                    "chapter_no": chapter_no,
+                    "outline_id": outline_id,
+                    "instruction": instruction,
+                    "context_selection": self.session_context.get("context_selection"),
+                }
                 WorkflowPersistence.create_step_record(
                     run_id=self.run_id,
                     step_id=step.step_id,
@@ -618,8 +632,14 @@ class WorkflowEngine:
             "step_statuses": {k: v.value for k, v in self.step_statuses.items()},
         }
 
-    def run_stream(self, chapter_no: int, outline_id: int | None = None,
-                   instruction: str = "", rhythm_level: str = "medium") -> Iterator[dict[str, Any]]:
+    def run_stream(
+        self,
+        chapter_no: int,
+        outline_id: int | None = None,
+        instruction: str = "",
+        rhythm_level: str = "medium",
+        context_selection: dict[str, list[int]] | None = None,
+    ) -> Iterator[dict[str, Any]]:
         """流式执行工作流。
 
         Yields:
@@ -633,6 +653,8 @@ class WorkflowEngine:
         self.status = WorkflowStatus.RUNNING
         self.session_context["instruction"] = instruction
         self.session_context["rhythm_level"] = rhythm_level
+        if context_selection is not None:
+            self.session_context["context_selection"] = context_selection
 
         WorkflowPersistence.update_run_status(
             run_id=self.run_id,
@@ -653,7 +675,12 @@ class WorkflowEngine:
                 )
 
                 # 创建步骤记录
-                context_preview = {"chapter_no": chapter_no, "instruction": instruction}
+                context_preview = {
+                    "chapter_no": chapter_no,
+                    "outline_id": outline_id,
+                    "instruction": instruction,
+                    "context_selection": self.session_context.get("context_selection"),
+                }
                 WorkflowPersistence.create_step_record(
                     run_id=self.run_id,
                     step_id=step.step_id,

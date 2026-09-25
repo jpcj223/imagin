@@ -281,6 +281,7 @@ export async function workflowResumeStream(
     instruction?: string
     rhythm_level?: string
     restart_from_step_id?: string
+    context_selection?: Record<string, number[]>
   },
   handlers: WorkflowStreamHandlers,
 ): Promise<{ status: string; run_id: string; session_context: Record<string, unknown> } | null> {

@@ -28,6 +28,7 @@ def _format_context(context: dict) -> str:
     return f"""
 项目：{context.get("project", {})}
 世界观：{context.get("world", {})}
+选中世界观条目：{context.get("world_settings", [])}
 本章大纲：{context.get("outline", {})}
 角色：{context.get("characters", [])}
 组织：{context.get("organizations", [])}
@@ -43,12 +44,19 @@ def _build_draft_messages(
     instruction: str,
     rhythm_level: str,
     outline_id: int | None = None,
+    selection: dict[str, list[int]] | None = None,
 ) -> list[dict[str, str]]:
     """组装章节生成提示词。
 
     普通生成和流式生成共用这份上下文，避免两个接口生成逻辑漂移。
     """
-    context = build_chapter_context(project_id, chapter_no, outline_id)
+    context = build_chapter_context(
+        project_id,
+        chapter_no,
+        outline_id,
+        query=instruction,
+        selection=selection,
+    )
     context_text = _format_context(context)
 
     return [
@@ -203,13 +211,16 @@ def draft_chapter(
     rhythm_level: str,
     outline_id: int | None = None,
     chapter_id: int | None = None,
+    selection: dict[str, list[int]] | None = None,
 ) -> dict:
     """生成章节正文并保存为草稿。
 
     如果传入 chapter_id，则覆盖已有章节；否则按 project_id + chapter_no 查找并更新，
     找不到时创建新章节。未配置模型时走 fallback，保证前端流程可测试。
     """
-    messages = _build_draft_messages(project_id, chapter_no, instruction, rhythm_level, outline_id)
+    messages = _build_draft_messages(
+        project_id, chapter_no, instruction, rhythm_level, outline_id, selection
+    )
     try:
         content = chat_completion(messages)
         source = "llm"
@@ -227,6 +238,7 @@ def draft_chapter_stream(
     rhythm_level: str,
     outline_id: int | None = None,
     chapter_id: int | None = None,
+    selection: dict[str, list[int]] | None = None,
 ) -> Iterator[dict]:
     """流式生成章节正文。
 
@@ -238,7 +250,9 @@ def draft_chapter_stream(
     chapter = _upsert_draft_content(project_id, chapter_no, outline_id, chapter_id, "", "generating")
     chapter_id = chapter["chapter_id"]
     yield {"type": "start", "message": f"第 {chapter_no} 章开始生成", "chapter_id": chapter_id}
-    messages = _build_draft_messages(project_id, chapter_no, instruction, rhythm_level, outline_id)
+    messages = _build_draft_messages(
+        project_id, chapter_no, instruction, rhythm_level, outline_id, selection
+    )
     chunks: list[str] = []
     saved_length = 0
 
@@ -309,7 +323,7 @@ def analyze_chapter(project_id: int, chapter_id: int, content: str) -> dict:
         version_id = version.version_id if version and (chapter.content or "") == content else None
 
     # 步骤 2：复用项目上下文，避免手动分析只看到正文却无法识别角色/组织。
-    analysis_context = build_chapter_context(project_id, chapter_no, outline_id)
+    analysis_context = build_chapter_context(project_id, chapter_no, outline_id, query=content)
     analysis_context.update({"content": content, "chapter_no": chapter_no})
 
     # 步骤 3：识别旧版和 V3 的开发兜底正文，避免用户手动点分析时把样例当成小说事实。
@@ -462,7 +476,7 @@ def check_consistency(project_id: int, chapter_id: int | None, content: str) -> 
             if chapter:
                 chapter_no = chapter.chapter_no
                 content = content or chapter.content
-    context = build_chapter_context(project_id, chapter_no)
+    context = build_chapter_context(project_id, chapter_no, query=content)
 
     missing: list[str] = []
     if not context.get("outline"):

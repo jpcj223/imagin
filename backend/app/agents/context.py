@@ -1,193 +1,51 @@
 from __future__ import annotations
 
-from sqlalchemy import desc, func, or_
+from typing import Any
 
-from app.db.repository import row_to_dict, rows_to_dicts
-from app.db.session import get_business_db
-from app.models.business import (
-    Chapter,
-    ChapterSummary,
-    Character,
-    Foreshadowing,
-    MemoryItem,
-    Organization,
-    OrganizationRelation,
-    Outline,
-    Project,
-    WorldSetting,
-)
+from app.memory.retriever import MemoryRetriever
 
 
-def build_chapter_context(project_id: int, chapter_no: int, outline_id: int | None = None) -> dict:
-    """组装章节生成上下文。
+def build_chapter_context(
+    project_id: int,
+    chapter_no: int,
+    outline_id: int | None = None,
+    query: str = "",
+    selection: dict[str, list[int]] | None = None,
+) -> dict[str, Any]:
+    """统一组装章节 Agent 上下文，旧版和 V3 共用同一检索策略。
 
-    第一版先用结构化资料 + 最近摘要；后续可在这里加入向量检索、BM25 和融合排序。
+    步骤 1：将章节号、大纲和用户要求传给项目记忆检索器。
+    步骤 2：返回排序后的设定资料、历史摘要和本章可见记忆。
     """
-    with get_business_db() as db:
-        project = db.query(Project).filter(Project.id == project_id).first()
-
-        world = (
-            db.query(WorldSetting)
-            .filter(WorldSetting.project_id == project_id)
-            .order_by(WorldSetting.id.desc())
-            .first()
-        )
-
-        if outline_id:
-            outline = (
-                db.query(Outline)
-                .filter(Outline.id == outline_id, Outline.project_id == project_id)
-                .first()
-            )
-        else:
-            outline = (
-                db.query(Outline)
-                .filter(
-                    Outline.project_id == project_id,
-                    or_(Outline.chapter_no == chapter_no, Outline.sort_index == chapter_no),
-                )
-                .order_by(desc(Outline.chapter_no), desc(Outline.id))
-                .first()
-            )
-
-        characters = (
-            db.query(Character)
-            .filter(Character.project_id == project_id)
-            .order_by(Character.id.desc())
-            .limit(12)
-            .all()
-        )
-
-        organizations = (
-            db.query(Organization)
-            .filter(Organization.project_id == project_id)
-            .filter(
-                (Organization.active_from_chapter.is_(None))
-                | (Organization.active_from_chapter <= chapter_no)
-            )
-            .filter(
-                (Organization.disbanded_chapter.is_(None))
-                | (Organization.disbanded_chapter >= chapter_no)
-            )
-            .order_by(Organization.id.desc())
-            .limit(8)
-            .all()
-        )
-
-        # 步骤 1：只检索本章有效、且至少一端出现在上下文中的组织关系。
-        organization_ids = [item.id for item in organizations]
-        organization_relations = []
-        related_organization_names: dict[int, str] = {}
-        if organization_ids:
-            active_organization_ids = [
-                row.id
-                for row in db.query(Organization.id).filter(
-                    Organization.project_id == project_id,
-                    (Organization.active_from_chapter.is_(None))
-                    | (Organization.active_from_chapter <= chapter_no),
-                    (Organization.disbanded_chapter.is_(None))
-                    | (Organization.disbanded_chapter >= chapter_no),
-                ).all()
-            ]
-            organization_relations = db.query(OrganizationRelation).filter(
-                OrganizationRelation.project_id == project_id,
-                (
-                    OrganizationRelation.organization_a_id.in_(organization_ids)
-                    | OrganizationRelation.organization_b_id.in_(organization_ids)
-                ),
-                (OrganizationRelation.effective_from_chapter.is_(None))
-                | (OrganizationRelation.effective_from_chapter <= chapter_no),
-                (OrganizationRelation.expires_at_chapter.is_(None))
-                | (OrganizationRelation.expires_at_chapter >= chapter_no),
-                OrganizationRelation.organization_a_id.in_(active_organization_ids),
-                OrganizationRelation.organization_b_id.in_(active_organization_ids),
-            ).order_by(OrganizationRelation.id.asc()).all()
-            relation_org_ids = {
-                org_id
-                for relation in organization_relations
-                for org_id in (relation.organization_a_id, relation.organization_b_id)
-            }
-            related_organization_names = {
-                row.id: row.name
-                for row in db.query(Organization.id, Organization.name).filter(
-                    Organization.project_id == project_id,
-                    Organization.id.in_(relation_org_ids),
-                ).all()
-            }
-
-        foreshadowings = (
-            db.query(Foreshadowing)
-            .filter(
-                Foreshadowing.project_id == project_id,
-                Foreshadowing.status.in_(["pending", "planted", "developing", "payoff_pending"]),
-                # 步骤 1：只纳入当前章节已生效且尚未失效的伏笔；计划回收章节不等同于失效。
-                func.coalesce(Foreshadowing.effective_from, Foreshadowing.planted_chapter, 1) <= chapter_no,
-                or_(Foreshadowing.expires_at.is_(None), Foreshadowing.expires_at >= chapter_no),
-            )
-            .order_by(desc(Foreshadowing.importance), desc(Foreshadowing.id))
-            .limit(12)
-            .all()
-        )
-
-        summaries = (
-            db.query(ChapterSummary)
-            .join(Chapter, Chapter.id == ChapterSummary.chapter_id)
-            .filter(Chapter.project_id == project_id, Chapter.chapter_no < chapter_no)
-            .order_by(desc(Chapter.chapter_no))
-            .limit(5)
-            .all()
-        )
-
-        # 步骤 1：只把已经存在于长期记忆库的条目交给旧版章节 Agent；待审核提案不会进入生成上下文。
-        long_term_memories = (
-            db.query(MemoryItem)
-            .filter(MemoryItem.project_id == project_id)
-            .order_by(MemoryItem.updated_at.desc(), MemoryItem.importance.desc())
-            .limit(8)
-            .all()
-        )
-
-    organization_items = rows_to_dicts(organizations)
-    relation_items_by_organization: dict[int, list[dict]] = {}
-    for relation in organization_relations:
-        # 步骤 2：把关系以双向视角附在组织资料上，Agent 能读到同盟和敌对信息。
-        for current_id, target_id in (
-            (relation.organization_a_id, relation.organization_b_id),
-            (relation.organization_b_id, relation.organization_a_id),
-        ):
-            relation_items_by_organization.setdefault(current_id, []).append({
-                "target_org_id": target_id,
-                "target_org_name": related_organization_names.get(target_id, ""),
-                "relation_type": relation.relation_type,
-                "description": relation.description or "",
-                "effective_from_chapter": relation.effective_from_chapter,
-                "expires_at_chapter": relation.expires_at_chapter,
-            })
-    for item in organization_items:
-        item["relations"] = relation_items_by_organization.get(item["id"], [])
-
-    return {
-        "project": row_to_dict(project) or {},
-        "world": row_to_dict(world) or {},
-        "outline": row_to_dict(outline) or {},
-        "characters": rows_to_dicts(characters),
-        "organizations": organization_items,
-        "foreshadowings": rows_to_dicts(foreshadowings),
-        "recent_summaries": rows_to_dicts(summaries),
-        "long_term_memories": rows_to_dicts(long_term_memories),
-    }
+    # 步骤 1：复用生成工作流的记忆检索器，避免预览、旧版与 V3 读取不同资料。
+    retriever = MemoryRetriever(project_id)
+    return retriever.retrieve_for_chapter(
+        chapter_no=chapter_no,
+        outline_id=outline_id,
+        query=query,
+        top_k=10,
+        selection=selection,
+    )
 
 
-def build_context_preview(project_id: int, chapter_no: int, outline_id: int | None = None) -> dict:
-    """生成给前端展示的上下文包预览。
+def build_context_preview(
+    project_id: int,
+    chapter_no: int,
+    outline_id: int | None = None,
+    query: str = "",
+    selection: dict[str, list[int]] | None = None,
+) -> dict[str, Any]:
+    """生成章节生成实际会读取的上下文预览。
 
-    这个接口不改变生成逻辑，只把 Agent 实际会读取的资料压缩成可视摘要，
-    方便用户在生成前判断"这次模型到底看到了什么"。
+    步骤 1：调用与生成相同的章节上下文组装入口。
+    步骤 2：保留前端需要展示的字段，省略正文和长篇设定详情。
     """
-    context = build_chapter_context(project_id, chapter_no, outline_id)
+    # 步骤 1：使用与 Agent 相同的检索器、章节边界和用户补充要求。
+    context = build_chapter_context(project_id, chapter_no, outline_id, query, selection)
     world = context["world"]
     outline = context["outline"]
 
+    # 步骤 2：压缩成预览卡片所需的数据结构，但列表来源保持与 Agent 输入一致。
     return {
         "chapter_no": chapter_no,
         "outline": {
@@ -199,6 +57,15 @@ def build_context_preview(project_id: int, chapter_no: int, outline_id: int | No
             "category": world.get("category", ""),
             "rules": world.get("rules", ""),
         },
+        "world_settings": [
+            {
+                "id": item.get("id"),
+                "title": item.get("title") or item.get("era", ""),
+                "category": item.get("category", ""),
+                "importance": item.get("importance", ""),
+            }
+            for item in context["world_settings"]
+        ],
         "characters": [
             {
                 "id": item.get("id"),

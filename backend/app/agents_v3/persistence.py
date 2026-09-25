@@ -472,6 +472,13 @@ class WorkflowPersistence:
                         if result_key in output:
                             session_context[session_key] = output[result_key]
 
+        # 步骤 3：从最近步骤的输入快照恢复作者选中的上下文资料，供断点续跑保持一致。
+        for record in reversed(step_records):
+            input_snapshot = record.get("input_snapshot")
+            if isinstance(input_snapshot, dict) and "context_selection" in input_snapshot:
+                session_context["context_selection"] = input_snapshot["context_selection"]
+                break
+
         return {
             "run_info": run,
             "step_statuses": step_statuses,

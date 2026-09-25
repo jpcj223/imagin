@@ -65,8 +65,14 @@ class CoreAnalysisSkill(BaseSkill):
     ]
 
     def pre_process(self, context, params):
-        """步骤 1：把章节相关的项目资料整理成分析上下文，帮助实体名称精确对齐。"""
+        """把章节相关的项目资料整理成分析上下文，帮助实体名称精确对齐。
+
+        步骤 1：整理本章实际选中的人物、组织和伏笔。
+        步骤 2：加入实际送入写作上下文的世界观条目，供变化识别对照。
+        步骤 3：将精简后的实体目录注入分析提示词。
+        """
         world = context.get("world") or {}
+        world_settings = [item for item in context.get("world_settings", []) if isinstance(item, dict)]
         character_items = [item for item in context.get("characters", []) if isinstance(item, dict)]
         character_names = {
             item.get("id"): item.get("name", "")
@@ -117,9 +123,16 @@ class CoreAnalysisSkill(BaseSkill):
                 key: world.get(key, "")
                 for key in ("title", "era", "geography", "atmosphere", "rules", "extra")
             },
+            "world_settings": [
+                {
+                    key: item.get(key, "")
+                    for key in ("title", "era", "category", "geography", "atmosphere", "rules", "extra")
+                }
+                for item in world_settings
+            ],
         }
         processed = dict(context)
-        # Agent 基类会把这个字段追加到 Prompt，正文原始上下文仍保留在 workflow state。
+        # 步骤 3：Agent 基类追加分析对照资料，正文原始上下文仍保留在工作流状态。
         processed["_analysis_reference_context"] = json.dumps(references, ensure_ascii=False, indent=2)
         return processed
 

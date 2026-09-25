@@ -130,6 +130,8 @@ export interface ContextPreview {
   outline: { title: string; description: string }
   /** 实际选中的世界观摘要。 */
   world: { title: string; category: string; rules: string }
+  /** 本次实际注入写作上下文的世界观条目。 */
+  world_settings: Array<{ id: number; title: string; category: string; importance: string }>
   /** 会进入上下文的角色摘录。 */
   characters: Array<{ id: number; name: string; role_type: string; motivation: string }>
   /** 会进入上下文的组织摘录。 */

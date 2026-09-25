@@ -44,6 +44,7 @@ class WorkflowGenerateRequest(BaseModel):
     instruction: str = ""
     rhythm_level: str = "medium"
     chapter_id: int | None = None
+    context_selection: dict[str, list[int]] | None = None
 
 
 class WorkflowResumeRequest(BaseModel):
@@ -54,6 +55,7 @@ class WorkflowResumeRequest(BaseModel):
     instruction: str = ""
     rhythm_level: str = "medium"
     restart_from_step_id: str | None = None  # 从指定步骤开始重跑（可选）
+    context_selection: dict[str, list[int]] | None = None
 
 
 class AgentGenerateRequest(BaseModel):
@@ -65,6 +67,7 @@ class AgentGenerateRequest(BaseModel):
     variant: str = "default"
     instruction: str = ""
     rhythm_level: str = "medium"
+    context_selection: dict[str, list[int]] | None = None
 
 
 class MemoryStoreRequest(BaseModel):
@@ -175,6 +178,7 @@ def workflow_generate(payload: WorkflowGenerateRequest) -> dict:
         outline_id=payload.outline_id,
         instruction=payload.instruction,
         rhythm_level=payload.rhythm_level,
+        context_selection=payload.context_selection,
     )
 
     # 步骤 1：同步和流式生成共用持久化逻辑，避免无 chapter_id 时丢失整章结果。
@@ -213,6 +217,7 @@ def workflow_generate_stream(payload: WorkflowGenerateRequest) -> StreamingRespo
                 outline_id=payload.outline_id,
                 instruction=payload.instruction,
                 rhythm_level=payload.rhythm_level,
+                context_selection=payload.context_selection,
             ):
                 # 收集正文内容用于保存
                 if event.get("type") == "delta" and event.get("step_id") == "writer":
@@ -290,6 +295,7 @@ def workflow_resume(payload: WorkflowResumeRequest) -> dict:
         outline_id=payload.outline_id,
         instruction=payload.instruction,
         rhythm_level=payload.rhythm_level,
+        context_selection=payload.context_selection,
     )
     if result.get("status") == "completed":
         # 步骤 1：续跑成功也必须保存正文版本、章节摘要和待审核变化。
@@ -337,6 +343,7 @@ def workflow_resume_stream(payload: WorkflowResumeRequest) -> StreamingResponse:
                 outline_id=payload.outline_id,
                 instruction=payload.instruction,
                 rhythm_level=payload.rhythm_level,
+                context_selection=payload.context_selection,
             ):
                 if event.get("type") == "delta" and event.get("step_id") == "writer":
                     content_buffer.append(event.get("content", ""))
@@ -540,18 +547,26 @@ def get_memory(memory_id: str) -> dict | None:
 
 @router.post("/agent/generate")
 def agent_generate(payload: AgentGenerateRequest) -> dict:
-    """调用单个 Agent（同步）。"""
+    """调用单个 Agent（同步）。
+
+    步骤 1：按章节要求和作者选项检索正式上下文。
+    步骤 2：补充 Agent 参数并执行对应能力。
+    """
     from app.memory.retriever import MemoryRetriever
 
+    # 步骤 1：测试和兼容入口也复用工作流上下文筛选结果。
     retriever = MemoryRetriever(payload.project_id)
     context = retriever.retrieve_for_chapter(
         chapter_no=payload.chapter_no,
         outline_id=payload.outline_id,
+        query=payload.instruction,
+        selection=payload.context_selection,
     )
     context["chapter_no"] = payload.chapter_no
     context["instruction"] = payload.instruction
     context["rhythm_level"] = payload.rhythm_level
 
+    # 步骤 2：让独立 Agent 与工作流入口使用相同的章节参数。
     agent = get_agent(payload.agent_type, payload.variant)
     result = agent.run(context, {
         "instruction": payload.instruction,

@@ -132,9 +132,28 @@ def chapter_analysis_status(project_id: int) -> list[dict]:
 
 
 @router.get("/{project_id}/context-preview")
-def context_preview(project_id: int, chapter_no: int = 1, outline_id: int | None = None) -> dict:
-    """预览章节生成会读取的上下文包。"""
-    return build_context_preview(project_id, chapter_no, outline_id)
+def context_preview(
+    project_id: int,
+    chapter_no: int = 1,
+    outline_id: int | None = None,
+    query: str = "",
+    selection: str = "",
+) -> dict:
+    """预览章节生成会读取的上下文包。
+
+    步骤 1：解析前端提交的上下文选择。
+    步骤 2：将补充要求和选择项交给正式上下文检索器。
+    """
+    # 步骤 1：验证选择参数为 JSON 对象，避免预览请求静默退回自动推荐。
+    try:
+        context_selection = json.loads(selection) if selection else None
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=422, detail="上下文选择格式无效") from exc
+    if context_selection is not None and not isinstance(context_selection, dict):
+        raise HTTPException(status_code=422, detail="上下文选择必须是对象")
+
+    # 步骤 2：把用户要求和手动选择一并交给实际生成使用的检索器。
+    return build_context_preview(project_id, chapter_no, outline_id, query, context_selection)
 
 
 @router.post("/chapter-draft")
@@ -150,6 +169,7 @@ def chapter_draft(payload: ChapterDraftRequest) -> dict:
         payload.rhythm_level,
         payload.outline_id,
         payload.chapter_id,
+        payload.context_selection,
     )
 
 
@@ -169,6 +189,7 @@ def chapter_draft_stream(payload: ChapterDraftRequest) -> StreamingResponse:
                 payload.rhythm_level,
                 payload.outline_id,
                 payload.chapter_id,
+                payload.context_selection,
             ):
                 yield json.dumps(event, ensure_ascii=False) + "\n"
         except Exception as exc:  # noqa: BLE001

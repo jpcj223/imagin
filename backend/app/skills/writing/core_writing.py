@@ -46,6 +46,7 @@ class CoreWritingSkill(BaseSkill):
         world = context.get("world", {})
         outline = context.get("outline", {})
         characters = context.get("characters", [])
+        world_settings = context.get("world_settings", [])
         organizations = context.get("organizations", [])
         foreshadowings = context.get("foreshadowings", [])
         recent_summaries = context.get("recent_summaries", [])
@@ -57,7 +58,7 @@ class CoreWritingSkill(BaseSkill):
         # 步骤 3：生成统一资料包，Writer Prompt 会同时单独引用 writing_plan。
         context_text = f"""
 项目：{project.get("name", "")}
-世界观：{_format_world(world)}
+世界观：{_format_world(world, world_settings)}
 本章大纲：{_format_outline(outline)}
 角色：{_format_characters(characters)}
 组织：{_format_organizations(organizations)}
@@ -71,17 +72,44 @@ class CoreWritingSkill(BaseSkill):
         return context
 
 
-def _format_world(world: dict) -> str:
+def _format_world(world: dict, world_settings: list[dict] | None = None) -> str:
+    """格式化世界观总览和作者在上下文选择器中勾选的设定条目。
+
+    步骤 1：输出兼容旧资料包的世界观总览。
+    步骤 2：补充本章明确选中的世界规则、地理或时代条目。
+    """
     if not world:
-        return "暂无世界观设定"
-    parts = []
-    if world.get("title") or world.get("era"):
-        parts.append(f"时代/背景：{world.get('title') or world.get('era', '')}")
-    if world.get("rules"):
-        parts.append(f"核心规则：{world['rules']}")
-    if world.get("geography"):
-        parts.append(f"地理环境：{world['geography']}")
-    return "；".join(parts) if parts else "暂无详细设定"
+        parts = []
+    else:
+        parts = []
+        if world.get("title") or world.get("era"):
+            parts.append(f"时代/背景：{world.get('title') or world.get('era', '')}")
+        if world.get("rules"):
+            parts.append(f"核心规则：{world['rules']}")
+        if world.get("geography"):
+            parts.append(f"地理环境：{world['geography']}")
+
+    # 步骤 2：列出上下文中的所有世界观条目，包含首条设定未出现在总览中的补充信息。
+    seen_ids: set[int] = set()
+    for setting in world_settings or []:
+        if setting.get("id") in seen_ids:
+            continue
+        seen_ids.add(setting.get("id"))
+        title = setting.get("title") or setting.get("era") or "未命名设定"
+        is_overview = world and setting.get("id") == world.get("id")
+        # 总览已输出首条设定的规则与地理，只补充其余字段，避免重复塞入 Prompt。
+        details = [setting.get("atmosphere"), setting.get("extra"), setting.get("conflict_notes")]
+        if not is_overview:
+            details = [
+                setting.get("rules"),
+                setting.get("geography"),
+                *details,
+            ]
+        detail_text = "；".join(str(item) for item in details if item)
+        label = "总览补充" if is_overview else f"设定条目《{title}》"
+        parts.append(f"{label}：{detail_text}" if detail_text else label)
+
+    return "\n".join(parts) if parts else "暂无世界观设定"
 
 
 def _format_outline(outline: dict) -> str:
@@ -93,6 +121,11 @@ def _format_outline(outline: dict) -> str:
 
 
 def _format_characters(characters: list[dict]) -> str:
+    """格式化本章相关人物；检索器已限制自动推荐数量，手选人物全部保留。
+
+    步骤 1：建立角色 ID 到名称的索引。
+    步骤 2：输出所有已检索人物及其核心性格、动机和关系。
+    """
     if not characters:
         return "暂无角色资料"
     # 步骤 1：构建当前上下文中的人物名称索引，用于把关系卡里的 target_id 转成人名。
@@ -102,7 +135,8 @@ def _format_characters(characters: list[dict]) -> str:
         if item.get("id") is not None and item.get("name")
     }
     lines = []
-    for ch in characters[:8]:  # 最多展示 8 个
+    # 步骤 2：不再二次截断，避免作者明确勾选超过默认数量时资料被静默丢弃。
+    for ch in characters:
         name = ch.get("name", "")
         role = ch.get("role_type", "")
         personality = ch.get("personality", "")
@@ -137,10 +171,16 @@ def _format_characters(characters: list[dict]) -> str:
 
 
 def _format_organizations(organizations: list[dict]) -> str:
+    """格式化本章势力资料和有效关系。
+
+    步骤 1：逐一输出检索器返回的组织，保留作者手选项。
+    步骤 2：附上本章有效的同盟和敌对关系。
+    """
     if not organizations:
         return "暂无组织资料"
     lines = []
-    for org in organizations[:5]:
+    # 步骤 1：自动推荐上限由检索器控制；本层不再截断手动选择项。
+    for org in organizations:
         name = org.get("name", "")
         org_type = org.get("org_type", "")
         goal = org.get("goal", "")
@@ -165,10 +205,15 @@ def _format_organizations(organizations: list[dict]) -> str:
 
 
 def _format_foreshadowings(foreshadowings: list[dict]) -> str:
+    """格式化本章有效伏笔，保留手动项和自动推荐项。
+
+    步骤 1：按检索排序输出伏笔状态和内容，供写作时遵守。
+    """
     if not foreshadowings:
         return "暂无待处理伏笔"
     lines = []
-    for f in foreshadowings[:8]:
+    # 步骤 1：自动推荐上限由检索器控制；避免在写作 Prompt 再次截掉作者手选项。
+    for f in foreshadowings:
         keyword = f.get("keyword", "")
         status = f.get("status", "")
         desc = f.get("description", "")

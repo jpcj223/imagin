@@ -593,6 +593,55 @@
                 @auto-recommend="autoRecommendContext"
               />
 
+              <!-- 后端实际读取结果，核对选择器和模型输入是否一致 -->
+              <div class="resolved-context-card">
+                <div class="resolved-context-header">
+                  <div class="stats-title"><span class="stats-icon">📦</span><span>本次生成实际读取</span></div>
+                  <n-button size="tiny" quaternary :loading="previewLoading" @click="refreshContextPreview()">
+                    刷新预览
+                  </n-button>
+                </div>
+                <div class="resolved-context-footnote">
+                  手动勾选的资料优先注入；其余条目由系统按大纲和补充要求自动补充。
+                </div>
+                <n-spin :show="previewLoading">
+                  <div v-if="contextPreview" class="resolved-context-groups">
+                    <div class="resolved-context-group">
+                      <span class="resolved-context-label">人物</span>
+                      <n-tag v-for="item in contextPreview.characters" :key="`character-${item.id}`" size="small">
+                        {{ item.name }}{{ selectedCharacterIds.includes(item.id) ? ' · 手选' : ' · 推荐' }}
+                      </n-tag>
+                      <span v-if="!contextPreview.characters.length" class="resolved-context-empty">暂无相关资料</span>
+                    </div>
+                    <div class="resolved-context-group">
+                      <span class="resolved-context-label">组织</span>
+                      <n-tag v-for="item in contextPreview.organizations" :key="`organization-${item.id}`" size="small">
+                        {{ item.name }}{{ selectedOrganizationIds.includes(item.id) ? ' · 手选' : ' · 推荐' }}
+                      </n-tag>
+                      <span v-if="!contextPreview.organizations.length" class="resolved-context-empty">暂无相关资料</span>
+                    </div>
+                    <div class="resolved-context-group">
+                      <span class="resolved-context-label">世界观</span>
+                      <n-tag v-for="item in contextPreview.world_settings" :key="`world-${item.id}`" size="small">
+                        {{ item.title }}{{ selectedWorldIds.includes(item.id) ? ' · 手选' : ' · 推荐' }}
+                      </n-tag>
+                      <span v-if="!contextPreview.world_settings.length" class="resolved-context-empty">暂无相关资料</span>
+                    </div>
+                    <div class="resolved-context-group">
+                      <span class="resolved-context-label">伏笔</span>
+                      <n-tag v-for="item in contextPreview.foreshadowings" :key="`foreshadowing-${item.id}`" size="small">
+                        {{ item.keyword }}{{ selectedForeshadowingIds.includes(item.id) ? ' · 手选' : ' · 推荐' }}
+                      </n-tag>
+                      <span v-if="!contextPreview.foreshadowings.length" class="resolved-context-empty">暂无相关资料</span>
+                    </div>
+                    <div class="resolved-context-footnote">
+                      前情摘要 {{ contextPreview.recent_summaries.length }} 条 · 已确认长期记忆 {{ contextPreview.long_term_memories.length }} 条
+                    </div>
+                  </div>
+                  <div v-else class="resolved-context-empty">选择大纲后可查看实际检索结果</div>
+                </n-spin>
+              </div>
+
               <!-- 上下文统计卡片 -->
               <div class="context-stats-card">
                 <div class="stats-title">
@@ -618,7 +667,7 @@
                   </div>
                 </div>
                 <div class="stats-tip">
-                  💡 AI 生成时将读取以上所有选中的资料作为上下文
+                  💡 勾选资料会优先进入上下文；系统也会按本章大纲和要求补充相关设定与前情
                 </div>
               </div>
             </div>
@@ -1080,6 +1129,20 @@ const selectedCharacterIds = ref<number[]>([])
 const selectedOrganizationIds = ref<number[]>([])
 const selectedWorldIds = ref<number[]>([])
 const selectedForeshadowingIds = ref<number[]>([])
+
+/**
+ * 生成前统一组装作者勾选的上下文实体。
+ * 步骤 1：复制四类选择 ID，避免请求期间页面数组变更。
+ * 步骤 2：用后端约定的字段名供预览、生成和续跑共用。
+ */
+function getContextSelectionPayload(): Record<string, number[]> {
+  return {
+    character_ids: [...selectedCharacterIds.value],
+    organization_ids: [...selectedOrganizationIds.value],
+    world_setting_ids: [...selectedWorldIds.value],
+    foreshadowing_ids: [...selectedForeshadowingIds.value],
+  }
+}
 
 // 左侧资源浏览器 Tab
 const leftActiveTab = ref<'outline' | 'chapter' | 'character' | 'organization' | 'world' | 'foreshadowing'>('outline')
@@ -2117,7 +2180,13 @@ async function refreshContextPreview(options: { silent?: boolean } = {}) {
 
   previewLoading.value = true
   try {
-    contextPreview.value = await getContextPreview(projectId, form.chapter_no, form.outline_id)
+    contextPreview.value = await getContextPreview(
+      projectId,
+      form.chapter_no,
+      form.outline_id,
+      form.instruction,
+      getContextSelectionPayload(),
+    )
     if (!options.silent)
       addEvent(
         '拼装上下文',
@@ -2293,6 +2362,7 @@ async function generate(options: { showToast?: boolean } = {}) {
         chapter_no: form.chapter_no,
         instruction: form.instruction,
         rhythm_level: form.rhythm_level,
+        context_selection: getContextSelectionPayload(),
       },
       {
         onStart: (detail, startedChapterId) => {
@@ -2394,6 +2464,7 @@ async function generateV3(options: { showToast?: boolean } = {}) {
         chapter_no: form.chapter_no,
         instruction: form.instruction,
         rhythm_level: form.rhythm_level,
+        context_selection: getContextSelectionPayload(),
         template_name: selectedWorkflow.value,
       },
       {
@@ -2536,6 +2607,7 @@ async function resumeGenerateV3() {
         outline_id: form.outline_id ?? undefined,
         instruction: form.instruction,
         rhythm_level: form.rhythm_level,
+        context_selection: getContextSelectionPayload(),
       },
       {
         onStepStart: (stepId, label, runId) => {
@@ -2682,6 +2754,7 @@ async function handleRestartFromStep(stepId: string) {
         instruction: form.instruction,
         rhythm_level: form.rhythm_level,
         restart_from_step_id: stepId,
+        context_selection: getContextSelectionPayload(),
       },
       {
         onStepStart: (sid, label, resumedRunId) => {
@@ -3100,6 +3173,26 @@ async function removeChapter(id: number) {
 
 // ---- 初始化 ----
 useProjectDataLoader(loadResources)
+
+// 步骤 1：章节目标或勾选资料改变后，延迟刷新后端实际上下文预览。
+let contextPreviewRefreshTimer: ReturnType<typeof setTimeout> | undefined
+watch(
+  () => [
+    form.chapter_no,
+    form.outline_id,
+    form.instruction,
+    selectedCharacterIds.value.join(','),
+    selectedOrganizationIds.value.join(','),
+    selectedWorldIds.value.join(','),
+    selectedForeshadowingIds.value.join(','),
+  ],
+  () => {
+    if (contextPreviewRefreshTimer) clearTimeout(contextPreviewRefreshTimer)
+    contextPreviewRefreshTimer = setTimeout(() => {
+      void refreshContextPreview({ silent: true })
+    }, 250)
+  },
+)
 
 // v3 工作流初始化
 loadWorkflowTemplates()
@@ -4130,6 +4223,53 @@ watch(
 }
 
 /* ===== 上下文 Tab ===== */
+.resolved-context-card {
+  margin-top: 12px;
+  padding: 12px;
+  border: 1px solid rgba(59, 130, 246, 0.2);
+  border-radius: 10px;
+  background: rgba(59, 130, 246, 0.05);
+}
+
+.resolved-context-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.resolved-context-header .stats-title { margin-bottom: 8px; }
+
+.resolved-context-groups {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.resolved-context-group {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.resolved-context-label {
+  min-width: 48px;
+  color: var(--text-secondary);
+  font-size: 11px;
+}
+
+.resolved-context-empty,
+.resolved-context-footnote {
+  color: var(--text-secondary);
+  font-size: 11px;
+}
+
+.resolved-context-footnote {
+  padding-top: 6px;
+  border-top: 1px solid rgba(148, 163, 184, 0.12);
+}
+
 .context-stats-card {
   margin-top: 12px;
   padding: 12px;
