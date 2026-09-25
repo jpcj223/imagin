@@ -208,6 +208,7 @@ class WorkflowPersistence:
         run_id: str,
         step_id: str,
         status: str,
+        input_snapshot: dict | None = None,
         output_snapshot: dict | None = None,
         output_file_path: str | None = None,
         error_message: str | None = None,
@@ -216,7 +217,12 @@ class WorkflowPersistence:
         llm_calls: int | None = None,
         duration_ms: int | None = None,
     ) -> None:
-        """更新步骤执行记录。"""
+        """更新步骤执行记录。
+
+        步骤 1：定位当前运行中该步骤的最近一次尝试。
+        步骤 2：只更新调用方提供的输入、输出、用量与错误字段。
+        步骤 3：步骤结束时记录完成时间和真实运行时长。
+        """
         with get_business_db() as db:
             record = (
                 db.query(WorkflowStepRecord)
@@ -231,6 +237,8 @@ class WorkflowPersistence:
                 return
 
             record.status = status
+            if input_snapshot is not None:
+                record.input_snapshot = json.dumps(input_snapshot, ensure_ascii=False)
             if output_snapshot is not None:
                 record.output_snapshot = json.dumps(output_snapshot, ensure_ascii=False)
             if output_file_path is not None:

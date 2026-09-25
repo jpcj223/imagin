@@ -402,6 +402,38 @@ class WorkflowEngine:
 
         return context
 
+    @staticmethod
+    def _summarize_step_context(context: dict[str, Any]) -> dict[str, Any]:
+        """为运行记录提取轻量上下文清单，不持久化完整设定正文。"""
+        # 步骤 1：只提取名称和章节号，保留作者判断本步骤资料来源所需的信息。
+        def labels(key: str, field: str) -> list[str]:
+            values = context.get(key)
+            if not isinstance(values, list):
+                return []
+            return [
+                str(item[field])
+                for item in values
+                if isinstance(item, dict) and item.get(field) not in (None, "")
+            ]
+
+        recent_summaries = context.get("recent_summaries")
+        recent_chapters = [
+            str(item["chapter_no"])
+            for item in recent_summaries
+            if isinstance(item, dict) and item.get("chapter_no") is not None
+        ] if isinstance(recent_summaries, list) else []
+
+        # 步骤 2：使用显式字段名，供前端运行记录展示与未来统计复用。
+        return {
+            "outline_title": str(context.get("outline_title") or ""),
+            "characters": labels("characters", "name"),
+            "organizations": labels("organizations", "name"),
+            "world_settings": labels("world_settings", "title"),
+            "foreshadowings": labels("foreshadowings", "keyword"),
+            "recent_chapters": recent_chapters,
+            "long_term_memories": labels("long_term_memories", "title"),
+        }
+
     def _capture_analysis_entity_catalog(self) -> dict[str, list[dict[str, Any]]]:
         """读取项目实体名称和 ID，供结构化分析结果安全解析实体引用。"""
         from app.db.session import get_business_db
@@ -478,6 +510,9 @@ class WorkflowEngine:
             step_id=step.step_id,
             status="completed",
             output_snapshot=output_for_db,
+            # 步骤 4：记录供应商实际用量；空对象表示供应商未提供 Token 统计，避免残留重跑前的数字。
+            token_usage=result.get("token_usage") or {},
+            llm_calls=result.get("llm_calls", 0),
         )
 
     def _update_progress(self) -> None:
@@ -568,6 +603,16 @@ class WorkflowEngine:
                 try:
                     # 构建上下文
                     context = self._build_step_context(step, chapter_no, outline_id)
+                    # 步骤 1：仅保存实际装配资料的名称摘要，避免记录重复正文或提示词内容。
+                    WorkflowPersistence.update_step_record(
+                        run_id=self.run_id,
+                        step_id=step.step_id,
+                        status="running",
+                        input_snapshot={
+                            **context_preview,
+                            "context_summary": self._summarize_step_context(context),
+                        },
+                    )
 
                     # 步骤 1：分析前捕获完整项目实体名录，用于把自然语言名称解析成项目内 ID。
                     if step.agent_type == "analyzer":
@@ -699,6 +744,16 @@ class WorkflowEngine:
 
                 try:
                     context = self._build_step_context(step, chapter_no, outline_id)
+                    # 步骤 1：同步路径相同，只保存实际装配资料的名称摘要，不复制设定正文。
+                    WorkflowPersistence.update_step_record(
+                        run_id=self.run_id,
+                        step_id=step.step_id,
+                        status="running",
+                        input_snapshot={
+                            **context_preview,
+                            "context_summary": self._summarize_step_context(context),
+                        },
+                    )
 
                     # 步骤 1：流式和同步路径使用同一套分析实体目录与 ID 解析输入。
                     if step.agent_type == "analyzer":

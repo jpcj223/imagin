@@ -7,7 +7,11 @@ from __future__ import annotations
 from collections.abc import Iterator
 from typing import Any
 
-from app.core.llm import LLMError, chat_completion, chat_completion_stream
+from app.core.llm import (
+    LLMError,
+    chat_completion_stream_with_usage,
+    chat_completion_with_usage,
+)
 
 from .base import BaseAgent, AgentMeta
 
@@ -62,17 +66,30 @@ class DynamicAgent(BaseAgent):
         messages = self._build_messages(ctx, effective_params)
 
         # 3. 调用 LLM（失败时走 fallback）
+        llm_calls = 1
         try:
-            content = chat_completion(messages, **self._extract_llm_params(effective_params))
+            content, token_usage = chat_completion_with_usage(
+                messages,
+                **self._extract_llm_params(effective_params),
+            )
             source = "llm"
         except LLMError as exc:
             content = self._get_fallback_content(ctx, effective_params)
             source = f"fallback: {exc}"
+            token_usage = None
 
-        result = {"content": content, "analysis_text": content, "source": source}
+        result = {
+            "content": content,
+            "analysis_text": content,
+            "source": source,
+            "token_usage": token_usage,
+            "llm_calls": llm_calls,
+        }
 
         # 4. Skill 后处理
         result = self._apply_skills_post(result, ctx, effective_params)
+        result.setdefault("token_usage", token_usage)
+        result.setdefault("llm_calls", llm_calls)
 
         return result
 
@@ -93,10 +110,19 @@ class DynamicAgent(BaseAgent):
         # 3. 流式调用 LLM（失败时走 fallback）
         chunks: list[str] = []
         source = "llm"
+        token_usage = None
+        llm_calls = 1
         try:
-            for chunk in chat_completion_stream(messages, **self._extract_llm_params(effective_params)):
-                chunks.append(chunk)
-                yield {"type": "delta", "content": chunk}
+            for event in chat_completion_stream_with_usage(
+                messages,
+                **self._extract_llm_params(effective_params),
+            ):
+                if event.get("type") == "usage":
+                    token_usage = event.get("usage")
+                elif event.get("type") == "delta":
+                    chunk = event.get("content", "")
+                    chunks.append(chunk)
+                    yield {"type": "delta", "content": chunk}
             content = "".join(chunks)
         except LLMError as exc:
             # Fallback：流式输出兜底内容
@@ -105,10 +131,18 @@ class DynamicAgent(BaseAgent):
             for chunk in self._chunk_text(content, size=20):
                 yield {"type": "delta", "content": chunk}
 
-        result = {"content": content, "analysis_text": content, "source": source}
+        result = {
+            "content": content,
+            "analysis_text": content,
+            "source": source,
+            "token_usage": token_usage,
+            "llm_calls": llm_calls,
+        }
 
         # 4. Skill 后处理
         result = self._apply_skills_post(result, ctx, effective_params)
+        result.setdefault("token_usage", token_usage)
+        result.setdefault("llm_calls", llm_calls)
 
         yield {"type": "done", **result}
 

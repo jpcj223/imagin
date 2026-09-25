@@ -69,7 +69,23 @@ export interface WorkflowStepRecord {
   started_at: string | null
   completed_at: string | null
   duration_ms: number | null
+  token_usage: { input_tokens?: number; output_tokens?: number; total_tokens?: number } | null
+  llm_calls: number
+  input_snapshot: WorkflowStepInputSnapshot | null
+  output_snapshot: Record<string, unknown> | null
   error_message: string | null
+}
+
+export interface WorkflowStepInputSnapshot extends Record<string, unknown> {
+  context_summary?: {
+    outline_title?: string
+    characters?: string[]
+    organizations?: string[]
+    world_settings?: string[]
+    foreshadowings?: string[]
+    recent_chapters?: string[]
+    long_term_memories?: string[]
+  }
 }
 
 export interface GenerationVersion {

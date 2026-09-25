@@ -174,13 +174,17 @@ def chat_completion_with_usage(
     except (KeyError, IndexError, TypeError) as exc:
         raise LLMError("模型返回格式不符合 OpenAI-compatible 规范") from exc
 
-    raw_usage = body.get("usage")
-    if not isinstance(raw_usage, dict):
-        return content, None
+    return content, _normalize_token_usage(body.get("usage"))
 
-    # 步骤 1：兼容 OpenAI 常见字段和部分供应商的 input/output 命名；步骤 2：只保留非负整数。
+
+def _normalize_token_usage(raw_usage: Any) -> dict[str, int] | None:
+    """规范化供应商用量字段；缺少时保持为空，不推算模型消耗。"""
+    if not isinstance(raw_usage, dict):
+        return None
+
+    # 步骤 1：兼容常用 input/output 字段别名；步骤 2：只接受非负整数值。
     def read_count(*keys: str) -> int | None:
-        # 步骤 1：按供应商字段别名依次读取；步骤 2：忽略缺失、布尔值与无效数字。
+        # 步骤 1：依次读取供应商别名；步骤 2：忽略缺失、布尔值和无效数字。
         for key in keys:
             value = raw_usage.get(key)
             if value is None or isinstance(value, bool):
@@ -198,7 +202,6 @@ def chat_completion_with_usage(
     total_tokens = read_count("total_tokens")
     if total_tokens is None and input_tokens is not None and output_tokens is not None:
         total_tokens = input_tokens + output_tokens
-
     usage = {
         key: value
         for key, value in (
@@ -208,16 +211,16 @@ def chat_completion_with_usage(
         )
         if value is not None
     }
-    return content, usage or None
+    return usage or None
 
 
-def chat_completion_stream(messages: list[dict[str, str]],
-                           temperature: float | None = None,
-                           max_tokens: int | None = None) -> Iterator[str]:
-    """流式调用 OpenAI-compatible 聊天接口。
-
-    后端只向业务层暴露纯文本增量，SSE/JSON 解析细节封装在这里，方便以后替换模型供应商。
-    """
+def chat_completion_stream_with_usage(
+    messages: list[dict[str, str]],
+    temperature: float | None = None,
+    max_tokens: int | None = None,
+) -> Iterator[dict[str, Any]]:
+    """流式请求并保留供应商主动返回的 Token 用量事件。"""
+    # 步骤 1：按当前 OpenAI-compatible 配置建立流；步骤 2：逐条解析文本和可选用量事件。
     config = get_active_model_config()
     if not config:
         raise LLMError("尚未配置可用模型")
@@ -226,9 +229,7 @@ def chat_completion_stream(messages: list[dict[str, str]],
     if "/anthropic" in base_url.lower():
         raise LLMError("当前模型通道使用 OpenAI-compatible 协议，请填写以 /v1 结尾的兼容地址，例如 https://api.siliconflow.cn/v1")
 
-    payload = _build_payload(config, messages, temperature=temperature,
-                             max_tokens=max_tokens, stream=True)
-
+    payload = _build_payload(config, messages, temperature=temperature, max_tokens=max_tokens, stream=True)
     try:
         with _make_urlopen(config, payload) as response:
             for raw_line in response:
@@ -240,12 +241,21 @@ def chat_completion_stream(messages: list[dict[str, str]],
                     break
                 try:
                     body = json.loads(data)
-                    delta = body["choices"][0].get("delta", {})
-                    content = delta.get("content") or ""
-                except (json.JSONDecodeError, KeyError, IndexError, TypeError):
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(body, dict):
+                    continue
+
+                # 步骤 3：部分供应商会在流末尾返回用量；没有时不估算。
+                usage = _normalize_token_usage(body.get("usage"))
+                if usage:
+                    yield {"type": "usage", "usage": usage}
+                try:
+                    content = body["choices"][0].get("delta", {}).get("content") or ""
+                except (KeyError, IndexError, TypeError):
                     continue
                 if content:
-                    yield content
+                    yield {"type": "delta", "content": content}
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode("utf-8", errors="ignore")
         raise LLMError(f"模型接口返回错误：{exc.code} {detail}") from exc
@@ -253,3 +263,16 @@ def chat_completion_stream(messages: list[dict[str, str]],
         raise LLMError(f"无法连接模型接口：{exc.reason}") from exc
     except (TimeoutError, socket.timeout) as exc:
         raise LLMError(f"模型接口读取超时：{_api_timeout_seconds()} 秒内未返回完整响应") from exc
+
+
+def chat_completion_stream(messages: list[dict[str, str]],
+                           temperature: float | None = None,
+                           max_tokens: int | None = None) -> Iterator[str]:
+    """流式调用 OpenAI-compatible 聊天接口。
+
+    后端只向业务层暴露纯文本增量，SSE/JSON 解析细节封装在这里，方便以后替换模型供应商。
+    """
+    # 步骤 1：复用带用量解析的流式实现；步骤 2：维持旧调用方只接收文本片段的接口。
+    for event in chat_completion_stream_with_usage(messages, temperature, max_tokens):
+        if event.get("type") == "delta":
+            yield event["content"]
