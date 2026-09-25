@@ -4,7 +4,9 @@
 """
 from __future__ import annotations
 
+import html
 import json
+import re
 import uuid
 from typing import Any
 
@@ -201,11 +203,18 @@ class SettingCoAgent:
                 "quick_replies": 快速回复建议
             }
         """
-        # 获取历史消息
+        # 步骤 1：加载最近对话，排除接口刚保存的本轮用户消息，避免提示词重复当前输入。
         history = self._load_history(session_id)
+        if history and history[-1].get("role") == "user" and history[-1].get("content") == user_message:
+            history = history[:-1]
 
-        # 1. 用 LLM 提取设定字段
-        extracted, token_usage = self._extract_settings(user_message, target_type, history, target_name)
+        # 步骤 2：读取目标档案现状，让 Agent 能围绕已有内容继续补充而不重复盘问。
+        existing_data = self.get_setting_detail(target_type, target_id) if target_id else {}
+
+        # 步骤 3：一次模型请求同时理解意图、生成自然回复并提取明确或已确认的设定。
+        extracted, conversation, token_usage = self._extract_settings(
+            user_message, target_type, history, target_name, existing_data
+        )
 
         # 2. 如果有提取到的设定，写入数据库和记忆
         memory_written = False
@@ -217,20 +226,21 @@ class SettingCoAgent:
 
         # 3. 生成回复
         reply_result = self._generate_reply(
-            user_message=user_message,
             target_type=target_type,
             target_name=target_name,
             extracted=extracted,
-            history=history,
             memory_written=memory_written,
+            assistant_reply=conversation.get("reply", ""),
+            intent=conversation.get("intent", "other"),
         )
+        quick_replies = conversation.get("quick_replies") or reply_result.get("quick_replies", [])
 
         return {
             "reply": reply_result["reply"],
             "thought": reply_result["thought"],
             "extracted_fields": extracted,
             "memory_written": memory_written,
-            "quick_replies": reply_result.get("quick_replies", []),
+            "quick_replies": quick_replies,
             "token_usage": token_usage,
         }
 
@@ -244,11 +254,12 @@ class SettingCoAgent:
             rows = (
                 db.query(SettingChatMessage)
                 .filter(SettingChatMessage.session_id == session_id)
-                .order_by(SettingChatMessage.id.asc())
+                .order_by(SettingChatMessage.id.desc())
                 .limit(20)
                 .all()
             )
-            return [row_to_dict(r) for r in rows]
+            # 步骤 1：数据库倒序只取最近消息；步骤 2：恢复正序供对话上下文阅读。
+            return [row_to_dict(row) for row in reversed(rows)]
 
     def _extract_settings(
         self,
@@ -256,10 +267,12 @@ class SettingCoAgent:
         target_type: str,
         history: list[dict[str, Any]],
         target_name: str,
-    ) -> tuple[list[dict[str, Any]], dict[str, int] | None]:
-        """从用户消息中提取设定字段与模型实际报告的 Token 用量。
+        existing_data: dict[str, Any] | None = None,
+    ) -> tuple[list[dict[str, Any]], dict[str, Any], dict[str, int] | None]:
+        """理解本轮对话，生成针对性回复、提取已确认设定并保留模型实际 Token 用量。
 
-        先用 LLM 提取，返回结构化的字段列表。
+        步骤 1：准备最近对话和当前档案作为上下文；步骤 2：一次请求同时产出回复与结构化设定。
+        步骤 3：只接纳模板字段，并过滤未经用户确认的创作建议。
         """
         fields = SETTING_FIELD_TEMPLATES.get(target_type, [])
         field_list_str = "\n".join(
@@ -271,42 +284,82 @@ class SettingCoAgent:
             target_type, "设定"
         )
 
-        system_prompt = f"""你是一个{type_label}设定提取助手。
-从用户的描述中提取结构化的{type_label}设定字段。
+        # 步骤 1：仅传入最近 12 条历史消息和模板字段，避免无关长对话挤占本轮上下文。
+        recent_history = []
+        for message in history[-12:]:
+            role = "作者" if message.get("role") == "user" else "Agent"
+            content = re.sub(r"<[^>]*>", " ", str(message.get("content") or ""))
+            content = html.unescape(content).strip()
+            if content:
+                recent_history.append({"role": role, "content": content[:1200]})
+
+        # 步骤 2：只提供本设定模板内已经填写的字段，供 Agent 避免重复提问。
+        current_data = existing_data or {}
+        current_settings = {
+            field["label"]: str(current_data.get(field["key"]) or "")[:500]
+            for field in fields
+            if current_data.get(field["key"])
+        }
+        history_json = json.dumps(recent_history, ensure_ascii=False)
+        current_settings_json = json.dumps(current_settings, ensure_ascii=False)
+
+        system_prompt = f"""你是一个{type_label}设定共创助手，需要接住作者当前这句话，而不是反复套用通用访谈问题。
 
 可选的字段列表：
 {field_list_str}
 
-请仔细阅读用户的描述，提取出对应字段的值。
-如果某个字段在描述中没有明确提到，不要提取。
-提取的值要忠实于原文，不要编造。
+对话与写回规则：
+1. 先理解“本轮用户消息”的具体意图，再参考最近对话和当前档案；不要重复询问档案里已有答案，也不要每次都问性格、细节、过去。
+2. 用户明确陈述的事实可以提取。角色日常举止、习惯性动作可归入“性格特质”；说话方式才归入“说话风格”。
+3. 如果用户是在要求你举例、给建议或补充一类尚未具体描述的内容（例如“补充小人物常见肢体动作”），请给出 3 到 5 个贴合目标和现有档案的具体候选，并请用户选择；候选只是建议，不能提取或写入档案。
+4. 用户后续明确选择、采纳或要求直接加入某个候选时，才可把被选内容作为设定提取。像“用第 2 个”这样的简短回复，要结合历史中的候选理解。
+5. 对已经明确的补充直接确认并继续回应当前话题；只有缺少会影响设定的关键信息时，才问最多一个具体问题。不要重启整套角色访谈，也不要擅自编造用户未确认的事实。
+6. 回复用自然、简洁的中文，针对本轮具体内容，优先 1 至 3 句；需要列候选时可分行列出。不要输出 HTML。
+7. 回复中不要提及内部字段 key、数据库或模型实现；处理摘要由系统根据实际写回结果生成。
+8. 候选建议要明确说明“尚未写入，选定后再加入”；不要在回复正文里声称档案或记忆已经保存。
 
 输出 JSON 格式：
 {{
+  "intent": "supplement|request_suggestion|clarify|question|other",
+  "reply": "直接回复作者的中文内容",
+  "quick_replies": ["结合当前话题的快捷回复，最多 3 个"],
   "extracted": [
     {{
       "key": "字段key",
       "label": "字段中文名",
       "value": "提取到的值",
+      "operation": "append|replace",
       "confidence": 0.9,
       "highlights": ["亮点标签1", "亮点标签2"]
     }}
   ]
 }}
 
-highlights 是可选的，如果提取的内容有特殊价值（如伏笔潜力、情感锚点等），可以加标签。
+只有作者明确要求纠正或替换旧值时 operation 才填 replace，其余补充填 append。highlights 可选。
+只输出 JSON，不要 Markdown 代码围栏或其他内容。
 """
 
         user_prompt = f"""{type_label}名称：{target_name or "未命名"}
 
-用户描述：
+当前档案：
+{current_settings_json}
+
+最近对话（仅作为理解上下文，不是需要重新提取的本轮输入）：
+{history_json}
+
+本轮用户消息：
 \"\"\"
 {user_message}
 \"\"\"
 
-请提取其中的{type_label}设定字段。只输出 JSON，不要其他内容。"""
+请围绕本轮消息给出自然回复，并提取本轮明确提供或明确采纳的设定。"""
 
         token_usage: dict[str, int] | None = None
+        fallback_conversation = {
+            "intent": "unavailable",
+            "reply": f"我收到你想补充“{user_message[:60]}”的方向了，不过这次没能完成整理。你可以重试，或告诉我希望补充到哪一方面。",
+            "quick_replies": ["重试本轮内容", "我换个说法"],
+        }
         try:
             result_text, token_usage = chat_completion_with_usage(
                 messages=[
@@ -317,16 +370,22 @@ highlights 是可选的，如果提取的内容有特殊价值（如伏笔潜力
                 max_tokens=1024,
             )
 
-            # 解析 JSON
+            # 步骤 1：兼容模型偶尔附带的代码围栏或 JSON 前后说明。
             result_text = result_text.strip()
-            # 有时模型会包裹 ```json 代码块
             if result_text.startswith("```"):
                 result_text = result_text.strip("`")
                 if result_text.lower().startswith("json"):
                     result_text = result_text[4:]
                 result_text = result_text.strip()
 
-            result = json.loads(result_text)
+            # 步骤 2：从回复中定位 JSON 对象，避免多余说明文字导致本轮提取整体失败。
+            json_start = result_text.find("{")
+            if json_start < 0:
+                raise json.JSONDecodeError("未找到 JSON 对象", result_text, 0)
+            result, _ = json.JSONDecoder().raw_decode(result_text[json_start:])
+            intent = str(result.get("intent") or "other")
+            if intent not in {"supplement", "request_suggestion", "clarify", "question", "other"}:
+                intent = "other"
             extracted = result.get("extracted", [])
 
             # 步骤 1：只接纳模板内字段，并把模型输出规范成稳定的字符串结构。
@@ -346,34 +405,62 @@ highlights 是可选的，如果提取的内容有特殊价值（如伏笔潜力
                     "label": template["label"],
                     "category": template["category"],
                     "value": str(value).strip(),
+                    "operation": "replace" if item.get("operation") == "replace" else "append",
                     "confidence": item.get("confidence", 0.7),
                     "highlights": [str(tag) for tag in item.get("highlights", []) if isinstance(tag, (str, int, float))]
                     if isinstance(item.get("highlights", []), list) else [],
                 })
-            return normalized, token_usage
+            # 步骤 3：建议意图只用于展示候选；即使模型误附字段，也不允许未确认内容写回档案。
+            if intent == "request_suggestion":
+                normalized = []
+
+            # 步骤 4：校验回复字段和快捷回复长度，只把可展示的普通文本交给前端。
+            reply = result.get("reply")
+            if not isinstance(reply, str) or not reply.strip():
+                reply = fallback_conversation["reply"]
+            quick_replies = result.get("quick_replies", [])
+            if not isinstance(quick_replies, list):
+                quick_replies = []
+            conversation = {
+                "intent": intent,
+                "reply": reply.strip()[:3000],
+                "quick_replies": [
+                    text.strip()[:40]
+                    for text in quick_replies
+                    if isinstance(text, str) and text.strip()
+                ][:3],
+            }
+            return normalized, conversation, token_usage
 
         except Exception as e:
-            # LLM 调用失败时返回空
+            # 步骤 1：记录模型结构化输出失败；步骤 2：返回贴合本轮输入的可恢复提示，不套用通用访谈模板。
             print(f"[SettingCoAgent] 提取设定失败: {e}")
-            return [], token_usage
+            return [], fallback_conversation, token_usage
 
     def _generate_reply(
         self,
-        user_message: str,
         target_type: str,
         target_name: str,
         extracted: list[dict[str, Any]],
-        history: list[dict[str, Any]],
         memory_written: bool,
+        assistant_reply: str = "",
+        intent: str = "other",
     ) -> dict[str, Any]:
-        """生成 Agent 回复。"""
+        """整理自然回复、已确认字段和面向作者的处理摘要。
+
+        步骤 1：安全转义模型和档案文本；步骤 2：展示实际提取字段与写回状态。
+        步骤 3：根据本轮动作生成可读处理摘要，不展示模型内部字段名。
+        """
         type_label = {"character": "角色", "world": "世界观", "foreshadowing": "伏笔"}.get(
             target_type, "设定"
         )
+        # 步骤 1：优先显示结合上下文生成的自然回复；转义后才拼入现有安全 HTML 渲染通道。
+        safe_reply = html.escape(assistant_reply.strip()) if assistant_reply else "这轮先围绕当前设定继续聊。"
+        safe_reply = safe_reply.replace("\n", "<br>")
+        reply_parts = [f"<div>{safe_reply}</div>"]
 
-        # 如果有提取到字段
+        # 步骤 2：只展示当前实际提取的内容；建议候选没有用户确认时不会出现在写回卡片中。
         if extracted:
-            # 按类别分组
             by_category: dict[str, list[dict[str, Any]]] = {}
             for e in extracted:
                 cat = e.get("category", "其他")
@@ -381,19 +468,22 @@ highlights 是可选的，如果提取的内容有特殊价值（如伏笔潜力
                     by_category[cat] = []
                 by_category[cat].append(e)
 
-            # 构建梳理卡片 HTML
             summary_parts = []
             for cat, items in by_category.items():
-                items_html = "".join(
-                    f"· {e.get('label') or e.get('key', '设定')}：{str(e.get('value', ''))[:80]}"
-                    f"{'（' + '、'.join(str(tag) for tag in e['highlights']) + '）' if e.get('highlights') else ''}<br>"
-                    for e in items
-                )
-                summary_parts.append(
-                    f"<strong>{cat}：</strong><br>{items_html}"
-                )
+                items_html = []
+                for item in items:
+                    label = html.escape(str(item.get("label") or "设定"))
+                    value = html.escape(str(item.get("value") or "")[:240])
+                    highlights = item.get("highlights") or []
+                    safe_highlights = [html.escape(str(tag)) for tag in highlights]
+                    highlight_text = f"（{'、'.join(safe_highlights)}）" if safe_highlights else ""
+                    items_html.append(f"· {label}：{value}{highlight_text}<br>")
+                summary_parts.append(f"<strong>{html.escape(str(cat))}：</strong><br>{''.join(items_html)}")
 
             extracted_summary_html = "<br>".join(summary_parts)
+            reply_parts.append(
+                f"<div class=\"extracted-summary\"><strong>本轮整理</strong><br>{extracted_summary_html}</div>"
+            )
 
             memory_note_html = ""
             if memory_written:
@@ -401,55 +491,25 @@ highlights 是可选的，如果提取的内容有特殊价值（如伏笔潜力
               <span class="icon">✅</span>
               已写入 L3 项目记忆 · {type_label}设定
             </div>"""
+                reply_parts.append(memory_note_html)
 
-            # 基于第一个提取字段追问
-            follow_up_html = ""
-            if extracted and len(extracted) > 0:
-                first_label = extracted[0]["label"]
-                follow_up_html = f"""<div style="margin-top: 12px;">
-              关于「{first_label}」——它有没有什么<strong>特殊的故事</strong>？比如那次事件有没有影响他的性格或修炼之路？我觉得这可以成为一个很好的情感伏笔。
-            </div>"""
-
-            reply = f"""<div class="thought-tag">✨ 正在提炼关键信息</div>
-很棒！这些细节很有画面感。我来梳理一下你说的：
-
-<div style="margin-top: 10px; padding: 10px 12px; background: rgba(99, 102, 241, 0.08); border-radius: 6px; font-size: 12px; line-height: 1.8;">
-{extracted_summary_html}
-</div>
-
-{memory_note_html}
-
-{follow_up_html if follow_up_html else "还有什么想补充的吗？"}"""
-
-            quick_replies = [
-                "有故事，继续深挖",
-                "跳过，聊下一个",
-                "帮我润色一下",
-            ]
-
-            thought = f"提取到 {len(extracted)} 个设定字段: {[e['key'] for e in extracted]}"
-
+        # 步骤 3：用实际写回结果生成处理摘要，避免内部 key 和“已保存”状态误报。
+        field_labels = list(dict.fromkeys(str(field.get("label") or "设定") for field in extracted))
+        target_display = target_name or type_label
+        if extracted:
+            action = "已同步到档案和项目记忆" if memory_written else "尚未同步到档案"
+            thought = f"已为「{target_display}」整理{'、'.join(field_labels)}；{action}。"
+        elif intent == "request_suggestion":
+            thought = f"识别到你想为「{target_display}」补充创作内容；当前回复提供的是候选建议，尚未写入档案。"
+        elif intent == "unavailable":
+            thought = "本轮整理未能完成，因此没有修改档案；你可以重试或换种说法。"
         else:
-            # 没有提取到明确字段，引导用户多说一些
-            reply = f"""收到～你说的内容我记下了。
+            thought = f"已结合「{target_display}」的已有设定回应本轮内容；没有明确确认的新设定，因此未修改档案。"
 
-为了更好地帮你完善{type_label}设定，能再多说一些细节吗？比如：
-<ul class="question-list">
-  <li>这个{type_label}的核心特点是什么？</li>
-  <li>有没有什么标志性的细节或习惯？</li>
-  <li>他/她/它的过去有什么重要的经历？</li>
-</ul>
-想到什么说什么就好，我来帮你整理～"""
-
-            quick_replies = [
-                f"聊聊{type_label}的过去",
-                "说说性格特点",
-                "给我几个问题引导我",
-            ]
-            thought = "用户消息中未提取到明确设定字段，引导用户提供更多信息"
+        quick_replies = ["继续补充这个方向", "换个设定方向"] if not extracted else ["继续补充其他细节"]
 
         return {
-            "reply": reply,
+            "reply": "\n".join(reply_parts),
             "thought": thought,
             "quick_replies": quick_replies,
         }
@@ -526,7 +586,7 @@ highlights 是可选的，如果提取的内容有特殊价值（如伏笔潜力
 
                 # 步骤 2：名称和概要字段采用最新明确回答；长文本字段保留已记录的补充事实。
                 current_value = getattr(target, column) or ""
-                if key in replace_fields or not current_value:
+                if key in replace_fields or field.get("operation") == "replace" or not current_value:
                     merged_value = value
                 elif value in current_value:
                     merged_value = current_value
@@ -537,7 +597,8 @@ highlights 是可选的，如果提取的内容有特殊价值（如伏笔潜力
                     (item for item in SETTING_FIELD_TEMPLATES[target_type] if item["key"] == key),
                     None,
                 )
-                persisted_fields[key] = value
+                # 步骤 1：记忆快照保存档案合并后的完整值，避免只留下本轮增量片段。
+                persisted_fields[key] = merged_value
                 field["label"] = field.get("label") or (template["label"] if template else key)
 
             if not persisted_fields:

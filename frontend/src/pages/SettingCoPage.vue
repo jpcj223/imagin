@@ -184,7 +184,7 @@
               <template v-if="msg.role === 'assistant'">
                 <div class="assistant-message-meta">
                   <button v-if="msg.thought" class="thought-toggle" @click="toggleThought(msg.id)">
-                    <span>🧠 思考过程（处理摘要）</span>
+                    <span>🧠 本轮处理摘要</span>
                     <span>{{ expandedThoughts[String(msg.id)] ? '收起' : '查看' }}</span>
                   </button>
                   <span v-if="hasTokenUsage(msg.token_usage)" class="message-token-usage">
@@ -934,7 +934,14 @@ function sanitizeMessageHtml(value: string) {
   }
   const parsed = new DOMParser().parseFromString(value, 'text/html')
   const safeTags = new Set(['DIV', 'P', 'UL', 'LI', 'STRONG', 'BR', 'SPAN'])
-  const safeClasses = new Set(['thought-tag', 'question-highlight', 'question-list', 'memory-note', 'icon'])
+  const safeClasses = new Set([
+    'thought-tag',
+    'question-highlight',
+    'question-list',
+    'memory-note',
+    'extracted-summary',
+    'icon',
+  ])
   const removedTags = new Set(['SCRIPT', 'STYLE', 'IFRAME', 'OBJECT', 'SVG', 'MATH'])
   const output = document.createElement('div')
 
@@ -1582,6 +1589,16 @@ watch(projectId, (newProjectId, oldProjectId) => {
   font-size: 11px;
   line-height: 1.6;
   white-space: pre-wrap;
+}
+
+.msg-bubble :deep(.extracted-summary) {
+  margin-top: 10px;
+  padding: 10px 12px;
+  background: rgba(99, 102, 241, 0.08);
+  border: 1px solid rgba(99, 102, 241, 0.18);
+  border-radius: 8px;
+  font-size: 12px;
+  line-height: 1.8;
 }
 
 /* Agent 消息内的富文本样式 */
