@@ -44,245 +44,45 @@
         '--right-panel-width': sidePanelCollapsed ? '56px' : '280px',
       }"
     >
-      <!-- 左侧：角色列表 -->
-      <aside class="list-panel" :class="{ collapsed: leftPanelCollapsed }">
-        <!-- 面板头部 -->
-        <div class="list-panel-header">
-          <template v-if="!leftPanelCollapsed">
-            <span class="list-panel-title">角色列表</span>
-            <span class="list-panel-count">{{ totalCount }}</span>
-          </template>
-          <n-button
-            text
-            size="tiny"
-            class="panel-toggle-btn"
-            @click="leftPanelCollapsed = !leftPanelCollapsed"
-            :title="leftPanelCollapsed ? '展开列表面板' : '折叠列表面板'"
-          >
-            <template #icon>
-              <n-icon size="16">
-                <svg v-if="leftPanelCollapsed" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                  <path d="M9 18l6-6-6-6" />
-                </svg>
-                <svg v-else viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                  <path d="M15 18l-6-6 6-6" />
-                </svg>
-              </n-icon>
-            </template>
-          </n-button>
-        </div>
-
-        <template v-if="!leftPanelCollapsed">
-          <div class="panel-tools">
-            <n-input v-model:value="keyword" clearable placeholder="搜索角色...">
-              <template #prefix>🔍</template>
-            </n-input>
-            <n-select
-              v-model:value="groupFilter"
-              clearable
-              :options="groupFilterOptions"
-              placeholder="分组筛选"
-              style="width: 110px"
-            />
-          </div>
-
-          <!-- 分组操作栏 -->
-          <div class="group-actions">
-            <span class="group-actions-label">分组</span>
-            <div class="group-actions-btns">
-              <n-button text size="tiny" @click="toggleAllGroups">
-                {{ allGroupsExpanded ? '全部折叠' : '全部展开' }}
-              </n-button>
-              <span class="group-actions-divider">|</span>
-              <n-button text size="tiny" type="primary" @click="startCreateGroup">
-                <template #icon>＋</template>
-                新建分组
-              </n-button>
-            </div>
-          </div>
-
-          <!-- 新建分组输入框 -->
-          <div v-if="isCreatingGroup" class="new-group-form">
-            <n-input
-              v-model:value="newGroupName"
-              size="small"
-              placeholder="输入分组名称"
-              clearable
-              @keyup.enter="confirmCreateGroup"
-            />
-            <div class="new-group-actions">
-              <n-button size="tiny" type="primary" @click="confirmCreateGroup">确认</n-button>
-              <n-button size="tiny" @click="cancelCreateGroup">取消</n-button>
-            </div>
-          </div>
-        </template>
-
-        <n-scrollbar class="list-scroll">
-          <div v-if="loading" class="list-loading">
-            <n-spin size="small" />
-            <span>加载中...</span>
-          </div>
-
-          <div v-else-if="groupedCharacters.length === 0" class="list-empty">
-            <div class="empty-icon">👤</div>
-            <p>还没有角色</p>
-            <p class="empty-sub">点击右上角「新建角色」开始创建</p>
-          </div>
-
-          <div v-else class="character-groups">
-            <draggable
-              v-model="localGroupOrder"
-              item-key="id"
-              animation="200"
-              @start="isDraggingGroup = true"
-              @end="onGroupDragEnd"
-              class="groups-draggable"
-            >
-              <template #item="{ element: group }">
-                <div class="group-wrapper" :class="{ 'is-dragging': isDraggingGroup }">
-                  <!-- 折叠态：只显示图标 -->
-                  <template v-if="leftPanelCollapsed">
-                    <div
-                      class="group-icon-only"
-                      :title="`${groupLabel(group)}（${groupCharacters[group.id]?.length || 0}）`"
-                      @click="quickSelectFirstOfGroup({ group, items: groupCharacters[group.id] || [] })"
-                    >
-                      <span class="group-icon-big">{{ groupIcon(group) }}</span>
-                      <n-badge :value="groupCharacters[group.id]?.length || 0" :max="99" size="tiny" />
-                    </div>
-                  </template>
-
-                  <!-- 展开态：完整分组 -->
-                  <template v-else>
-                    <!-- 分组标题 -->
-                    <div
-                      class="group-header"
-                      :class="{ collapsed: !expandedGroups.has(group.id), 'is-builtin': group.is_builtin }"
-                      @click="toggleGroup(group.id)"
-                    >
-                      <n-icon
-                        size="12"
-                        class="group-arrow"
-                        :class="{ expanded: expandedGroups.has(group.id) }"
-                      >
-                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
-                          <path d="M6 9l6 6 6-6" />
-                        </svg>
-                      </n-icon>
-                      <span class="group-icon">{{ groupIcon(group) }}</span>
-
-                      <!-- 重命名输入框 -->
-                      <n-input
-                        v-if="renamingGroupId === group.id"
-                        v-model:value="renamingGroupName"
-                        size="tiny"
-                        class="group-rename-input"
-                        @keyup.enter="confirmRenameGroup(group)"
-                        @keyup.esc="cancelRenameGroup"
-                        @click.stop
-                      />
-                      <span v-else class="group-name">
-                        {{ groupLabel(group) }}
-                      </span>
-
-                      <span class="group-count">{{ groupCharacters[group.id]?.length || 0 }}</span>
-
-                      <!-- 自定义分组操作按钮 -->
-                      <div v-if="!group.is_builtin && !group.is_virtual" class="group-actions-right">
-                        <n-button
-                          text
-                          size="tiny"
-                          class="group-action-btn"
-                          title="重命名"
-                          @click.stop="startRenameGroup(group)"
-                        >
-                          ✏️
-                        </n-button>
-                        <n-popconfirm positive-text="删除" negative-text="取消" @positive-click="deleteGroup(group)">
-                          <template #trigger>
-                            <n-button text size="tiny" class="group-action-btn" title="删除分组">
-                              🗑️
-                            </n-button>
-                          </template>
-                          确定删除该分组？有角色的分组不可删除。
-                        </n-popconfirm>
-                      </div>
-                    </div>
-
-                    <!-- 角色列表（可拖拽） -->
-                    <div v-show="expandedGroups.has(group.id)" class="group-items">
-                      <draggable
-                        v-model="groupCharacters[group.id]"
-                        item-key="id"
-                        group="characters"
-                        animation="150"
-                        ghost-class="char-ghost"
-                        drag-class="char-dragging"
-                        @start="isDraggingCharacter = true"
-                        @end="onCharacterDragEnd(group.id)"
-                        class="chars-draggable"
-                      >
-                        <template #item="{ element: item }">
-                          <div
-                            v-show="matchesFilter(item)"
-                            class="character-item"
-                            :class="{
-                              active: editingId === item.id,
-                              inactive: item.status === 'inactive',
-                              hidden: item.status === 'hidden',
-                              'is-builtin': item.is_builtin
-                            }"
-                            @click="selectCharacter(item)"
-                          >
-                            <div class="char-avatar">
-                              {{ item.name?.charAt(0) || '?' }}
-                              <span v-if="item.is_builtin" class="builtin-badge" title="内置角色">★</span>
-                            </div>
-                            <div class="char-content">
-                              <div class="char-title-row">
-                                <span class="char-name">{{ item.name }}</span>
-                                <n-tag v-if="item.is_builtin" size="tiny" type="warning" class="builtin-tag">内置</n-tag>
-                                <n-tag size="tiny" :type="roleTagType(item.role_type)">
-                                  {{ roleTypeLabel(item.role_type) }}
-                                </n-tag>
-                              </div>
-                              <div class="char-meta">
-                                {{ item.identity || '身份未定' }}
-                                <span v-if="item.faction"> · {{ item.faction }}</span>
-                              </div>
-                              <div class="char-progress-row">
-                                <div class="mini-progress">
-                                  <span :style="{ width: `${completionOf(item)}%` }"></span>
-                                </div>
-                                <span class="progress-text">{{ completionOf(item) }}%</span>
-                              </div>
-                              <div v-if="item.mbti_primary || item.mbti" class="char-tags">
-                                <span class="tag-chip mbti-chip">{{ item.mbti_primary || item.mbti }}</span>
-                                <span v-if="item.motivation" class="tag-chip">
-                                  {{ shortText(item.motivation, 12) }}
-                                </span>
-                              </div>
-                            </div>
-                          </div>
-                        </template>
-                      </draggable>
-
-                      <!-- 空分组提示 -->
-                      <div
-                        v-if="groupCharacters[group.id]?.length === 0"
-                        class="group-empty"
-                      >
-                        <span>暂无角色</span>
-                      </div>
-                    </div>
-                  </template>
-                </div>
-              </template>
-            </draggable>
-          </div>
-        </n-scrollbar>
-      </aside>
-
+      <!-- 左侧：分组和角色列表视图独立成组件，业务变更由父页面处理。 -->
+      <CharacterGroupListPanel
+        :loading="loading"
+        :collapsed="leftPanelCollapsed"
+        :total-count="totalCount"
+        v-model:keyword="keyword"
+        v-model:group-filter="groupFilter"
+        :group-filter-options="groupFilterOptions"
+        :all-groups-expanded="allGroupsExpanded"
+        :is-creating-group="isCreatingGroup"
+        v-model:new-group-name="newGroupName"
+        :grouped-characters="groupedCharacters"
+        v-model:local-group-order="localGroupOrder"
+        :group-characters="groupCharacters"
+        :expanded-groups="expandedGroups"
+        :renaming-group-id="renamingGroupId"
+        v-model:renaming-group-name="renamingGroupName"
+        :editing-id="editingId"
+        :matches-filter="matchesFilter"
+        :role-type-icon="roleTypeIcon"
+        :role-type-label="roleTypeLabel"
+        :role-tag-type="roleTagType"
+        :completion-of="completionOf"
+        :short-text="shortText"
+        @toggle-collapsed="leftPanelCollapsed = !leftPanelCollapsed"
+        @toggle-all-groups="toggleAllGroups"
+        @start-create-group="startCreateGroup"
+        @confirm-create-group="confirmCreateGroup"
+        @cancel-create-group="cancelCreateGroup"
+        @quick-select-first-of-group="quickSelectFirstOfGroup"
+        @toggle-group="toggleGroup"
+        @confirm-rename-group="confirmRenameGroup"
+        @cancel-rename-group="cancelRenameGroup"
+        @start-rename-group="startRenameGroup"
+        @delete-group="deleteGroup"
+        @group-drag-end="onGroupDragEnd"
+        @character-drag-end="onCharacterDragEnd"
+        @select-character="selectCharacter"
+      />
       <!-- 左侧拖拽条 -->
       <div
         v-if="!leftPanelCollapsed"
@@ -1066,8 +866,8 @@
 
 <script setup lang="ts">
 import { computed, h, nextTick, onMounted, reactive, ref, toRaw, watch } from 'vue'
-import { NBadge, NButton, NIcon, NInput, NPopconfirm, NTooltip } from 'naive-ui'
-import draggable from 'vuedraggable'
+import { NButton, NIcon, NInput, NPopconfirm, NTooltip } from 'naive-ui'
+import CharacterGroupListPanel, { type RoleGroup } from '@/components/characters/CharacterGroupListPanel.vue'
 import TagSelectField from '@/components/TagSelectField.vue'
 import SingleSelectField from '@/components/SingleSelectField.vue'
 import { useDirtySnapshot } from '@/composables/useDirtySnapshot'
@@ -1099,17 +899,6 @@ const groupFilter = ref<string | null>(null)
 
 // 内置角色类型（不可删除）
 const BUILTIN_ROLE_TYPES = ['protagonist', 'supporting', 'antagonist', 'mentor', 'love_interest']
-
-// 角色类型分组
-interface RoleGroup {
-  id: string        // 用 item_value 作为 ID
-  dictItemId: number // 字典项 ID（0 表示虚拟分组，不在字典中）
-  name: string
-  role_type: string
-  sort_order: number
-  is_builtin: boolean
-  is_virtual: boolean // 是否为虚拟分组（角色存在但字典中没有对应项）
-}
 
 // 本地分组顺序缓存（用于 vuedraggable 拖拽，因为 computed 不能直接被修改）
 const localGroupOrder = ref<RoleGroup[]>([])
@@ -1209,8 +998,6 @@ const isCreatingGroup = ref(false)
 const newGroupName = ref('')
 const renamingGroupId = ref<string | null>(null)
 const renamingGroupName = ref('')
-const isDraggingGroup = ref(false)
-const isDraggingCharacter = ref(false)
 
 // 分组角色映射：groupValue -> CharacterItem[]，用于 vuedraggable 拖拽
 const groupCharacters = reactive<Record<string, CharacterItem[]>>({})
@@ -2164,15 +1951,6 @@ function removeCharRelation(index: number) {
   form.related_character_ids = joinIds(form.character_relations.map((r) => r.target_id))
 }
 
-// ===== 分组图标与标签 =====
-function groupIcon(group: RoleGroup): string {
-  return roleTypeIcon(group.role_type)
-}
-
-function groupLabel(group: RoleGroup): string {
-  return group.name
-}
-
 // ===== 分组管理 =====
 function startCreateGroup() {
   newGroupName.value = ''
@@ -2291,7 +2069,6 @@ async function deleteGroup(group: RoleGroup) {
 
 // ===== 拖拽排序 - 分组 =====
 async function onGroupDragEnd() {
-  isDraggingGroup.value = false
   // 更新本地 sort_order
   localGroupOrder.value.forEach((group, index) => {
     group.sort_order = index
@@ -2313,7 +2090,6 @@ async function onGroupDragEnd() {
 // ===== 拖拽排序 - 角色 =====
 // 角色拖拽结束时的处理：同步所有分组角色顺序到后端
 async function onCharacterDragEnd(groupId: string) {
-  isDraggingCharacter.value = false
   const updates: Promise<CharacterItem>[] = []
 
   // 遍历所有分组，更新每个角色的 sort_index 和 role_type
@@ -2788,7 +2564,6 @@ useProjectDataLoader(load)
 }
 
 /* ===== 通用面板 ===== */
-.list-panel,
 .detail-panel,
 .side-panel {
   background: var(--n-color-card, #1a1d21);
@@ -2799,520 +2574,6 @@ useProjectDataLoader(load)
   overflow: hidden;
 }
 
-/* ===== 左侧列表面板 ===== */
-.list-panel {
-  overflow: hidden;
-  transition: all 0.3s ease;
-}
-
-.list-panel.collapsed {
-  padding: 0;
-}
-
-.list-panel-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 10px 12px;
-  border-bottom: 1px solid var(--n-border-color, #2a2f3a);
-  flex-shrink: 0;
-}
-
-.list-panel.collapsed .list-panel-header {
-  justify-content: center;
-  padding: 10px 8px;
-}
-
-.list-panel-title {
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--n-text-color-1, #e5e7eb);
-}
-
-/* 角色总数徽标固定高度并居中数字，避免两位数挤压标题。 */
-.list-panel-count {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-width: 34px;
-  height: 26px;
-  box-sizing: border-box;
-  font-size: 12px;
-  color: var(--n-text-color-3, #6b7280);
-  background: var(--n-color-2, #2a2f3a);
-  padding: 0 8px;
-  border-radius: 999px;
-  font-weight: 500;
-  line-height: 1;
-  font-variant-numeric: tabular-nums;
-  white-space: nowrap;
-  flex-shrink: 0;
-  margin-left: auto;
-  margin-right: 8px;
-}
-
-/* 分组操作栏 */
-.group-actions {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 8px 12px;
-  border-bottom: 1px solid var(--n-border-color, #2a2f3a);
-  flex-shrink: 0;
-}
-
-.group-actions-label {
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--n-text-color-2, #9ca3af);
-}
-
-.group-actions-btns {
-  display: flex;
-  align-items: center;
-  gap: 2px;
-}
-
-.group-actions-divider {
-  font-size: 11px;
-  color: var(--n-border-color, #2a2f3a);
-  margin: 0 2px;
-}
-
-/* 新建分组表单 */
-.new-group-form {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  padding: 10px 12px;
-  border-bottom: 1px solid var(--n-border-color, #2a2f3a);
-  background: var(--n-color-2, #222730);
-}
-
-.new-group-actions {
-  display: flex;
-  gap: 8px;
-  justify-content: flex-end;
-}
-
-.panel-tools {
-  display: flex;
-  gap: 8px;
-  padding: 12px;
-  border-bottom: 1px solid var(--n-border-color, #2a2f3a);
-  flex-shrink: 0;
-}
-
-.panel-tools > :first-child {
-  flex: 1;
-}
-
-.list-scroll {
-  flex: 1;
-  min-height: 0;
-}
-
-.list-loading,
-.list-empty {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  padding: 60px 20px;
-  gap: 10px;
-  color: var(--n-text-color-3, #6b7280);
-  font-size: 13px;
-}
-
-.empty-icon {
-  font-size: 36px;
-}
-
-.list-empty p {
-  margin: 0;
-}
-
-.empty-sub {
-  font-size: 12px;
-  color: var(--n-text-color-3, #6b7280);
-}
-
-/* 角色分组 */
-.character-groups {
-  padding: 8px 10px 12px;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-/* 分组行占满列表宽度，确保不同分组的计数徽标使用同一右侧基准。 */
-.group-header {
-  display: flex;
-  width: 100%;
-  box-sizing: border-box;
-  align-items: center;
-  gap: 8px;
-  padding: 12px 10px;
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--n-text-color-2, #9ca3af);
-  position: sticky;
-  top: 0;
-  background: var(--n-color-card, #1a1d21);
-  z-index: 1;
-  cursor: pointer;
-  transition: color 0.2s ease, background 0.2s ease;
-  user-select: none;
-  border-radius: 6px;
-}
-
-.group-header:hover {
-  color: var(--n-text-color-1, #e5e7eb);
-  background: var(--n-color-hover, #23272f);
-}
-
-.group-header:hover .group-actions-right {
-  opacity: 1;
-}
-
-/* 分组标题行整行可拖拽 */
-.group-header {
-  cursor: grab;
-}
-
-.group-header:active {
-  cursor: grabbing;
-}
-
-/* 分组右侧操作按钮 */
-.group-actions-right {
-  display: flex;
-  align-items: center;
-  gap: 2px;
-  margin-left: 6px;
-  opacity: 0;
-  transition: opacity 0.2s;
-}
-
-.group-action-btn {
-  padding: 2px 4px !important;
-  font-size: 12px !important;
-}
-
-/* 重命名输入框 */
-.group-rename-input {
-  flex: 1;
-  min-width: 0;
-}
-
-.group-rename-input :deep(.n-input__input-el) {
-  padding: 2px 8px !important;
-  height: 24px !important;
-  font-size: 12px !important;
-}
-
-/* 空分组提示 */
-.group-empty {
-  padding: 12px;
-  text-align: center;
-  font-size: 12px;
-  color: var(--n-text-color-3, #6b7280);
-  font-style: italic;
-}
-
-/* 拖拽视觉反馈 */
-.char-ghost {
-  opacity: 0.4;
-  background: var(--n-color-primary-1-suppl, #1e3a5f) !important;
-  border: 1px dashed var(--n-color-primary-3, #3b82f6) !important;
-}
-
-.char-dragging {
-  opacity: 0.9;
-  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.4);
-  transform: scale(1.02);
-}
-
-.groups-draggable {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.chars-draggable {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-
-.group-arrow {
-  color: var(--n-text-color-3, #6b7280);
-  transition: transform 0.2s ease;
-  flex-shrink: 0;
-}
-
-.group-arrow.expanded {
-  transform: rotate(180deg);
-}
-
-.group-header.collapsed + .group-items {
-  display: none;
-}
-
-.group-header:first-child {
-  padding-top: 4px;
-}
-
-/* 折叠态：分组图标 */
-.group-icon-only {
-  position: relative;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 40px;
-  height: 40px;
-  margin: 6px auto;
-  border-radius: 10px;
-  cursor: pointer;
-  transition: all 0.2s ease;
-}
-
-.group-icon-only:hover {
-  background: var(--n-color-hover, #2a2f3a);
-}
-
-.group-icon-big {
-  font-size: 20px;
-}
-
-.group-icon-only :deep(.n-badge) {
-  position: absolute;
-  top: 2px;
-  right: 2px;
-}
-
-.group-icon {
-  font-size: 14px;
-}
-
-.group-name {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.group-name.editable {
-  cursor: text;
-}
-
-.group-name.editable:hover {
-  text-decoration: underline;
-  text-decoration-style: dotted;
-  text-underline-offset: 2px;
-}
-
-/* 角色数量 - 右对齐设计 */
-/* 计数徽标固定宽度并使用等宽数字，保证单/双位数视觉对齐。 */
-.group-count {
-  display: inline-flex;
-  flex: 0 0 34px;
-  align-items: center;
-  justify-content: center;
-  width: 34px;
-  min-width: 34px;
-  height: 22px;
-  box-sizing: border-box;
-  padding: 0;
-  font-size: 12px;
-  font-weight: 500;
-  font-variant-numeric: tabular-nums;
-  color: var(--n-text-color-3, #6b7280);
-  background: var(--n-color, #23272f);
-  border-radius: 999px;
-  line-height: 1;
-  margin-left: auto;
-  font-family: 'SF Mono', 'Menlo', 'Consolas', monospace;
-  white-space: nowrap;
-}
-
-.group-header:hover .group-count {
-  color: var(--n-text-color-2, #9ca3af);
-  background: var(--n-color-hover-pressed, #2a2f37);
-}
-
-.group-items {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-
-.character-item {
-  display: flex;
-  align-items: flex-start;
-  gap: 10px;
-  padding: 10px 12px;
-  border-radius: 8px;
-  cursor: grab;
-  transition: all 0.15s;
-  border: 1px solid transparent;
-}
-
-.character-item:active {
-  cursor: grabbing;
-}
-
-.character-item:hover {
-  background: var(--n-color-hover, #23272f);
-}
-
-.character-item.active {
-  background: var(--n-color-primary-1-suppl, #1e3a5f);
-  border-color: var(--n-color-primary-3, #3b82f6);
-}
-
-.character-item.inactive .char-name,
-.character-item.inactive .char-meta,
-.character-item.inactive .progress-text {
-  color: var(--n-text-color-3, #6b7280);
-}
-
-.character-item.inactive .char-name {
-  text-decoration: line-through;
-}
-
-.character-item.hidden {
-  opacity: 0.5;
-}
-
-.character-item.hidden .char-name {
-  font-style: italic;
-}
-
-.char-avatar {
-  width: 36px;
-  height: 36px;
-  border-radius: 50%;
-  background: linear-gradient(135deg, #6366f1, #8b5cf6);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 14px;
-  font-weight: 600;
-  color: #fff;
-  flex-shrink: 0;
-  position: relative;
-}
-
-.builtin-badge {
-  position: absolute;
-  bottom: -2px;
-  right: -2px;
-  width: 14px;
-  height: 14px;
-  border-radius: 50%;
-  background: linear-gradient(135deg, #f59e0b, #f97316);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 8px;
-  color: #fff;
-  border: 2px solid #1a1d24;
-  line-height: 1;
-}
-
-.builtin-tag {
-  flex-shrink: 0;
-}
-
-.character-item.is-builtin .char-avatar {
-  background: linear-gradient(135deg, #f59e0b, #ef4444);
-}
-
-.char-content {
-  flex: 1;
-  min-width: 0;
-}
-
-.char-title-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  margin-bottom: 3px;
-}
-
-.char-name {
-  font-size: 13px;
-  font-weight: 600;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.char-meta {
-  font-size: 11px;
-  color: var(--n-text-color-3, #6b7280);
-  margin-bottom: 6px;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.char-progress-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-bottom: 6px;
-}
-
-.mini-progress {
-  flex: 1;
-  height: 4px;
-  background: var(--n-border-color, #2a2f3a);
-  border-radius: 2px;
-  overflow: hidden;
-}
-
-.mini-progress span {
-  display: block;
-  height: 100%;
-  background: linear-gradient(90deg, #36d399, #3b82f6);
-  border-radius: 2px;
-  transition: width 0.3s;
-}
-
-.progress-text {
-  font-size: 10px;
-  color: var(--n-text-color-3, #6b7280);
-  min-width: 28px;
-  text-align: right;
-}
-
-.char-tags {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px;
-}
-
-.tag-chip {
-  padding: 1px 6px;
-  font-size: 10px;
-  border-radius: 4px;
-  background: var(--n-color-1, #1e2228);
-  color: var(--n-text-color-2, #9ca3af);
-  border: 1px solid var(--n-border-color, #2a2f3a);
-}
-
-.mbti-chip {
-  background: rgba(99, 102, 241, 0.15);
-  color: #a5b4fc;
-  border-color: rgba(99, 102, 241, 0.3);
-  font-weight: 600;
-}
-
-/* ===== 中间详情面板 ===== */
 .detail-header {
   display: flex;
   align-items: center;
