@@ -8,7 +8,7 @@ import json
 import uuid
 from typing import Any
 
-from app.core.llm import chat_completion
+from app.core.llm import chat_completion_with_usage
 from app.db.session import get_business_db
 from app.models.business import Character, Foreshadowing, MemoryItem, SettingChatMessage, WorldSetting
 from app.db.repository import row_to_dict
@@ -205,7 +205,7 @@ class SettingCoAgent:
         history = self._load_history(session_id)
 
         # 1. 用 LLM 提取设定字段
-        extracted = self._extract_settings(user_message, target_type, history, target_name)
+        extracted, token_usage = self._extract_settings(user_message, target_type, history, target_name)
 
         # 2. 如果有提取到的设定，写入数据库和记忆
         memory_written = False
@@ -231,6 +231,7 @@ class SettingCoAgent:
             "extracted_fields": extracted,
             "memory_written": memory_written,
             "quick_replies": reply_result.get("quick_replies", []),
+            "token_usage": token_usage,
         }
 
     # ------------------------------------------------------------------
@@ -255,8 +256,8 @@ class SettingCoAgent:
         target_type: str,
         history: list[dict[str, Any]],
         target_name: str,
-    ) -> list[dict[str, Any]]:
-        """从用户消息中提取设定字段。
+    ) -> tuple[list[dict[str, Any]], dict[str, int] | None]:
+        """从用户消息中提取设定字段与模型实际报告的 Token 用量。
 
         先用 LLM 提取，返回结构化的字段列表。
         """
@@ -305,8 +306,9 @@ highlights 是可选的，如果提取的内容有特殊价值（如伏笔潜力
 
 请提取其中的{type_label}设定字段。只输出 JSON，不要其他内容。"""
 
+        token_usage: dict[str, int] | None = None
         try:
-            result_text = chat_completion(
+            result_text, token_usage = chat_completion_with_usage(
                 messages=[
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt},
@@ -348,12 +350,12 @@ highlights 是可选的，如果提取的内容有特殊价值（如伏笔潜力
                     "highlights": [str(tag) for tag in item.get("highlights", []) if isinstance(tag, (str, int, float))]
                     if isinstance(item.get("highlights", []), list) else [],
                 })
-            return normalized
+            return normalized, token_usage
 
         except Exception as e:
             # LLM 调用失败时返回空
             print(f"[SettingCoAgent] 提取设定失败: {e}")
-            return []
+            return [], token_usage
 
     def _generate_reply(
         self,

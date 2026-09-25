@@ -25,6 +25,7 @@ export interface SettingChatMessage {
   role: string         // user / assistant
   content: string
   thought: string
+  token_usage?: SettingTokenUsage | null
   extracted_fields: string  // JSON string
   memory_written: number
   created_at: string
@@ -44,6 +45,13 @@ export interface SettingIndexItem {
   role_type?: string
   completeness: number
   status: 'complete' | 'partial' | 'empty'
+}
+
+export interface SettingTokenUsage {
+  input_tokens?: number
+  output_tokens?: number
+  total_tokens?: number
+  source?: 'local' | 'unreported' | 'unavailable' | string
 }
 
 export interface SettingForeshadowingIndexItem extends SettingIndexItem {
@@ -93,7 +101,12 @@ export function createSession(data: {
 }) {
   return apiClient.post<{
     session: SettingChatSession
-    opening: { message: string; quick_replies: string[] }
+    opening: {
+      message: string
+      thought: string
+      token_usage: SettingTokenUsage | null
+      quick_replies: string[]
+    }
   }>('/setting-co/sessions', data).then(r => r.data)
 }
 
@@ -119,6 +132,7 @@ export function sendMessage(session_id: string, message: string) {
       role: string
       content: string
       thought: string
+      token_usage: SettingTokenUsage | null
       extracted_fields: ExtractedField[]
       memory_written: number
       created_at: string

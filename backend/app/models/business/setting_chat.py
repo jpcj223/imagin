@@ -36,6 +36,7 @@ class SettingChatMessage(Base):
     role = Column(String(16), nullable=False)                 # user/assistant
     content = Column(Text, nullable=False, default="")
     thought = Column(Text, default="")                         # Agent 思考过程
+    token_usage = Column(Text, default="", nullable=True)       # 模型供应商返回的 Token 用量 JSON
     extracted_fields = Column(Text, default="[]")              # JSON 提取到的设定字段
     memory_written = Column(Integer, default=0)                # 是否已写入记忆
     created_at = Column(DateTime, server_default=func.now())

@@ -126,7 +126,24 @@ def chat_completion(messages: list[dict[str, str]], temperature: float | None = 
                     max_tokens: int | None = None) -> str:
     """调用 OpenAI-compatible 聊天接口。
 
+    步骤 1：调用统一的用量接口；步骤 2：沿用旧签名只返回文本，兼容现有 Agent。
     这里刻意保持轻量，不把业务流程绑死到 LangChain；后续可以替换为更完整的模型适配层。
+    """
+    content, _ = chat_completion_with_usage(
+        messages, temperature=temperature, max_tokens=max_tokens
+    )
+    return content
+
+
+def chat_completion_with_usage(
+    messages: list[dict[str, str]],
+    temperature: float | None = None,
+    max_tokens: int | None = None,
+) -> tuple[str, dict[str, int] | None]:
+    """调用兼容接口并同时返回供应商报告的 Token 用量。
+
+    步骤 1：按现有配置发送聊天请求；步骤 2：读取文本和可用用量字段；
+    步骤 3：不估算缺失用量，避免把猜测值当成真实消耗。
     """
     config = get_active_model_config()
     if not config:
@@ -153,9 +170,45 @@ def chat_completion(messages: list[dict[str, str]], temperature: float | None = 
         raise LLMError(f"模型接口读取超时：{_api_timeout_seconds()} 秒内未返回完整响应") from exc
 
     try:
-        return body["choices"][0]["message"]["content"]
+        content = body["choices"][0]["message"]["content"]
     except (KeyError, IndexError, TypeError) as exc:
         raise LLMError("模型返回格式不符合 OpenAI-compatible 规范") from exc
+
+    raw_usage = body.get("usage")
+    if not isinstance(raw_usage, dict):
+        return content, None
+
+    # 步骤 1：兼容 OpenAI 常见字段和部分供应商的 input/output 命名；步骤 2：只保留非负整数。
+    def read_count(*keys: str) -> int | None:
+        # 步骤 1：按供应商字段别名依次读取；步骤 2：忽略缺失、布尔值与无效数字。
+        for key in keys:
+            value = raw_usage.get(key)
+            if value is None or isinstance(value, bool):
+                continue
+            try:
+                count = int(value)
+            except (TypeError, ValueError, OverflowError):
+                continue
+            if count >= 0:
+                return count
+        return None
+
+    input_tokens = read_count("prompt_tokens", "input_tokens")
+    output_tokens = read_count("completion_tokens", "output_tokens")
+    total_tokens = read_count("total_tokens")
+    if total_tokens is None and input_tokens is not None and output_tokens is not None:
+        total_tokens = input_tokens + output_tokens
+
+    usage = {
+        key: value
+        for key, value in (
+            ("input_tokens", input_tokens),
+            ("output_tokens", output_tokens),
+            ("total_tokens", total_tokens),
+        )
+        if value is not None
+    }
+    return content, usage or None
 
 
 def chat_completion_stream(messages: list[dict[str, str]],

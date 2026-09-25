@@ -44,6 +44,22 @@ class SendMessageRequest(BaseModel):
     message: str
 
 
+def _message_to_dict(message: SettingChatMessage) -> dict:
+    """序列化消息并把 Token 用量从 JSON 文本还原为对象。
+
+    步骤 1：转换 ORM 列；步骤 2：兼容旧消息的空值和无效历史内容。
+    """
+    data = row_to_dict(message) or {}
+    raw_usage = data.get("token_usage")
+    if isinstance(raw_usage, str) and raw_usage.strip():
+        try:
+            raw_usage = json.loads(raw_usage)
+        except json.JSONDecodeError:
+            raw_usage = None
+    data["token_usage"] = raw_usage if isinstance(raw_usage, dict) else None
+    return data
+
+
 # ============================================================
 # 会话管理
 # ============================================================
@@ -170,6 +186,7 @@ def create_session(req: CreateSessionRequest):
             role="assistant",
             content=opening["message"],
             thought=opening["thought"],
+            token_usage=json.dumps({"source": "local"}, ensure_ascii=False),
             extracted_fields=json.dumps([], ensure_ascii=False),
             memory_written=0,
         )
@@ -183,6 +200,8 @@ def create_session(req: CreateSessionRequest):
             "session": row_to_dict(session),
             "opening": {
                 "message": opening["message"],
+                "thought": opening["thought"],
+                "token_usage": {"source": "local"},
                 "quick_replies": opening["quick_replies"],
             },
         }
@@ -209,7 +228,7 @@ def get_session(session_id: str):
 
         return {
             "session": row_to_dict(session),
-            "messages": rows_to_dicts(messages),
+            "messages": [_message_to_dict(message) for message in messages],
         }
 
 
@@ -227,7 +246,7 @@ def list_messages(session_id: str):
             .order_by(SettingChatMessage.id.asc())
             .all()
         )
-        return {"messages": rows_to_dicts(messages)}
+        return {"messages": [_message_to_dict(message) for message in messages]}
 
 
 @router.post("/sessions/{session_id}/messages")
@@ -275,7 +294,10 @@ def send_message(session_id: str, req: SendMessageRequest):
                 "extracted_fields": [],
                 "memory_written": False,
                 "quick_replies": ["重新描述一下", "换个话题"],
+                "token_usage": {"source": "unavailable"},
             }
+
+        token_usage = result.get("token_usage") or {"source": "unreported"}
 
         # 保存 Agent 回复
         assistant_msg = SettingChatMessage(
@@ -283,6 +305,7 @@ def send_message(session_id: str, req: SendMessageRequest):
             role="assistant",
             content=result["reply"],
             thought=result["thought"],
+            token_usage=json.dumps(token_usage, ensure_ascii=False),
             extracted_fields=json.dumps(
                 result["extracted_fields"], ensure_ascii=False
             ),
@@ -311,6 +334,7 @@ def send_message(session_id: str, req: SendMessageRequest):
                 "role": "assistant",
                 "content": result["reply"],
                 "thought": result["thought"],
+                "token_usage": token_usage,
                 "extracted_fields": result["extracted_fields"],
                 "memory_written": result["memory_written"],
                 "created_at": assistant_msg.created_at.isoformat() if assistant_msg.created_at else None,

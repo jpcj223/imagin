@@ -152,6 +152,10 @@
             选择左侧人物、世界观或伏笔，开始对话式设定完善
             </template>
           </div>
+          <div v-if="currentSession" class="usage-summary">
+            <span title="仅显示模型供应商报告的 Token 数量，不包含费用">⚡ 本会话消耗：{{ conversationUsage.calls ? `${formatTokenCount(conversationUsage.total)} Tokens` : '暂无可用用量' }}</span>
+            <small v-if="conversationUsage.calls">已统计 {{ conversationUsage.calls }} 次模型请求</small>
+          </div>
         </div>
         <div class="chat-header-actions">
           <button class="header-btn" title="导出当前对话" :disabled="!currentSession || !messages.length" @click="exportConversation">📤</button>
@@ -177,6 +181,21 @@
               </div>
               <div v-if="msg.role === 'user'" class="msg-bubble">{{ msg.content }}</div>
               <div v-else class="msg-bubble" v-html="sanitizeMessageHtml(msg.content)"></div>
+              <template v-if="msg.role === 'assistant'">
+                <div class="assistant-message-meta">
+                  <button v-if="msg.thought" class="thought-toggle" @click="toggleThought(msg.id)">
+                    <span>🧠 思考过程（处理摘要）</span>
+                    <span>{{ expandedThoughts[String(msg.id)] ? '收起' : '查看' }}</span>
+                  </button>
+                  <span v-if="hasTokenUsage(msg.token_usage)" class="message-token-usage">
+                    ⚡ {{ formatMessageTokenUsage(msg.token_usage) }}
+                  </span>
+                  <span v-else class="message-token-status">⚡ {{ tokenUsageStatus(msg.token_usage) }}</span>
+                </div>
+                <div v-if="msg.thought && expandedThoughts[String(msg.id)]" class="thought-summary">
+                  {{ msg.thought }}
+                </div>
+              </template>
               <!-- 快速回复（只在最后一条 agent 消息显示） -->
               <div
                 v-if="msg.role === 'assistant' && idx === messages.length - 1 && quickReplies.length > 0 && !isSending"
@@ -481,6 +500,7 @@ import {
   type SettingChatSession,
   type SettingChatMessage,
   type SettingIndexResponse,
+  type SettingTokenUsage,
 } from '@/api/settingCo'
 import { notify } from '@/utils/notify'
 
@@ -496,12 +516,27 @@ const quickReplies = ref<string[]>([])
 const inputMessage = ref('')
 const isSending = ref(false)
 const showPromptTemplates = ref(false)
+const expandedThoughts = ref<Record<string, boolean>>({})
 const activeTargetType = ref('character')
 const activeTargetId = ref<number | null>(null)
 const settingDetail = ref<Record<string, any> | null>(null)
 const lastUpdatedField = ref<string | null>(null)
 const sessionHasMemory = computed(() => messages.value.some(
   (message) => message.role === 'assistant' && message.memory_written === 1
+))
+const conversationUsage = computed(() => messages.value.reduce(
+  (usage, message) => {
+    const itemUsage = message.role === 'assistant' ? message.token_usage : null
+    if (!hasTokenUsage(itemUsage)) return usage
+    const input = itemUsage.input_tokens || 0
+    const output = itemUsage.output_tokens || 0
+    usage.calls += 1
+    usage.input += input
+    usage.output += output
+    usage.total += itemUsage.total_tokens ?? (input + output)
+    return usage
+  },
+  { calls: 0, input: 0, output: 0, total: 0 },
 ))
 let sessionRequestSequence = 0
 let workspaceRequestSequence = 0
@@ -621,6 +656,7 @@ async function startChat(targetType: string, targetId: number, targetName: strin
   const requestSequence = ++sessionRequestSequence
   activeTargetType.value = targetType
   activeTargetId.value = targetId
+  expandedThoughts.value = {}
 
   try {
     const result = await createSession({
@@ -639,7 +675,8 @@ async function startChat(targetType: string, targetId: number, targetName: strin
         session_id: result.session.session_id,
         role: 'assistant',
         content: result.opening.message,
-        thought: '',
+        thought: result.opening.thought || '',
+        token_usage: result.opening.token_usage,
         extracted_fields: '[]',
         memory_written: 0,
         created_at: new Date().toISOString(),
@@ -679,6 +716,7 @@ async function resumeSession(session: SettingChatSession) {
     }
     currentSession.value = result.session
     messages.value = result.messages
+    expandedThoughts.value = {}
     activeTargetType.value = result.session.target_type
     activeTargetId.value = result.session.target_id
     quickReplies.value = []
@@ -753,6 +791,7 @@ async function handleSend() {
       role: 'assistant',
       content: result.reply.content,
       thought: result.reply.thought || '',
+      token_usage: result.reply.token_usage,
       extracted_fields: JSON.stringify(result.reply.extracted_fields || []),
       memory_written: result.reply.memory_written ? 1 : 0,
       created_at: result.reply.created_at || new Date().toISOString(),
@@ -785,6 +824,7 @@ async function handleSend() {
         role: 'assistant',
         content: '本轮没有收到服务端回复。你刚才的内容已保留在当前界面，请检查连接后重试。',
         thought: '',
+        token_usage: { source: 'unavailable' },
         extracted_fields: '[]',
         memory_written: 0,
         created_at: new Date().toISOString(),
@@ -800,6 +840,45 @@ async function handleSend() {
 function sendQuickReply(text: string) {
   inputMessage.value = text
   handleSend()
+}
+
+function hasTokenUsage(usage?: SettingTokenUsage | null): usage is SettingTokenUsage {
+  // 步骤 1：仅接受供应商报告的数值字段；步骤 2：状态标记和旧消息不计入总消耗。
+  return Boolean(usage && ['input_tokens', 'output_tokens', 'total_tokens'].some(
+    (key) => typeof usage[key as keyof SettingTokenUsage] === 'number'
+  ))
+}
+
+function formatTokenCount(value: number) {
+  // 步骤 1：限制为非负整数；步骤 2：按中文习惯添加千位分隔符。
+  return Math.max(0, Math.trunc(value)).toLocaleString('zh-CN')
+}
+
+function formatMessageTokenUsage(usage?: SettingTokenUsage | null) {
+  // 步骤 1：显示供应商实际返回的输入、输出和总量；步骤 2：对缺失字段不做猜测。
+  if (!usage) return ''
+  const details: string[] = []
+  if (typeof usage.input_tokens === 'number') details.push(`输入 ${formatTokenCount(usage.input_tokens)}`)
+  if (typeof usage.output_tokens === 'number') details.push(`输出 ${formatTokenCount(usage.output_tokens)}`)
+  if (typeof usage.total_tokens === 'number') details.push(`共 ${formatTokenCount(usage.total_tokens)}`)
+  else if (typeof usage.input_tokens === 'number' && typeof usage.output_tokens === 'number') {
+    details.push(`共 ${formatTokenCount(usage.input_tokens + usage.output_tokens)}`)
+  }
+  return `${details.join(' · ')} Tokens`
+}
+
+function tokenUsageStatus(usage?: SettingTokenUsage | null) {
+  // 步骤 1：识别未调用模型、供应商未报告和调用失败；步骤 2：给旧消息提供明确状态。
+  if (usage?.source === 'local') return '本条未调用模型'
+  if (usage?.source === 'unreported') return '供应商未返回用量'
+  if (usage?.source === 'unavailable') return '本轮用量无法统计'
+  return '历史消息无用量记录'
+}
+
+function toggleThought(messageId: number) {
+  // 步骤 1：以消息 ID 定位处理摘要；步骤 2：只切换当前消息的展开状态。
+  const key = String(messageId)
+  expandedThoughts.value[key] = !expandedThoughts.value[key]
 }
 
 function insertPromptTemplate(text: string) {
@@ -887,6 +966,7 @@ function handleNewChat() {
   sessionRequestSequence += 1
   currentSession.value = null
   messages.value = []
+  expandedThoughts.value = {}
   quickReplies.value = []
   settingDetail.value = null
   activeTargetId.value = null
@@ -995,6 +1075,7 @@ watch(projectId, (newProjectId, oldProjectId) => {
   workspaceRequestSequence += 1
   currentSession.value = null
   messages.value = []
+  expandedThoughts.value = {}
   quickReplies.value = []
   settingDetail.value = null
   activeTargetId.value = null
@@ -1321,6 +1402,20 @@ watch(projectId, (newProjectId, oldProjectId) => {
   margin-top: 2px;
 }
 
+.usage-summary {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 4px;
+  color: #a5b4fc;
+  font-size: 10px;
+}
+
+.usage-summary small {
+  color: var(--text-muted);
+}
+
 .chat-header-actions {
   display: flex;
   gap: 6px;
@@ -1439,6 +1534,53 @@ watch(projectId, (newProjectId, oldProjectId) => {
   background: linear-gradient(135deg, rgba(99, 102, 241, 0.3), rgba(139, 92, 246, 0.3));
   border: 1px solid rgba(99, 102, 241, 0.4);
   border-top-right-radius: 4px;
+  white-space: pre-wrap;
+}
+
+.assistant-message-meta {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 5px 2px 0;
+  color: var(--text-muted);
+  font-size: 10px;
+}
+
+.thought-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 3px 7px;
+  color: #c4b5fd;
+  background: rgba(139, 92, 246, 0.08);
+  border: 1px solid rgba(139, 92, 246, 0.18);
+  border-radius: 6px;
+  font-size: 10px;
+  cursor: pointer;
+}
+
+.thought-toggle:hover {
+  background: rgba(139, 92, 246, 0.16);
+}
+
+.message-token-usage {
+  color: #93c5fd;
+}
+
+.message-token-status {
+  color: var(--text-muted);
+}
+
+.thought-summary {
+  margin: 6px 2px 0;
+  padding: 8px 10px;
+  color: var(--text-secondary);
+  background: rgba(139, 92, 246, 0.07);
+  border-left: 2px solid rgba(139, 92, 246, 0.55);
+  border-radius: 0 6px 6px 0;
+  font-size: 11px;
+  line-height: 1.6;
   white-space: pre-wrap;
 }
 
