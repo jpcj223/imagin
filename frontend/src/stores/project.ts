@@ -77,9 +77,10 @@ export const useProjectStore = defineStore('project', {
     },
 
     /** 新建项目并自动切换过去。 */
-    async createNew(name: string) {
+    async createNew(name: string, novelType = '') {
       try {
-        const newProject = await createProject({ name })
+        // 步骤 1：将新建弹窗收集到的书名和小说类型一起写入项目。
+        const newProject = await createProject({ name, novel_type: novelType })
         this.projects.unshift(newProject)
         this.currentProject = newProject
         localStorage.setItem(LAST_PROJECT_KEY, String(newProject.id))

@@ -13,7 +13,7 @@
         </p>
         <!-- 项目切换器 -->
         <n-select
-          v-model:value="currentProjectId"
+          :value="currentProjectId"
           :options="projectOptions"
           class="project-switcher"
           @update:value="onSwitchProject"
@@ -36,7 +36,7 @@
             <span class="stat-label">节奏等级</span>
           </div>
         </div>
-        <n-button @click="showNewModal = true">
+        <n-button @click="openNewProject">
           <template #icon>＋</template>
           新建项目
         </n-button>
@@ -47,117 +47,126 @@
           @positive-click="onDeleteCurrent"
         >
           <template #trigger>
-            <n-button type="error" ghost>删除</n-button>
+            <n-button type="error" ghost :loading="deletingProject">删除项目</n-button>
           </template>
           <div class="delete-warn">
             <p>确定要删除「{{ form.name }}」吗？</p>
             <p class="warn-sub">此操作不可恢复，所有人物、组织、伏笔、章节等数据将被一并删除。</p>
           </div>
         </n-popconfirm>
-        <n-button type="primary" :disabled="!canSave" @click="save">保存配置</n-button>
+        <n-button type="primary" :disabled="!canSave" :loading="saving" @click="save">保存配置</n-button>
       </div>
     </div>
 
-    <n-form class="config-form" label-placement="top" :show-label="true">
-      <!-- 基本信息区 -->
-      <div class="form-card">
-        <div class="card-header-bar">
-          <span class="card-icon">📖</span>
-          <span class="card-title">基本信息</span>
-        </div>
-        <div class="card-body">
-          <n-form-item label="书名（必填）">
-            <n-input
-              v-model:value="form.name"
-              placeholder="给你的小说起个名字"
-              :clearable="false"
-              maxlength="50"
-              show-count
-              size="large"
-            />
-          </n-form-item>
-
-          <div class="form-grid-2">
-            <n-form-item label="主题">
+    <n-form v-if="projectStore.currentProject" class="config-form" label-placement="top" :show-label="true">
+      <div class="config-top-grid">
+        <!-- 基本信息区 -->
+        <div class="form-card">
+          <div class="card-header-bar">
+            <span class="card-icon">📖</span>
+            <div>
+              <span class="card-title">基本信息</span>
+              <p class="card-caption">定义作品身份，供项目内各模块引用</p>
+            </div>
+          </div>
+          <div class="card-body">
+            <n-form-item label="书名（必填）">
               <n-input
-                v-model:value="form.theme"
-                placeholder="例如：成长、复仇、群像、救赎"
-                maxlength="30"
+                v-model:value="form.name"
+                placeholder="给你的小说起个名字"
+                :clearable="false"
+                maxlength="50"
                 show-count
+                size="large"
               />
             </n-form-item>
-            <n-form-item label="小说类型">
-              <n-select
-                v-model:value="form.novel_type"
-                :options="novelTypeOptions"
-                filterable
-                allow-input
-                placeholder="选择或输入类型"
-              />
-            </n-form-item>
-          </div>
 
-          <div class="form-grid-2">
-            <n-form-item label="叙事视角">
-              <n-select
-                v-model:value="form.view_point"
-                :options="viewPointOptions"
-                allow-input
-                placeholder="选择叙事视角"
-              />
-            </n-form-item>
-            <n-form-item label="文风基调">
-              <n-select
-                v-model:value="form.writing_style"
-                :options="writingStyleOptions"
-                allow-input
-                placeholder="选择文风基调"
-              />
-            </n-form-item>
+            <div class="form-grid-2">
+              <n-form-item label="主题">
+                <n-input
+                  v-model:value="form.theme"
+                  placeholder="例如：成长、复仇、群像、救赎"
+                  maxlength="30"
+                  show-count
+                />
+              </n-form-item>
+              <n-form-item label="小说类型">
+                <n-select
+                  v-model:value="form.novel_type"
+                  :options="novelTypeOptions"
+                  filterable
+                  allow-input
+                  placeholder="选择或输入类型"
+                />
+              </n-form-item>
+            </div>
+
+            <div class="form-grid-2">
+              <n-form-item label="叙事视角">
+                <n-select
+                  v-model:value="form.view_point"
+                  :options="viewPointOptions"
+                  allow-input
+                  placeholder="选择叙事视角"
+                />
+              </n-form-item>
+              <n-form-item label="文风基调">
+                <n-select
+                  v-model:value="form.writing_style"
+                  :options="writingStyleOptions"
+                  allow-input
+                  placeholder="选择文风基调"
+                />
+              </n-form-item>
+            </div>
           </div>
         </div>
-      </div>
 
-      <!-- 目标与节奏 -->
-      <div class="form-card">
-        <div class="card-header-bar">
-          <span class="card-icon">🎯</span>
-          <span class="card-title">目标与节奏</span>
-        </div>
-        <div class="card-body">
-          <n-form-item label="单章目标字数">
-            <div class="target-words-row">
-              <n-input-number
-                v-model:value="form.target_words"
-                :min="500"
-                :max="100000"
-                :step="500"
-                style="width: 160px"
-              />
-              <n-slider
-                v-model:value="form.target_words"
-                :min="500"
-                :max="10000"
-                :step="500"
-                class="target-words-slider"
-              />
+        <!-- 目标与节奏 -->
+        <div class="form-card">
+          <div class="card-header-bar">
+            <span class="card-icon">🎯</span>
+            <div>
+              <span class="card-title">目标与节奏</span>
+              <p class="card-caption">控制章节篇幅和剧情推进速度</p>
             </div>
-          </n-form-item>
+          </div>
+          <div class="card-body">
+            <n-form-item label="单章目标字数">
+              <div class="target-words-row">
+                <n-input-number
+                  v-model:value="form.target_words"
+                  :min="500"
+                  :max="100000"
+                  :step="500"
+                  style="width: 160px"
+                />
+                <n-slider
+                  v-model:value="form.target_words"
+                  :min="500"
+                  :max="100000"
+                  :step="500"
+                  class="target-words-slider"
+                />
+              </div>
+              <div class="field-hint">可以直接输入精确字数，也可以拖动滑块调整。</div>
+            </n-form-item>
 
-          <n-form-item label="默认节奏等级">
-            <div class="pace-level-row">
-              <n-slider
-                v-model:value="form.pace_level"
-                :min="1"
-                :max="5"
-                :marks="paceMarks"
-                class="pace-slider"
-              />
-            </div>
-            <div class="field-hint">
-              全局默认节奏，单章生成时可单独覆盖。等级越高，情节推进越快、冲突密度越大。
-            </div>
-          </n-form-item>
+            <n-form-item label="默认节奏等级">
+              <div class="pace-level-row">
+                <n-slider
+                  v-model:value="form.pace_level"
+                  :min="1"
+                  :max="5"
+                  :marks="paceMarks"
+                  class="pace-slider"
+                />
+              </div>
+              <div class="field-hint">
+                全局默认节奏，单章生成时可单独覆盖。等级越高，情节推进越快、冲突密度越大。
+              </div>
+            </n-form-item>
+          </div>
         </div>
       </div>
 
@@ -200,6 +209,12 @@
         </div>
       </div>
     </n-form>
+    <div v-else class="config-empty-state">
+      <div class="empty-icon">📚</div>
+      <strong>还没有创作项目</strong>
+      <span>新建一个项目后，就可以在这里配置作品资料和写作目标。</span>
+      <n-button type="primary" @click="openNewProject">新建项目</n-button>
+    </div>
 
     <!-- 新建项目弹窗 -->
     <n-modal v-model:show="showNewModal" preset="card" title="新建项目" style="width: 480px">
@@ -225,7 +240,7 @@
       </n-form>
       <template #footer>
         <n-button @click="showNewModal = false">取消</n-button>
-        <n-button type="primary" :disabled="!newProjectName.trim()" @click="confirmCreate">
+        <n-button type="primary" :disabled="!newProjectName.trim()" :loading="creatingProject" @click="confirmCreate">
           创建并切换
         </n-button>
       </template>
@@ -252,15 +267,15 @@ const dictStore = useDictStore()
 const showNewModal = ref(false)
 const newProjectName = ref('')
 const newProjectType = ref('')
+const creatingProject = ref(false)
+const deletingProject = ref(false)
+const saving = ref(false)
 
 const projectOptions = computed(() =>
   projectStore.projects.map((p) => ({ label: p.name, value: p.id }))
 )
 
-const currentProjectId = computed<number | null>({
-  get: () => projectStore.currentProject?.id ?? null,
-  set: () => {},
-})
+const currentProjectId = computed<number | null>(() => projectStore.currentProject?.id ?? null)
 
 async function onSwitchProject(projectId: number) {
   if (!projectId || projectId === projectStore.currentProject?.id) return
@@ -273,26 +288,40 @@ async function onSwitchProject(projectId: number) {
   markClean()
 }
 
+function openNewProject() {
+  newProjectName.value = ''
+  newProjectType.value = ''
+  showNewModal.value = true
+}
+
 async function confirmCreate() {
   const name = newProjectName.value.trim()
-  if (!name) return
-  const newProj = await projectStore.createNew(name)
-  if (newProj) {
-    showNewModal.value = false
-    newProjectName.value = ''
-    newProjectType.value = ''
-    loadFormFromCurrent()
-    markClean()
-    message.success('新项目已创建，可以开始配置了')
+  if (!name || creatingProject.value) return
+  creatingProject.value = true
+  try {
+    const newProj = await projectStore.createNew(name, newProjectType.value.trim())
+    if (newProj) {
+      showNewModal.value = false
+      loadFormFromCurrent()
+      markClean()
+      message.success('新项目已创建，可以开始配置了')
+    }
+  } finally {
+    creatingProject.value = false
   }
 }
 
 async function onDeleteCurrent() {
-  if (!projectStore.currentProject) return
-  const ok = await projectStore.remove(projectStore.currentProject.id)
-  if (ok) {
-    loadFormFromCurrent()
-    markClean()
+  if (!projectStore.currentProject || deletingProject.value) return
+  deletingProject.value = true
+  try {
+    const ok = await projectStore.remove(projectStore.currentProject.id)
+    if (ok) {
+      loadFormFromCurrent()
+      markClean()
+    }
+  } finally {
+    deletingProject.value = false
   }
 }
 
@@ -371,12 +400,13 @@ function formatDate(dateStr: string): string {
 // ---- 保存 ----
 
 async function save() {
-  if (!form.name.trim()) {
-    notify.warning('请填写书名')
+  if (!form.name.trim() || saving.value) {
+    if (!form.name.trim()) notify.warning('请填写书名')
     return
   }
+  saving.value = true
   try {
-    const updated = await updateProject(form.id, {
+    await updateProject(form.id, {
       name: form.name.trim(),
       theme: form.theme.trim(),
       novel_type: form.novel_type,
@@ -391,6 +421,8 @@ async function save() {
     message.success('项目配置已保存')
   } catch {
     notify.error('保存失败')
+  } finally {
+    saving.value = false
   }
 }
 
@@ -414,11 +446,13 @@ onMounted(async () => {
 /* ===== 页头 ===== */
 .page-header {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   justify-content: space-between;
   margin-bottom: 20px;
-  padding-bottom: 16px;
-  border-bottom: 1px solid var(--n-border-color, #2a2f3a);
+  padding: 18px 20px;
+  border: 1px solid rgba(99, 102, 241, 0.2);
+  border-radius: 14px;
+  background: linear-gradient(115deg, rgba(30, 64, 120, 0.38), rgba(49, 46, 129, 0.22) 55%, rgba(19, 24, 34, 0.85));
   gap: 20px;
 }
 
@@ -448,7 +482,7 @@ onMounted(async () => {
 }
 
 .project-switcher {
-  width: 260px;
+  width: min(320px, 100%);
   margin-top: 4px;
 }
 
@@ -464,10 +498,10 @@ onMounted(async () => {
   display: flex;
   align-items: center;
   gap: 12px;
-  padding: 6px 14px;
-  background: var(--n-color-card, #1a1d21);
-  border: 1px solid var(--n-border-color, #2a2f3a);
-  border-radius: 8px;
+  padding: 8px 14px;
+  background: rgba(15, 23, 42, 0.38);
+  border: 1px solid rgba(148, 163, 184, 0.14);
+  border-radius: 10px;
 }
 
 .stat {
@@ -482,6 +516,7 @@ onMounted(async () => {
   font-weight: 700;
   color: var(--n-color-primary, #3b82f6);
   line-height: 1.2;
+  font-variant-numeric: tabular-nums;
 }
 
 .stat-label {
@@ -514,10 +549,18 @@ onMounted(async () => {
   gap: 16px;
 }
 
+.config-top-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+  align-items: stretch;
+}
+
 .form-card {
+  min-width: 0;
   background: var(--n-color-card, #1a1d21);
   border: 1px solid var(--n-border-color, #2a2f3a);
-  border-radius: 10px;
+  border-radius: 12px;
   overflow: hidden;
 }
 
@@ -537,9 +580,12 @@ onMounted(async () => {
 .card-title {
   font-size: 14px;
   font-weight: 600;
-  display: flex;
-  align-items: center;
-  gap: 8px;
+}
+
+.card-caption {
+  margin: 3px 0 0;
+  color: var(--n-text-color-3, #6b7280);
+  font-size: 11px;
 }
 
 .word-count {
@@ -563,10 +609,12 @@ onMounted(async () => {
   display: flex;
   align-items: center;
   gap: 16px;
+  width: 100%;
 }
 
 .target-words-slider {
   flex: 1;
+  min-width: 80px;
 }
 
 /* ===== 节奏等级 ===== */
@@ -613,6 +661,32 @@ onMounted(async () => {
   font-family: 'JetBrains Mono', monospace;
 }
 
+.config-empty-state {
+  display: flex;
+  min-height: 320px;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 32px;
+  text-align: center;
+  color: var(--n-text-color-2, #cbd5e1);
+  background: var(--n-color-card, #1a1d21);
+  border: 1px dashed var(--n-border-color, #2a2f3a);
+  border-radius: 14px;
+}
+
+.config-empty-state span {
+  max-width: 420px;
+  color: var(--n-text-color-3, #6b7280);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.empty-icon {
+  font-size: 38px;
+}
+
 /* ===== 删除确认弹窗 ===== */
 .delete-warn p {
   margin: 0 0 6px;
@@ -626,6 +700,12 @@ onMounted(async () => {
 }
 
 /* ===== 响应式 ===== */
+@media (max-width: 1180px) {
+  .config-top-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
 @media (max-width: 900px) {
   .page-header {
     flex-direction: column;
