@@ -7,10 +7,10 @@ from typing import Literal
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import desc, func
 
-from app.agents.chapter_edit import LLMError, propose_chapter_edit
+from app.agents.chapter_edit import LLMError, propose_chapter_edit, propose_chapter_edit_stream
 from app.agents.context import build_context_preview
 from app.agents.workflows import analyze_chapter, check_consistency, draft_chapter, draft_chapter_stream, polish_chapter, analyze_volume
 from app.agents_v3.persistence import WorkflowPersistence
@@ -18,6 +18,12 @@ from app.services.chapter_targets import get_project_next_chapter_target, requir
 from app.db.repository import rows_to_dicts
 from app.db.session import get_business_db
 from app.models.business import Chapter, ChapterSummary, GenerationLog, GenerationVersion
+from app.services.chapter_edit_sessions import (
+    create_chapter_edit_session,
+    get_chapter_edit_session,
+    list_chapter_edit_sessions,
+    save_chapter_edit_session,
+)
 from app.schemas.models import ChapterAnalyzeRequest, ChapterDraftRequest, ConsistencyCheckRequest, PolishRequest, VolumeAnalyzeRequest
 
 
@@ -49,6 +55,38 @@ class ChapterEditApplyRequest(BaseModel):
     expected_content: str = Field(max_length=500_000)
     revised_content: str = Field(min_length=1, max_length=500_000)
     summary: str = Field(default="", max_length=500)
+
+
+class ChapterEditMessageState(BaseModel):
+    id: str = Field(max_length=100)
+    role: Literal["user", "assistant"]
+    content: str = Field(max_length=10_000)
+    usageLabel: str | None = Field(default=None, max_length=200)
+
+
+class ChapterEditCandidateState(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    chapter_id: int = Field(alias="chapterId")
+    scope: Literal["chapter", "selection"]
+    expected_content: str = Field(alias="expectedContent", max_length=500_000)
+    proposed_content: str = Field(alias="proposedContent", max_length=500_000)
+    original_segment: str = Field(alias="originalSegment", max_length=500_000)
+    revised_segment: str = Field(alias="revisedSegment", max_length=500_000)
+    selection_start: int | None = Field(default=None, alias="selectionStart")
+    instruction: str = Field(max_length=5_000)
+
+
+class ChapterEditSessionState(BaseModel):
+    scope: Literal["chapter", "selection"] = "chapter"
+    messages: list[ChapterEditMessageState] = Field(default_factory=list, max_length=100)
+    candidate: ChapterEditCandidateState | None = None
+
+
+class ChapterEditSessionSaveRequest(BaseModel):
+    revision: int = Field(ge=1)
+    title: str = Field(default="新建改稿对话", max_length=255)
+    state: ChapterEditSessionState
 
 
 @router.get("/{project_id}/next-chapter")
@@ -292,6 +330,88 @@ def chapter_edit_chat(payload: ChapterEditChatRequest) -> dict:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except LLMError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@router.post("/chapter-edit/chat-stream")
+def chapter_edit_chat_stream(payload: ChapterEditChatRequest) -> StreamingResponse:
+    """流式处理对话改稿；浏览器中断连接时关闭底层模型响应流。"""
+    with get_business_db() as db:
+        chapter = db.query(Chapter.id).filter(
+            Chapter.id == payload.chapter_id,
+            Chapter.project_id == payload.project_id,
+        ).first()
+    if not chapter:
+        raise HTTPException(status_code=404, detail="章节不存在或不属于当前项目")
+
+    def event_lines():
+        try:
+            events = propose_chapter_edit_stream(
+                project_id=payload.project_id,
+                chapter_no=payload.chapter_no,
+                chapter_title=payload.chapter_title,
+                outline_id=payload.outline_id,
+                content=payload.content,
+                scope=payload.scope,
+                selection_start=payload.selection_start,
+                selection_end=payload.selection_end,
+                instruction=payload.instruction,
+                conversation=payload.conversation,
+                context_selection=payload.context_selection,
+            )
+            for event in events:
+                yield json.dumps(event, ensure_ascii=False) + "\n"
+        except (ValueError, LLMError) as exc:
+            yield json.dumps({"type": "error", "message": str(exc)}, ensure_ascii=False) + "\n"
+
+    return StreamingResponse(event_lines(), media_type="application/x-ndjson")
+
+
+@router.get("/{project_id}/chapters/{chapter_id}/edit-sessions")
+def chapter_edit_sessions(project_id: int, chapter_id: int) -> list[dict]:
+    """列出本章已有改稿会话，默认恢复最近使用的一次。"""
+    try:
+        return list_chapter_edit_sessions(project_id, chapter_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.post("/{project_id}/chapters/{chapter_id}/edit-sessions")
+def chapter_edit_session_create(project_id: int, chapter_id: int) -> dict:
+    """为本章新建一条独立改稿会话。"""
+    try:
+        return create_chapter_edit_session(project_id, chapter_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.get("/{project_id}/chapters/{chapter_id}/edit-sessions/{session_id}")
+def chapter_edit_session_get(project_id: int, chapter_id: int, session_id: str) -> dict:
+    session = get_chapter_edit_session(project_id, chapter_id, session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="改稿会话不存在")
+    return session
+
+
+@router.put("/{project_id}/chapters/{chapter_id}/edit-sessions/{session_id}")
+def chapter_edit_session_save(
+    project_id: int,
+    chapter_id: int,
+    session_id: str,
+    payload: ChapterEditSessionSaveRequest,
+) -> dict:
+    saved = save_chapter_edit_session(
+        project_id=project_id,
+        chapter_id=chapter_id,
+        session_id=session_id,
+        expected_revision=payload.revision,
+        title=payload.title,
+        state=payload.state.model_dump(by_alias=True),
+    )
+    if not saved:
+        raise HTTPException(status_code=404, detail="改稿会话不存在")
+    if saved.get("conflict"):
+        raise HTTPException(status_code=409, detail="改稿会话已在其他页面更新，请重新载入后继续。")
+    return saved
 
 
 @router.post("/chapter-edit/apply")

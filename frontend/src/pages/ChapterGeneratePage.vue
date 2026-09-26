@@ -340,18 +340,27 @@
           <!-- 对话改稿单独呈现；候选稿确认后才写入章节并创建版本。 -->
           <n-tab-pane name="dialogue" tab="对话改稿">
             <ChapterDialoguePanel
-              v-model:scope="dialogueScope"
               :chapter-title="chapterTitle"
+              :scope="dialogueScope"
               :messages="dialogueMessages"
               :candidate="dialogueCandidate"
               :selection-text="editorSelection?.text || ''"
               :busy="dialogueBusy"
+              :busy-status="dialogueBusyStatus"
               :applying="dialogueApplying"
               :can-send="Boolean(projectStore.currentProject && draft.trim())"
               :can-apply="canApplyDialogueCandidate"
+              :sessions="dialogueSessions"
+              :session-id="dialogueSessionId"
+              :session-loading="dialogueSessionLoading"
+              :can-manage-sessions="Boolean(chapterId)"
               @send="sendChapterDialogue"
               @apply="applyChapterDialogueCandidate"
-              @discard="dialogueCandidate = null"
+              @update:scope="changeDialogueScope"
+              @discard="discardDialogueCandidate"
+              @new-session="newChapterDialogueSession"
+              @select-session="selectChapterDialogueSession"
+              @stop="stopChapterDialogue"
             />
           </n-tab-pane>
 
@@ -674,10 +683,14 @@ import {
   getNextChapterTarget,
   getContextPreview,
   polishChapter,
-  chatChapterEdit,
+  chatChapterEditStream,
   applyChapterEdit,
+  listChapterEditSessions,
+  createChapterEditSession,
+  getChapterEditSession,
+  saveChapterEditSession,
 } from '@/api/agents'
-import type { NextChapterTarget } from '@/api/agents'
+import type { ChapterEditSession, ChapterEditSessionSummary, NextChapterTarget } from '@/api/agents'
 import {
   getWorkflowTemplates,
   getWorkflowRunDetail,
@@ -864,6 +877,14 @@ const chapterId = ref<number | null>(null)
 const chapterProjectId = ref<number | null>(null)
 const dialogueScope = ref<'chapter' | 'selection'>('chapter')
 const dialogueMessages = ref<ChapterDialogueMessage[]>([])
+const dialogueSessions = ref<ChapterEditSessionSummary[]>([])
+const dialogueSessionId = ref<string | null>(null)
+const dialogueSessionRevision = ref(0)
+const dialogueSessionLoading = ref(false)
+const dialogueBusyStatus = ref('')
+let dialogueAbortController: AbortController | null = null
+let dialogueSessionLoadSequence = 0
+let dialogueSessionLoadingKey: string | null = null
 const dialogueCandidate = ref<(ChapterDialogueCandidate & {
   chapterId: number
   selectionStart: number | null
@@ -2744,12 +2765,167 @@ function chapterDialogueError(error: unknown) {
   return errorMessage(error)
 }
 
+function dialogueSessionTitle(messages: ChapterDialogueMessage[]) {
+  const firstUserMessage = messages.find((item) => item.role === 'user')?.content?.trim()
+  return firstUserMessage ? firstUserMessage.slice(0, 36) : '新建改稿对话'
+}
+
+function activateDialogueSession(session: ChapterEditSession) {
+  dialogueSessionId.value = session.session_id
+  dialogueSessionRevision.value = session.revision
+  dialogueMessages.value = session.state?.messages ?? []
+  dialogueCandidate.value = session.state?.candidate ?? null
+  dialogueScope.value = session.state?.scope ?? 'chapter'
+}
+
+async function loadChapterDialogueSessions() {
+  const projectId = projectStore.currentProject?.id
+  const targetChapterId = chapterId.value
+  if (!projectId || !targetChapterId) {
+    // 章节切换经过空值时使旧请求失效，并确保旧请求的 finally 不会留下永久加载态。
+    dialogueSessionLoadSequence += 1
+    dialogueSessionLoadingKey = null
+    dialogueSessionLoading.value = false
+    dialogueSessions.value = []
+    dialogueSessionId.value = null
+    dialogueSessionRevision.value = 0
+    dialogueMessages.value = []
+    dialogueCandidate.value = null
+    dialogueScope.value = 'chapter'
+    return
+  }
+
+  const loadingKey = `${projectId}:${targetChapterId}`
+  // 同一章节的 watcher 可能因初始化和数据恢复连续触发；复用当前请求，避免重复创建空会话。
+  if (dialogueSessionLoading.value && dialogueSessionLoadingKey === loadingKey) return
+
+  const sequence = ++dialogueSessionLoadSequence
+  dialogueSessionLoadingKey = loadingKey
+
+  dialogueSessionLoading.value = true
+  try {
+    const sessions = await listChapterEditSessions(projectId, targetChapterId)
+    if (sequence !== dialogueSessionLoadSequence || chapterId.value !== targetChapterId) return
+    dialogueSessions.value = sessions
+    if (sessions.length === 0) {
+      const created = await createChapterEditSession(projectId, targetChapterId)
+      if (sequence !== dialogueSessionLoadSequence || chapterId.value !== targetChapterId) return
+      dialogueSessions.value = [created]
+      activateDialogueSession(created)
+      return
+    }
+
+    const latestSession = await getChapterEditSession(projectId, targetChapterId, sessions[0].session_id)
+    if (sequence !== dialogueSessionLoadSequence || chapterId.value !== targetChapterId) return
+    activateDialogueSession(latestSession)
+  } catch (error) {
+    if (sequence === dialogueSessionLoadSequence) {
+      dialogueSessionId.value = null
+      message.error(`改稿会话读取失败：${chapterDialogueError(error)}`)
+    }
+  } finally {
+    if (sequence === dialogueSessionLoadSequence) {
+      dialogueSessionLoading.value = false
+      dialogueSessionLoadingKey = null
+    }
+  }
+}
+
+async function saveActiveDialogueSession() {
+  const projectId = projectStore.currentProject?.id
+  const targetChapterId = chapterId.value
+  const sessionId = dialogueSessionId.value
+  if (!projectId || !targetChapterId || !sessionId || dialogueSessionLoading.value) return false
+  try {
+    const saved = await saveChapterEditSession(projectId, targetChapterId, sessionId, {
+      revision: dialogueSessionRevision.value,
+      title: dialogueSessionTitle(dialogueMessages.value),
+      scope: dialogueScope.value,
+      messages: dialogueMessages.value,
+      candidate: dialogueCandidate.value,
+    })
+    if (dialogueSessionId.value !== sessionId || chapterId.value !== targetChapterId) return false
+    dialogueSessionRevision.value = saved.revision
+    dialogueSessions.value = dialogueSessions.value.map((item) => item.session_id === sessionId
+      ? { ...item, title: saved.title, revision: saved.revision, updated_at: saved.updated_at }
+      : item)
+    return true
+  } catch (error) {
+    message.error(`改稿会话保存失败：${chapterDialogueError(error)}`)
+    return false
+  }
+}
+
+async function changeDialogueScope(scope: 'chapter' | 'selection') {
+  dialogueScope.value = scope
+  await saveActiveDialogueSession()
+}
+
+async function discardDialogueCandidate() {
+  dialogueCandidate.value = null
+  await saveActiveDialogueSession()
+}
+
+async function newChapterDialogueSession() {
+  const projectId = projectStore.currentProject?.id
+  const targetChapterId = chapterId.value
+  if (!projectId || !targetChapterId || dialogueSessionLoading.value) return
+  if (!await saveActiveDialogueSession()) return
+  const operationKey = `${projectId}:${targetChapterId}`
+  dialogueSessionLoadingKey = operationKey
+  dialogueSessionLoading.value = true
+  try {
+    const created = await createChapterEditSession(projectId, targetChapterId)
+    if (chapterId.value !== targetChapterId) return
+    dialogueSessions.value = [created, ...dialogueSessions.value]
+    activateDialogueSession(created)
+    editorSelection.value = null
+  } catch (error) {
+    message.error(`新建改稿会话失败：${chapterDialogueError(error)}`)
+  } finally {
+    if (dialogueSessionLoadingKey === operationKey) {
+      dialogueSessionLoading.value = false
+      dialogueSessionLoadingKey = null
+    }
+  }
+}
+
+async function selectChapterDialogueSession(sessionId: string) {
+  const projectId = projectStore.currentProject?.id
+  const targetChapterId = chapterId.value
+  if (!projectId || !targetChapterId || sessionId === dialogueSessionId.value) return
+  if (!await saveActiveDialogueSession()) return
+  const operationKey = `${projectId}:${targetChapterId}`
+  dialogueSessionLoadingKey = operationKey
+  dialogueSessionLoading.value = true
+  try {
+    const session = await getChapterEditSession(projectId, targetChapterId, sessionId)
+    if (chapterId.value !== targetChapterId) return
+    activateDialogueSession(session)
+    editorSelection.value = null
+  } catch (error) {
+    message.error(`切换改稿会话失败：${chapterDialogueError(error)}`)
+  } finally {
+    if (dialogueSessionLoadingKey === operationKey) {
+      dialogueSessionLoading.value = false
+      dialogueSessionLoadingKey = null
+    }
+  }
+}
+
 async function sendChapterDialogue(instruction: string) {
   if (!projectStore.currentProject || !draft.value.trim()) {
     message.warning('请先选择一章有正文的章节')
     return
   }
-  if (dialogueBusy.value || dialogueApplying.value) return
+  if (dialogueBusy.value || dialogueApplying.value || dialogueSessionLoading.value) return
+  if (!dialogueSessionId.value) {
+    message.warning('改稿会话尚未准备好，请稍后重试')
+    return
+  }
+
+  const requestedProjectId = projectStore.currentProject.id
+  const requestedSessionId = dialogueSessionId.value
 
   const pendingCandidate = dialogueCandidate.value
   if (pendingCandidate && (pendingCandidate.chapterId !== chapterId.value || pendingCandidate.expectedContent !== draft.value)) {
@@ -2765,12 +2941,20 @@ async function sendChapterDialogue(instruction: string) {
   const requestedContent = draft.value
   const requestedTitle = chapterTitle.value
   dialogueBusy.value = true
+  dialogueBusyStatus.value = '正在整理本章正文与相关设定…'
+  dialogueAbortController = new AbortController()
   const userMessage: ChapterDialogueMessage = {
     id: `user-${Date.now()}`,
     role: 'user',
     content: instruction,
   }
   dialogueMessages.value.push(userMessage)
+  if (!await saveActiveDialogueSession()) {
+    dialogueBusy.value = false
+    dialogueBusyStatus.value = ''
+    dialogueAbortController = null
+    return
+  }
 
   try {
     // 步骤 1：先把正在编辑的草稿落库，后端才能将确认后的改稿可靠地绑定到章节。
@@ -2780,6 +2964,7 @@ async function sendChapterDialogue(instruction: string) {
     if (
       draft.value !== requestedContent
       || chapterTitle.value !== requestedTitle
+      || projectStore.currentProject?.id !== requestedProjectId
       || (requestedChapterId !== null && chapterId.value !== requestedChapterId)
     ) {
       throw new Error('章节已切换或正文有变化，请重新发送本轮要求')
@@ -2807,8 +2992,8 @@ async function sendChapterDialogue(instruction: string) {
       }
     }
 
-    const result = await chatChapterEdit({
-      project_id: projectStore.currentProject.id,
+    const result = await chatChapterEditStream({
+      project_id: requestedProjectId,
       chapter_id: targetChapterId,
       chapter_no: form.chapter_no,
       chapter_title: chapterTitle.value,
@@ -2820,9 +3005,17 @@ async function sendChapterDialogue(instruction: string) {
       instruction,
       conversation: dialogueMessages.value.slice(-9).map(({ role, content }) => ({ role, content })),
       context_selection: getContextSelectionPayload(),
+    }, dialogueAbortController.signal, (event) => {
+      dialogueBusyStatus.value = event.type === 'stage'
+        ? (event.stage || '正在分析正文与相关设定…')
+        : `正在接收模型回复${event.received_characters ? ` · ${event.received_characters} 字` : ''}…`
     })
 
-    if (chapterId.value !== targetChapterId) {
+    if (
+      projectStore.currentProject?.id !== requestedProjectId
+      || chapterId.value !== targetChapterId
+      || dialogueSessionId.value !== requestedSessionId
+    ) {
       message.info('已切换到其他章节，本次答复未混入当前对话')
       return
     }
@@ -2856,17 +3049,46 @@ async function sendChapterDialogue(instruction: string) {
         instruction,
       }
     }
+    await saveActiveDialogueSession()
   } catch (error) {
+    const requestStillActive = projectStore.currentProject?.id === requestedProjectId
+      && chapterId.value === requestedChapterId
+      && dialogueSessionId.value === requestedSessionId
+    if (error instanceof DOMException && error.name === 'AbortError') {
+      // 切章造成的取消不能写入新章节会话；原会话已先保存用户本轮要求。
+      if (requestStillActive) {
+        dialogueMessages.value.push({
+          id: `assistant-cancelled-${Date.now()}`,
+          role: 'assistant',
+          content: '本轮对话已中断。你的要求和已有正文已保留，没有生成或应用候选稿。',
+        })
+        await saveActiveDialogueSession()
+      }
+      return
+    }
+    if (!requestStillActive) {
+      message.info('章节已切换，本次答复未写入其他章节会话')
+      return
+    }
     const detail = chapterDialogueError(error) || '对话改稿失败'
     dialogueMessages.value.push({
       id: `assistant-error-${Date.now()}`,
       role: 'assistant',
       content: `这次没有完成：${detail}`,
     })
+    await saveActiveDialogueSession()
     message.error(detail)
   } finally {
     dialogueBusy.value = false
+    dialogueBusyStatus.value = ''
+    dialogueAbortController = null
   }
+}
+
+function stopChapterDialogue() {
+  if (!dialogueAbortController || !dialogueBusy.value) return
+  dialogueBusyStatus.value = '正在关闭本次模型请求…'
+  dialogueAbortController.abort()
 }
 
 async function applyChapterDialogueCandidate() {
@@ -2899,6 +3121,7 @@ async function applyChapterDialogueCandidate() {
       role: 'assistant',
       content: `候选稿已应用，并保存为 v${result.version_number}。原有版本仍可在“版本”中恢复。`,
     })
+    await saveActiveDialogueSession()
     await Promise.all([loadVersions(), loadResources()])
     message.success(`改稿已应用，保存为 v${result.version_number}`)
   } catch (error) {
@@ -3104,14 +3327,17 @@ watch(
   { immediate: true },
 )
 
-// 切换章节时清空上一章的对话候选，避免误把改稿应用到其他正文。
-watch(chapterId, (currentId, previousId) => {
-  if (currentId === previousId || previousId === null) return
-  dialogueMessages.value = []
-  dialogueCandidate.value = null
-  editorSelection.value = null
-  dialogueScope.value = 'chapter'
-})
+// 项目或章节切换时恢复各自独立的对话，避免刷新后丢失候选稿。
+watch(
+  () => `${projectStore.currentProject?.id ?? ''}:${chapterId.value ?? ''}`,
+  () => {
+    // 离开当前章节时停止其改稿请求，避免浪费调用并隔离迟到答复。
+    if (dialogueBusy.value) dialogueAbortController?.abort()
+    editorSelection.value = null
+    void loadChapterDialogueSessions()
+  },
+  { immediate: true },
+)
 
 // 切换模板时同步更新流水线步骤
 watch(

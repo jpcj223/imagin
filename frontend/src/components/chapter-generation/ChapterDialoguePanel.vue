@@ -4,8 +4,22 @@
       <div>
         <strong>对话改稿</strong>
         <p>先说明想法，AI 会结合当前正文讨论或给出候选稿。</p>
+        <span v-if="chapterTitle" class="chapter-context">{{ chapterTitle }}</span>
       </div>
-      <n-tag v-if="chapterTitle" size="small" :bordered="false">{{ chapterTitle }}</n-tag>
+      <div class="session-control">
+        <n-select
+          :value="sessionId"
+          :options="sessionOptions"
+          :loading="sessionLoading"
+          :disabled="sessionLoading || busy || applying || sessions.length === 0"
+          size="small"
+          placeholder="选择改稿会话"
+          @update:value="emit('select-session', $event)"
+        />
+        <n-button size="small" :disabled="!canManageSessions || sessionLoading || busy || applying" @click="emit('new-session')">
+          新建
+        </n-button>
+      </div>
     </header>
 
     <div class="scope-control">
@@ -44,7 +58,7 @@
       </article>
       <div v-if="busy" class="assistant-thinking">
         <n-spin size="small" />
-        <span>正在理解要求并处理正文…</span>
+        <span>{{ busyStatus || '正在理解要求并处理正文…' }}</span>
       </div>
     </div>
 
@@ -78,7 +92,10 @@
       />
       <div class="composer-footer">
         <span>{{ canSend ? 'Enter 发送 · Shift + Enter 换行' : '先选择或保存一章有正文的章节' }}</span>
-        <n-button type="primary" :disabled="!draftMessage.trim() || !canSend" :loading="busy" @click="submit">
+        <n-button v-if="busy" type="error" secondary @click="emit('stop')">
+          中断本次对话
+        </n-button>
+        <n-button v-else type="primary" :disabled="!draftMessage.trim() || !canSend" @click="submit">
           发送
         </n-button>
       </div>
@@ -117,6 +134,7 @@
 
 <script setup lang="ts">
 import { computed, nextTick, ref, watch } from 'vue'
+import type { ChapterEditSessionSummary } from '@/api/agents'
 import type { ChapterDialogueCandidate, ChapterDialogueMessage } from './chapterDialogueTypes'
 
 const props = defineProps<{
@@ -126,21 +144,47 @@ const props = defineProps<{
   scope: 'chapter' | 'selection'
   selectionText: string
   busy: boolean
+  busyStatus: string
   applying: boolean
   canSend: boolean
   canApply: boolean
+  sessions: ChapterEditSessionSummary[]
+  sessionId: string | null
+  sessionLoading: boolean
+  canManageSessions: boolean
 }>()
 const emit = defineEmits<{
   (event: 'send', instruction: string): void
   (event: 'apply'): void
   (event: 'discard'): void
   (event: 'update:scope', value: 'chapter' | 'selection'): void
+  (event: 'new-session'): void
+  (event: 'select-session', sessionId: string): void
+  (event: 'stop'): void
 }>()
 
 const starterPrompts = ['先分析这一章的问题', '让节奏更紧凑', '强化人物对话的张力']
 const draftMessage = ref('')
 const previewVisible = ref(false)
 const messageList = ref<HTMLElement | null>(null)
+const sessionOptions = computed(() => {
+  const titleCounts = new Map<string, number>()
+  for (const session of props.sessions) {
+    const title = session.title || '新建改稿对话'
+    titleCounts.set(title, (titleCounts.get(title) ?? 0) + 1)
+  }
+
+  return props.sessions.map((session) => {
+    const title = session.title || '新建改稿对话'
+    const timestamp = session.updated_at
+      ? new Date(session.updated_at).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })
+      : ''
+    const duplicateSuffix = titleCounts.get(title)! > 1
+      ? ` · ${timestamp ? `${timestamp} · ` : ''}${session.session_id.slice(0, 4)}`
+      : ''
+    return { label: `${title}${duplicateSuffix}`, value: session.session_id }
+  })
+})
 const selectionPreview = computed(() => props.selectionText.length > 180 ? `${props.selectionText.slice(0, 180)}…` : props.selectionText)
 const sourceText = computed(() => {
   if (!props.candidate) return ''
@@ -192,8 +236,11 @@ watch(() => props.candidate, (candidate) => {
 <style scoped>
 .dialogue-panel { display: flex; flex-direction: column; gap: 12px; min-height: 100%; height: 100%; box-sizing: border-box; padding: 12px; color: #e5e7eb; }
 .dialogue-heading { display: flex; justify-content: space-between; align-items: flex-start; gap: 8px; }
+.session-control { display: flex; align-items: center; gap: 6px; width: min(290px, 52%); flex-shrink: 0; }
+.session-control :deep(.n-select) { min-width: 0; }
 .dialogue-heading strong { font-size: 15px; }
 .dialogue-heading p { margin: 5px 0 0; color: #8492a8; font-size: 12px; line-height: 1.6; }
+.chapter-context { display: inline-block; margin-top: 4px; color: #a5b4fc; font-size: 11px; }
 .scope-control { display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 9px; border: 1px solid rgba(255,255,255,.08); border-radius: 8px; background: rgba(255,255,255,.025); }
 .scope-label { color: #aab4c4; font-size: 12px; }
 .selection-summary, .scope-note { padding: 9px 10px; border-radius: 7px; background: rgba(99,102,241,.1); color: #abb7ff; font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }

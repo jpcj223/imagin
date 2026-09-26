@@ -26,6 +26,7 @@ from app.models.business.workflow_memory import (
     MemoryItem,
 )
 from app.models.business.setting_chat import SettingChatSession, SettingChatMessage
+from app.models.business.chapter_edit_session import ChapterEditSession
 
 __all__ = [
     "Project",
@@ -49,4 +50,5 @@ __all__ = [
     "MemoryItem",
     "SettingChatSession",
     "SettingChatMessage",
+    "ChapterEditSession",
 ]

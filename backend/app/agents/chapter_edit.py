@@ -6,7 +6,7 @@ import re
 from typing import Any
 
 from app.agents.context import build_chapter_context
-from app.core.llm import LLMError, chat_completion_with_usage
+from app.core.llm import LLMError, chat_completion_stream_with_usage, chat_completion_with_usage
 
 
 def _compact_context(context: dict[str, Any]) -> dict[str, Any]:
@@ -60,7 +60,7 @@ def _parse_response(raw: str) -> dict[str, str]:
     return {"action": action, "reply": reply, "candidate_text": candidate}
 
 
-def propose_chapter_edit(
+def _prepare_chapter_edit_messages(
     *,
     project_id: int,
     chapter_no: int,
@@ -73,8 +73,8 @@ def propose_chapter_edit(
     instruction: str,
     conversation: list[dict[str, str]],
     context_selection: dict[str, list[int]] | None = None,
-) -> dict[str, Any]:
-    """围绕当前正文进行对话；编辑意图只返回候选，不落库。"""
+) -> tuple[list[dict[str, str]], str, int | None, int | None]:
+    """构造可供同步或流式接口共用的章节编辑请求。"""
     if not content.strip():
         raise ValueError("章节正文为空，暂时无法对话改稿")
     if not instruction.strip():
@@ -139,7 +139,38 @@ def propose_chapter_edit(
         {"role": "user", "content": json.dumps(request_context, ensure_ascii=False)},
     ]
 
-    # 步骤 2：返回模型用量给工作台展示；本接口只提出候选，不写正文或版本。
+    return messages, scope, selection_start, selection_end
+
+
+def propose_chapter_edit(
+    *,
+    project_id: int,
+    chapter_no: int,
+    chapter_title: str,
+    outline_id: int | None,
+    content: str,
+    scope: str,
+    selection_start: int | None,
+    selection_end: int | None,
+    instruction: str,
+    conversation: list[dict[str, str]],
+    context_selection: dict[str, list[int]] | None = None,
+) -> dict[str, Any]:
+    """围绕当前正文进行对话；编辑意图只返回候选，不落库。"""
+    messages, scope, selection_start, selection_end = _prepare_chapter_edit_messages(
+        project_id=project_id,
+        chapter_no=chapter_no,
+        chapter_title=chapter_title,
+        outline_id=outline_id,
+        content=content,
+        scope=scope,
+        selection_start=selection_start,
+        selection_end=selection_end,
+        instruction=instruction,
+        conversation=conversation,
+        context_selection=context_selection,
+    )
+    # 返回供应商用量；本接口只提出候选，不写正文或版本。
     raw, usage = chat_completion_with_usage(messages, temperature=0.65, max_tokens=12000)
     parsed = _parse_response(raw)
     return {
@@ -151,4 +182,38 @@ def propose_chapter_edit(
     }
 
 
-__all__ = ["LLMError", "propose_chapter_edit"]
+def propose_chapter_edit_stream(**kwargs: Any):
+    """流式对话改稿；只发送处理状态和最终候选，客户端断开会关闭模型流。"""
+    messages, scope, selection_start, selection_end = _prepare_chapter_edit_messages(**kwargs)
+    fragments: list[str] = []
+    usage = None
+    yield {"type": "stage", "stage": "正在分析正文与选中的相关设定"}
+    model_stream = iter(chat_completion_stream_with_usage(messages, temperature=0.65, max_tokens=12000))
+    try:
+        for event in model_stream:
+            if event.get("type") == "delta":
+                fragments.append(event.get("content", ""))
+                if len(fragments) == 1 or len(fragments) % 32 == 0:
+                    yield {"type": "progress", "received_characters": sum(map(len, fragments))}
+            elif event.get("type") == "usage":
+                usage = event.get("usage")
+
+        parsed = _parse_response("".join(fragments))
+        yield {
+            "type": "done",
+            **parsed,
+            "usage": usage,
+            "scope": scope,
+            "selection_start": selection_start if scope == "selection" else None,
+            "selection_end": selection_end if scope == "selection" else None,
+        }
+    except GeneratorExit:
+        # 响应流关闭时，Python 会关闭底层模型流，不保存不完整候选。
+        raise
+    finally:
+        close_stream = getattr(model_stream, "close", None)
+        if close_stream:
+            close_stream()
+
+
+__all__ = ["LLMError", "propose_chapter_edit", "propose_chapter_edit_stream"]

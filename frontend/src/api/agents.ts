@@ -188,10 +188,120 @@ export interface ChapterEditChatResult {
   usage: { input_tokens?: number; output_tokens?: number; total_tokens?: number } | null
 }
 
+export interface ChapterEditSessionSummary {
+  session_id: string
+  project_id: number
+  chapter_id: number
+  title: string
+  revision: number
+  created_at: string | null
+  updated_at: string | null
+}
+
+export interface ChapterEditSession extends ChapterEditSessionSummary {
+  state: {
+    scope: 'chapter' | 'selection'
+    messages: import('@/components/chapter-generation/chapterDialogueTypes').ChapterDialogueMessage[]
+    candidate: (import('@/components/chapter-generation/chapterDialogueTypes').ChapterDialogueCandidate & {
+      chapterId: number
+      selectionStart: number | null
+      instruction: string
+    }) | null
+  }
+}
+
+export async function listChapterEditSessions(projectId: number, chapterId: number) {
+  const { data } = await apiClient.get<ChapterEditSessionSummary[]>(
+    `/agents/${projectId}/chapters/${chapterId}/edit-sessions`,
+  )
+  return data
+}
+
+export async function createChapterEditSession(projectId: number, chapterId: number) {
+  const { data } = await apiClient.post<ChapterEditSession>(
+    `/agents/${projectId}/chapters/${chapterId}/edit-sessions`,
+  )
+  return data
+}
+
+export async function getChapterEditSession(projectId: number, chapterId: number, sessionId: string) {
+  const { data } = await apiClient.get<ChapterEditSession>(
+    `/agents/${projectId}/chapters/${chapterId}/edit-sessions/${sessionId}`,
+  )
+  return data
+}
+
+export async function saveChapterEditSession(
+  projectId: number,
+  chapterId: number,
+  sessionId: string,
+  payload: Pick<ChapterEditSessionSummary, 'revision' | 'title'> & ChapterEditSession['state'],
+) {
+  const { data } = await apiClient.put<ChapterEditSession>(
+    `/agents/${projectId}/chapters/${chapterId}/edit-sessions/${sessionId}`,
+    { revision: payload.revision, title: payload.title, state: { scope: payload.scope, messages: payload.messages, candidate: payload.candidate } },
+  )
+  return data
+}
+
 export async function chatChapterEdit(payload: Record<string, unknown>) {
   // 对话改稿只返回讨论答复或候选正文；确认应用另走版本化保存接口。
   const { data } = await apiClient.post<ChapterEditChatResult>('/agents/chapter-edit/chat', payload)
   return data
+}
+
+export async function chatChapterEditStream(
+  payload: Record<string, unknown>,
+  signal: AbortSignal,
+  onProgress: (event: { type: 'stage' | 'progress'; stage?: string; received_characters?: number }) => void,
+) {
+  // 使用可关闭的模型流，让“中断”会关闭服务端到模型的响应连接，而非只隐藏前端等待状态。
+  const response = await fetch('/backend-api/agents/chapter-edit/chat-stream', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+    signal,
+    credentials: 'same-origin',
+  })
+  if (!response.ok) {
+    let detail = `对话改稿请求失败（${response.status}）`
+    try {
+      const body = await response.json() as { detail?: string }
+      detail = body.detail || detail
+    } catch { /* 保留可读的状态码提示 */ }
+    throw new Error(detail)
+  }
+  if (!response.body) throw new Error('当前浏览器不支持读取模型流')
+
+  const reader = response.body.getReader()
+  const decoder = new TextDecoder()
+  let pending = ''
+  // 结果由 readLine 闭包逐行填充；使用对象承载，避免 TS 把闭包外变量错误收窄成 never。
+  const streamState: { result: ChapterEditChatResult | null } = { result: null }
+  const readLine = (line: string) => {
+    if (!line.trim()) return
+    const event = JSON.parse(line) as { type: string; message?: string; stage?: string; received_characters?: number } & Partial<ChapterEditChatResult>
+    if (event.type === 'error') throw new Error(event.message || '对话改稿失败')
+    if (event.type === 'done') streamState.result = event as ChapterEditChatResult
+    if (event.type === 'stage' || event.type === 'progress') {
+      onProgress({ type: event.type, stage: event.stage, received_characters: event.received_characters })
+    }
+  }
+  try {
+    while (true) {
+      const { done, value } = await reader.read()
+      pending += decoder.decode(value, { stream: !done })
+      const lines = pending.split('\n')
+      pending = lines.pop() || ''
+      for (const line of lines) readLine(line)
+      if (done) break
+    }
+    if (pending.trim()) readLine(pending)
+  } finally {
+    reader.releaseLock()
+  }
+  if (!streamState.result) throw new Error('对话改稿结束，但没有收到结果')
+  return streamState.result
 }
 
 export async function applyChapterEdit(payload: Record<string, unknown>) {
