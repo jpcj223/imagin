@@ -528,9 +528,12 @@ def check_consistency(project_id: int, chapter_id: int | None, content: str) -> 
 
 
 def polish_chapter(project_id: int, chapter_id: int, mode: str, instruction: str) -> dict:
-    """精修已有章节并覆盖原正文。"""
+    """精修已有章节，原子创建精修版本并保留全部历史稿。"""
     with get_business_db() as db:
-        chapter = db.query(Chapter).filter(Chapter.id == chapter_id).first()
+        chapter = db.query(Chapter).filter(
+            Chapter.id == chapter_id,
+            Chapter.project_id == project_id,
+        ).first()
     if not chapter:
         return {"chapter_id": chapter_id, "content": "", "error": "章节不存在"}
 
@@ -554,12 +557,20 @@ def polish_chapter(project_id: int, chapter_id: int, mode: str, instruction: str
     except LLMError:
         content = original + "\n\n【开发模式提示】配置模型后可在这里获得真实精修结果。"
 
-    with get_business_db() as db:
-        chapter = db.query(Chapter).filter(Chapter.id == chapter_id).first()
-        if chapter:
-            chapter.content = content
-            db.commit()
+    # 精修期间正文可能被另一个编辑请求更新；比较失败时不覆盖新正文。
+    from app.agents_v3.persistence import WorkflowPersistence
+    saved = WorkflowPersistence.apply_chapter_edit(
+        project_id=project_id,
+        chapter_id=chapter_id,
+        expected_content=original,
+        revised_content=content,
+        summary=f"精修：{mode}",
+        source_type="polish",
+    )
+    if saved is None:
+        raise ValueError("章节正文在精修期间已变化；请保留当前稿并重新精修")
 
+    with get_business_db() as db:
         log = GenerationLog(
             project_id=project_id,
             task_type="chapter_polish",
@@ -570,7 +581,7 @@ def polish_chapter(project_id: int, chapter_id: int, mode: str, instruction: str
         db.add(log)
         db.commit()
 
-    return {"chapter_id": chapter_id, "content": content}
+    return {"chapter_id": chapter_id, "content": content, "version_id": saved["version_id"], "version_number": saved["version_number"]}
 
 
 def analyze_volume(project_id: int, volume_id: int, instruction: str = "") -> dict:

@@ -93,6 +93,7 @@
         v-model:draft="draft"
         :word-count="wordCount"
         :chapter-id="chapterId"
+        :editor-font-size="userPrefs.editor_font_size"
         :save-status="draftSaveStatus"
         :has-polish-highlights="hasPolishHighlights"
         :polish-segments="polishSegments"
@@ -102,7 +103,7 @@
 
       <!-- ===== 右侧：Tab 面板 ===== -->
       <aside class="right-panel">
-        <n-tabs v-model:value="activeTab" type="line" size="small" class="side-tabs">
+        <n-tabs v-model:value="activeTab" type="line" size="small" class="side-tabs" @update:value="handleTabChange">
           <!-- Tab: 生成参数 -->
           <n-tab-pane name="params" tab="生成">
             <div class="tab-content">
@@ -116,10 +117,24 @@
                   :variant-name="activeVariantName"
                   :variants="writerVariants"
                   :skills="agentSkills"
-                  :temperature="userPrefs.default_temperature"
+                  :temperature="generationControls.temperature"
                   @variant-change="handleVariantChange"
                   @skill-toggle="handleSkillToggle"
                 />
+              </div>
+
+              <div class="form-block generation-controls">
+                <div class="block-title">本次生成参数 <n-tag size="tiny" type="info">仅本次</n-tag></div>
+                <div class="generation-controls-grid">
+                  <n-form-item label="创造性">
+                    <n-slider v-model:value="generationControls.temperature" :min="0" :max="200" :step="10" />
+                    <small>{{ (generationControls.temperature / 100).toFixed(1) }} · 默认 {{ (userPrefs.default_temperature / 100).toFixed(1) }}</small>
+                  </n-form-item>
+                  <n-form-item label="目标字数">
+                    <n-input-number v-model:value="generationControls.targetWordCount" :min="500" :max="10000" :step="500" style="width: 100%" />
+                    <small>项目默认 {{ userPrefs.default_target_word_count }} 字</small>
+                  </n-form-item>
+                </div>
               </div>
 
               <!-- 工作流进度（生成中/生成后显示） -->
@@ -506,18 +521,24 @@
           <n-tab-pane name="versions" tab="版本">
             <div class="tab-content">
               <div class="versions-header">
-                <span class="block-title">生成版本</span>
+                <div>
+                  <span class="block-title">正文版本</span>
+                  <small>{{ generationVersions.length }} 个版本</small>
+                </div>
                 <n-button size="tiny" :loading="versionsLoading" @click="loadVersions">刷新</n-button>
               </div>
-
-              <!-- 版本时间线 - 架构可视化 -->
-              <div v-if="chapterId && generationVersions.length > 0" class="version-timeline-wrap">
-                <VersionTimeline
-                  :versions="timelineVersions"
-                  :current-version-id="currentVersionId"
-                  @select="handleTimelineVersionSelect"
-                  @compare="handleVersionCompare"
-                />
+              <n-alert v-if="chapterId" type="info" :show-icon="true" class="version-draft-note">
+                正文草稿会自动保存；点击「保存当前稿为版本」后才会进入不可变的版本历史。
+              </n-alert>
+              <div class="version-toolbar">
+                <n-button
+                  size="small"
+                  type="primary"
+                  :loading="versionSnapshotSaving"
+                  :disabled="!chapterId || !draft.trim()"
+                  @click="saveDraftAsVersion"
+                >保存当前稿为版本</n-button>
+                <n-button size="small" :disabled="generationVersions.length < 2" @click="openVersionCompare()">比较两个版本</n-button>
               </div>
 
               <div v-if="!chapterId" class="empty-versions">
@@ -537,6 +558,7 @@
                       v{{ ver.version_number }}
                       <n-tag v-if="ver.is_current" size="tiny" type="success">当前</n-tag>
                       <n-tag v-if="ver.is_favorite" size="tiny" type="warning">收藏</n-tag>
+                      <n-tag size="tiny" :type="versionSourceType(ver.source_type).type">{{ versionSourceType(ver.source_type).label }}</n-tag>
                     </div>
                     <div class="version-words">{{ ver.word_count }} 字</div>
                   </div>
@@ -548,8 +570,15 @@
                     </span>
                   </div>
                   <div class="version-actions">
-                    <n-button size="tiny" text :disabled="ver.is_current" @click="switchVersion(ver)">
-                      切换到此版本
+                    <n-button size="tiny" text @click="viewVersion(ver)">查看正文</n-button>
+                    <n-button size="tiny" text :disabled="generationVersions.length < 2" @click="openVersionCompare(ver.version_id)">
+                      比较
+                    </n-button>
+                    <n-button size="tiny" text @click="toggleVersionFavorite(ver)">
+                      {{ ver.is_favorite ? '取消收藏' : '收藏' }}
+                    </n-button>
+                    <n-button size="tiny" text type="warning" :disabled="ver.is_current" @click="restoreVersion(ver)">
+                      恢复为当前稿
                     </n-button>
                   </div>
                 </div>
@@ -589,15 +618,19 @@
                 <n-form-item label="自动沉淀等级">
                   <n-select v-model:value="userPrefs.auto_sync_level" :options="autoSyncOptions" />
                 </n-form-item>
-                <n-form-item label="编辑器字号">
-                  <n-input-number v-model:value="userPrefs.editor_font_size" :min="12" :max="24" style="width: 100%" />
-                </n-form-item>
               </n-form>
 
               <div class="prefs-actions">
                 <n-button type="primary" block :loading="prefsSaving" @click="savePreferences">
-                  保存偏好
+                  保存本项目写作偏好
                 </n-button>
+              </div>
+
+              <div class="editor-preference">
+                <div class="block-title">个人编辑器设置</div>
+                <p>字号作用于你的所有项目，不会改变项目写作偏好。</p>
+                <n-input-number v-model:value="userPrefs.editor_font_size" :min="12" :max="24" style="width: 100%" />
+                <n-button block :loading="editorPrefsSaving" @click="saveEditorPreference">保存个人字号</n-button>
               </div>
 
               <!-- 统计信息 -->
@@ -618,25 +651,63 @@
           <n-tab-pane name="logs" tab="轨迹">
             <div class="tab-content">
               <div class="logs-header">
-                <span class="block-title">Agent 运行轨迹</span>
-                <n-button size="tiny" @click="loadAgentLogs">刷新</n-button>
+                <div>
+                  <span class="block-title">运行记录</span>
+                  <small>按每次生成聚合执行步骤、耗时和真实用量</small>
+                </div>
+                <n-button size="tiny" :loading="traceRunsLoading" @click="refreshTrace">刷新</n-button>
               </div>
-              <div v-if="visibleEvents.length === 0" class="empty-logs">
-                暂无运行记录
+              <div v-if="traceRunsLoading && traceRuns.length === 0" class="empty-logs">正在读取运行记录…</div>
+              <div v-else-if="traceRuns.length === 0 && !traceRunsLoading" class="empty-logs">
+                暂无运行记录；完成一次章节生成后，这里会显示每次运行的步骤详情。
               </div>
-              <div v-else class="timeline">
+              <div v-if="traceRuns.length" class="run-history-list">
                 <div
-                  v-for="event in visibleEvents"
-                  :key="event.id"
-                  class="timeline-item"
-                  :class="event.status"
+                  v-for="run in traceRuns"
+                  :key="run.run_id"
+                  class="run-history-card"
+                  :class="{ selected: traceDetail?.run.run_id === run.run_id }"
                 >
-                  <div class="timeline-dot"></div>
-                  <div class="timeline-content">
-                    <div class="timeline-title">{{ event.title }}</div>
-                    <div class="timeline-detail">{{ event.detail }}</div>
-                    <div class="timeline-time">{{ event.time }}</div>
+                  <div class="run-history-main">
+                    <strong>{{ workflowTemplateLabel(run.template_name) }} · {{ runChapterLabel(run.chapter_id) }}</strong>
+                    <n-tag size="tiny" :type="runStatusType(run.status)">{{ runStatusLabel(run.status) }}</n-tag>
+                    <small>{{ formatVersionDate(run.created_at) }} · {{ run.word_count }} 字</small>
+                    <small v-if="run.error_message" class="run-error">{{ run.error_message }}</small>
                   </div>
+                  <n-button size="tiny" text @click="showRunDetail(run)">
+                    {{ traceDetail?.run.run_id === run.run_id ? '正在查看' : '查看步骤' }}
+                  </n-button>
+                </div>
+              </div>
+
+              <div v-if="traceDetail" class="run-detail-panel">
+                <div class="run-detail-heading">
+                  <strong>{{ workflowTemplateLabel(traceDetail.run.template_name) }} · {{ runStatusLabel(traceDetail.run.status) }}</strong>
+                  <small>{{ traceDetail.run.run_id }}</small>
+                </div>
+                <div class="workflow-metrics-grid">
+                  <div><strong>{{ traceUsage.llmCalls }}</strong><span>模型请求</span></div>
+                  <div><strong>{{ formatTokenCount(traceUsage.totalTokens) }}</strong><span>已返回 Token</span></div>
+                  <div><strong>{{ traceUsage.measuredSteps }} / {{ traceUsage.steps.length }}</strong><span>有用量记录的步骤</span></div>
+                  <div><strong>{{ formatWorkflowDuration(traceUsage.durationMs) }}</strong><span>累计步骤耗时</span></div>
+                </div>
+                <div class="workflow-step-usage">
+                  <div v-for="step in traceUsage.steps" :key="step.id" class="workflow-step-usage-row">
+                    <div class="workflow-step-main">
+                      <span>{{ step.step_name || step.step_id }} · {{ runStatusLabel(step.status) }} · {{ workflowStepSource(step) }}</span>
+                      <small>{{ workflowStepContextSummary(step) }}</small>
+                      <small v-if="step.error_message" class="run-error">{{ step.error_message }}</small>
+                    </div>
+                    <span>{{ workflowStepTokenUsage(step) }}<br>{{ step.duration_ms == null ? '耗时未记录' : formatWorkflowDuration(step.duration_ms) }}</span>
+                  </div>
+                </div>
+                <p class="workflow-usage-note">Token 仅显示模型服务商实际返回的用量；未返回会明确标为未知，不做估算。</p>
+              </div>
+
+              <div v-if="visibleEvents.length" class="local-events-section">
+                <div class="block-title">本页操作</div>
+                <div v-for="event in visibleEvents" :key="event.id" class="local-event-row">
+                  <span>{{ event.title }}</span><small>{{ event.detail }} · {{ event.time }}</small>
                 </div>
               </div>
             </div>
@@ -686,6 +757,42 @@
       </template>
     </n-modal>
 
+    <n-modal v-model:show="versionPreviewVisible" preset="card" :title="versionPreview ? `查看 v${versionPreview.version_number}` : '版本正文'" style="width: min(900px, 94vw)">
+      <div v-if="versionPreview" class="version-preview-meta">
+        <n-tag size="small" :type="versionSourceType(versionPreview.source_type).type">{{ versionSourceType(versionPreview.source_type).label }}</n-tag>
+        <span>{{ versionPreview.word_count }} 字 · {{ formatVersionDate(versionPreview.created_at) }}</span>
+      </div>
+      <div v-if="versionPreviewLoading" class="empty-versions">正在读取版本正文…</div>
+      <pre v-else class="version-content-preview">{{ versionPreviewContent }}</pre>
+      <template #footer>
+        <n-button @click="versionPreviewVisible = false">关闭</n-button>
+        <n-button v-if="versionPreview && !versionPreview.is_current" type="warning" @click="restoreVersion(versionPreview)">恢复为当前稿</n-button>
+      </template>
+    </n-modal>
+
+    <n-modal v-model:show="versionCompareVisible" preset="card" title="版本比较" style="width: min(1200px, 96vw)">
+      <div class="version-compare-selectors">
+        <n-select v-model:value="versionCompareLeftId" :options="versionSelectOptions" placeholder="选择较早版本" />
+        <span>对比</span>
+        <n-select v-model:value="versionCompareRightId" :options="versionSelectOptions" placeholder="选择另一个版本" />
+        <n-button type="primary" :loading="versionCompareLoading" :disabled="!canCompareVersions" @click="loadVersionComparison">开始比较</n-button>
+      </div>
+      <n-alert v-if="!canCompareVersions" type="warning" :show-icon="true">需要选择两个不同版本。</n-alert>
+      <div v-else class="version-compare-columns">
+        <section>
+          <h4>{{ versionLabel(versionCompareLeftId) }}</h4>
+          <pre>{{ versionCompareLeftContent || '点击「开始比较」读取版本正文' }}</pre>
+        </section>
+        <section>
+          <h4>{{ versionLabel(versionCompareRightId) }}</h4>
+          <pre>{{ versionCompareRightContent || '点击「开始比较」读取版本正文' }}</pre>
+        </section>
+      </div>
+      <template #footer>
+        <n-button @click="versionCompareVisible = false">关闭</n-button>
+      </template>
+    </n-modal>
+
   </div>
 </template>
 
@@ -711,11 +818,15 @@ import {
 import type { ChapterEditSession, ChapterEditSessionSummary, NextChapterTarget } from '@/api/agents'
 import {
   getWorkflowTemplates,
+  getWorkflowRuns,
   getWorkflowRunDetail,
   workflowGenerateStream,
   workflowResumeStream,
   pauseWorkflowRun,
   getGenerationVersions,
+  getVersionContent,
+  createVersionSnapshot,
+  setVersionFavorite,
   getChapterChangeProposals,
   reviewChapterChangeProposal,
   setCurrentVersion,
@@ -741,7 +852,6 @@ import type { MemoryLevel } from '@/components/MemoryLayer.vue'
 import AgentPluginCard from '@/components/AgentPluginCard.vue'
 import type { SkillInfo } from '@/components/AgentPluginCard.vue'
 import ContextSelector from '@/components/ContextSelector.vue'
-import VersionTimeline from '@/components/VersionTimeline.vue'
 import { createResource, deleteResource, listResource, updateResource } from '@/api/resources'
 import { useProjectStore } from '@/stores/project'
 import { useProjectDataLoader } from '@/composables/useProjectDataLoader'
@@ -1009,6 +1119,23 @@ const currentRunId = ref<string | null>(null)
 const workflowRunDetail = ref<{ run: WorkflowRunRecord; steps: WorkflowStepRecord[] } | null>(null)
 const generationVersions = ref<GenerationVersion[]>([])
 const versionsLoading = ref(false)
+const versionSnapshotSaving = ref(false)
+const versionPreviewVisible = ref(false)
+const versionPreviewLoading = ref(false)
+const versionPreview = ref<GenerationVersion | null>(null)
+const versionPreviewContent = ref('')
+const versionCompareVisible = ref(false)
+const versionCompareLoading = ref(false)
+const versionCompareLeftId = ref<string | null>(null)
+const versionCompareRightId = ref<string | null>(null)
+const versionCompareLeftContent = ref('')
+const versionCompareRightContent = ref('')
+let versionContentRequestId = 0
+const traceRuns = ref<WorkflowRunRecord[]>([])
+const traceRunsLoading = ref(false)
+const traceDetail = ref<{ run: WorkflowRunRecord; steps: WorkflowStepRecord[] } | null>(null)
+let traceRequestId = 0
+let traceDetailRequestId = 0
 const showWorkflowPanel = ref(false)  // 生成中显示步骤面板
 const isInterrupted = ref(false)  // 是否为中断状态
 const interruptedRunId = ref<string | null>(null)  // 中断的 run_id
@@ -1132,6 +1259,34 @@ const activeVariantName = computed(() => {
   return map[selectedWriterVariant.value] || '均衡风格'
 })
 
+const traceUsage = computed(() => {
+  const steps = traceDetail.value?.steps ?? []
+  const usageSteps = steps.filter((step) => {
+    const usage = step.token_usage
+    return usage && [usage.input_tokens, usage.output_tokens, usage.total_tokens].some((value) => typeof value === 'number')
+  })
+  return {
+    steps,
+    measuredSteps: usageSteps.length,
+    totalTokens: usageSteps.reduce((total, step) => {
+      const usage = step.token_usage
+      return total + (usage?.total_tokens ?? ((usage?.input_tokens ?? 0) + (usage?.output_tokens ?? 0)))
+    }, 0),
+    llmCalls: steps.reduce((total, step) => total + (step.llm_calls || 0), 0),
+    durationMs: steps.reduce((total, step) => total + (step.duration_ms || 0), 0),
+  }
+})
+
+const versionSelectOptions = computed(() => generationVersions.value.map((version) => ({
+  label: `v${version.version_number} · ${versionSourceType(version.source_type).label} · ${formatVersionDate(version.created_at)}`,
+  value: version.version_id,
+})))
+const canCompareVersions = computed(() => Boolean(
+  versionCompareLeftId.value
+    && versionCompareRightId.value
+    && versionCompareLeftId.value !== versionCompareRightId.value,
+))
+
 const selectedWriterVariant = ref('default')
 
 const writerVariants = [
@@ -1222,6 +1377,7 @@ function handleMemoryLevelClick(level: string) {
 // ---- 记忆偏好 ----
 const prefsLoading = ref(false)
 const prefsSaving = ref(false)
+const editorPrefsSaving = ref(false)
 const userPrefs = reactive({
   default_template: 'smart_mode',
   default_writer_variant: 'default',
@@ -1232,6 +1388,7 @@ const userPrefs = reactive({
   total_generations: 0,
   total_words_generated: 0,
 })
+const generationControls = reactive({ temperature: userPrefs.default_temperature, targetWordCount: userPrefs.default_target_word_count })
 
 const templateOptions = computed(() =>
   workflowTemplates.value.map(t => ({ label: t.label, value: t.name }))
@@ -1346,11 +1503,12 @@ const visibleEvents = computed(() => {
   const persisted = agentLogs.value.slice(0, 8).map((log) => ({
     id: `log-${log.id}`,
     title: taskTypeLabel(log.task_type),
-    detail: log.error || log.response || log.request || '任务已记录',
+    // 旧日志的 request/response 可能是整段 JSON 正文，页面只给安全、短的摘要。
+    detail: log.error || (log.status === 'success' ? '已完成（旧记录没有分步详情）' : '运行失败'),
     time: log.created_at,
     status: log.status === 'success' ? 'success' : 'error',
   }))
-  return [...localEvents.value, ...persisted].slice(0, 15)
+  return [...localEvents.value].slice(0, 12).concat(persisted.slice(0, 3))
 })
 
 // ---- 工具函数 ----
@@ -1586,7 +1744,28 @@ async function ensureProject() {
 async function loadAgentLogs() {
   const projectId = await ensureProject()
   if (!projectId) return
-  agentLogs.value = await getAgentLogs(projectId, 20)
+  const requestId = ++traceRequestId
+  traceRunsLoading.value = true
+  try {
+    const [logs, runs] = await Promise.all([
+      getAgentLogs(projectId, 20),
+      getWorkflowRuns(projectId, { chapter_id: chapterId.value ?? undefined, limit: 20 }),
+    ])
+    if (requestId !== traceRequestId) return
+    agentLogs.value = logs
+    traceRuns.value = runs
+    if (traceDetail.value && !runs.some((run) => run.run_id === traceDetail.value?.run.run_id)) {
+      traceDetail.value = null
+      traceDetailRequestId += 1
+    }
+  } catch (error) {
+    if (requestId === traceRequestId) {
+      addEvent('运行记录读取失败', errorMessage(error), 'error')
+      message.error('运行记录读取失败')
+    }
+  } finally {
+    if (requestId === traceRequestId) traceRunsLoading.value = false
+  }
 }
 
 async function loadResources() {
@@ -1899,6 +2078,15 @@ async function selectChapter(item: ChapterItem, options: { recordEvent?: boolean
     await persistChapterDraft(true)
   }
 
+  // 切章时关闭上一章版本面板并让未完成读取请求失效。
+  versionContentRequestId += 1
+  versionPreviewVisible.value = false
+  versionCompareVisible.value = false
+  versionPreview.value = null
+  versionPreviewContent.value = ''
+  versionCompareLeftContent.value = ''
+  versionCompareRightContent.value = ''
+
   const relatedOutline = findOutlineForChapter(item)
   setActiveChapterId(item.id)
   form.outline_id = relatedOutline?.id ?? item.outline_id
@@ -1930,6 +2118,7 @@ async function selectChapter(item: ChapterItem, options: { recordEvent?: boolean
   }
   void refreshContextPreview({ silent: true })
   void loadVersions()  // 加载版本列表
+  if (activeTab.value === 'logs') void refreshTrace()
   nextTick(() => {
     autoRecommendContext()
   })
@@ -2218,8 +2407,8 @@ async function generateV3(options: { showToast?: boolean } = {}) {
         template_name: selectedWorkflow.value,
         generation_options: {
           writer_variant: selectedWriterVariant.value,
-          temperature: userPrefs.default_temperature / 100,
-          target_word_count: userPrefs.default_target_word_count,
+          temperature: generationControls.temperature / 100,
+          target_word_count: generationControls.targetWordCount,
           active_skills: agentSkills.value.filter(skill => skill.active).map(skill => skill.id),
         },
       },
@@ -2605,15 +2794,24 @@ async function loadPreferences() {
   if (!projectStore.currentProject) return
   prefsLoading.value = true
   try {
-    const prefs = await getUserPreferences(projectStore.currentProject.id)
-    Object.assign(userPrefs, prefs)
-    const storedVariant = prefs.default_writer_variant
+    // 写作习惯属于项目；字号属于用户，跨项目复用。
+    const [projectPrefs, personalPrefs] = await Promise.all([
+      getUserPreferences(projectStore.currentProject.id, true),
+      getUserPreferences(projectStore.currentProject.id, false),
+    ])
+    Object.assign(userPrefs, projectPrefs)
+    generationControls.temperature = userPrefs.default_temperature
+    generationControls.targetWordCount = userPrefs.default_target_word_count
+    if (typeof personalPrefs.editor_font_size === 'number') {
+      userPrefs.editor_font_size = personalPrefs.editor_font_size
+    }
+    const storedVariant = projectPrefs.default_writer_variant
     selectedWriterVariant.value = typeof storedVariant === 'string'
       && writerVariants.some(item => item.id === storedVariant)
       ? storedVariant
       : 'default'
     // 如果偏好中有默认模板，同步到选中状态
-    const defaultTpl = prefs.default_template as string | undefined
+    const defaultTpl = projectPrefs.default_template as string | undefined
     if (defaultTpl && workflowTemplates.value.some(t => t.name === defaultTpl)) {
       selectedWorkflow.value = defaultTpl
     }
@@ -2629,7 +2827,15 @@ async function savePreferences() {
   if (!projectStore.currentProject) return
   prefsSaving.value = true
   try {
-    await updateUserPreferences(projectStore.currentProject.id, { ...userPrefs })
+    await updateUserPreferences(projectStore.currentProject.id, {
+      default_template: userPrefs.default_template,
+      default_writer_variant: userPrefs.default_writer_variant,
+      default_temperature: userPrefs.default_temperature,
+      default_target_word_count: userPrefs.default_target_word_count,
+      auto_sync_level: userPrefs.auto_sync_level,
+    }, true)
+    generationControls.temperature = userPrefs.default_temperature
+    generationControls.targetWordCount = userPrefs.default_target_word_count
     selectedWriterVariant.value = userPrefs.default_writer_variant
     addEvent('偏好保存', '写作偏好已更新，下次生成自动应用', 'success')
     message.success('偏好已保存')
@@ -2654,15 +2860,24 @@ function formatWordCount(count?: number): string {
 }
 
 // 加载版本列表
+let versionLoadRequestId = 0
 async function loadVersions() {
   if (!chapterId.value) return
+  const requestedChapterId = chapterId.value
+  const requestId = ++versionLoadRequestId
   versionsLoading.value = true
   try {
-    generationVersions.value = await getGenerationVersions(chapterId.value)
+    const versions = await getGenerationVersions(requestedChapterId, 100)
+    if (requestId === versionLoadRequestId && requestedChapterId === chapterId.value) {
+      generationVersions.value = versions
+    }
   } catch (error) {
-    console.warn('加载版本列表失败', error)
+    if (requestId === versionLoadRequestId) {
+      console.warn('加载版本列表失败', error)
+      message.error('版本列表读取失败')
+    }
   } finally {
-    versionsLoading.value = false
+    if (requestId === versionLoadRequestId) versionsLoading.value = false
   }
 }
 
@@ -2686,52 +2901,189 @@ function formatVersionDate(dateStr: string) {
   }
 }
 
-// 切换版本
-async function switchVersion(ver: GenerationVersion) {
-  if (!chapterId.value || ver.is_current) return
+function versionSourceType(source: GenerationVersion['source_type']) {
+  const labels: Record<string, { label: string; type: 'success' | 'info' | 'warning' | 'primary' | 'default' }> = {
+    generated: { label: '生成稿', type: 'primary' },
+    dialogue_edit: { label: '对话改稿', type: 'info' },
+    polish: { label: '精修稿', type: 'warning' },
+    restored: { label: '恢复版本', type: 'success' },
+    manual_edit: { label: '手动固化', type: 'default' },
+  }
+  return labels[source ?? ''] ?? { label: '旧版本', type: 'default' as const }
+}
+
+async function saveDraftAsVersion() {
+  if (!chapterId.value || !draft.value.trim() || versionSnapshotSaving.value) return
+  const targetChapterId = chapterId.value
+  const contentSnapshot = draft.value
+  versionSnapshotSaving.value = true
   try {
-    const result = await setCurrentVersion(chapterId.value, ver.version_id)
-    if (result.success) {
-      draft.value = result.content
-      addEvent('切换版本', `已切换到 v${ver.version_number} 版本（${ver.word_count} 字）`, 'success')
-      message.success(`已切换到 v${ver.version_number} 版本`)
-      await loadVersions()  // 刷新版本列表状态
-      await loadResources()
-    } else {
-      message.error('版本切换失败')
+    if (!await persistChapterDraft(false)) return
+    if (chapterId.value !== targetChapterId || draft.value !== contentSnapshot) {
+      message.warning('正文在保存期间发生变化，请稍后重新保存版本')
+      return
     }
+    const result = await createVersionSnapshot(targetChapterId, contentSnapshot)
+    if (chapterId.value !== targetChapterId) return
+    await loadVersions()
+    addEvent('保存版本', `当前正文已固化为 v${result.version.version_number}`, 'success')
+    message.success(`已保存为 v${result.version.version_number}`)
   } catch (error) {
-    addEvent('切换版本失败', errorMessage(error), 'error')
-    message.error('版本切换失败')
+    addEvent('保存版本失败', errorMessage(error), 'error')
+    message.error(errorMessage(error) || '保存版本失败')
+  } finally {
+    versionSnapshotSaving.value = false
   }
 }
 
-// ---- 版本时间线 ----
-const timelineVersions = computed(() =>
-  generationVersions.value.map(v => ({
-    id: v.version_id,
-    version_no: `v${v.version_number}`,
-    word_count: v.word_count,
-    created_at: v.created_at,
-    is_current: !!v.is_current,
-    is_favorite: !!v.is_favorite,
-    summary: v.summary,
-    rating: v.rating ?? undefined,
-    template_used: '',
-  }))
-)
-
-const currentVersionId = computed(() =>
-  generationVersions.value.find(v => v.is_current)?.version_id
-)
-
-function handleTimelineVersionSelect(versionId: string) {
-  const ver = generationVersions.value.find(v => v.version_id === versionId)
-  if (ver) switchVersion(ver)
+async function viewVersion(version: GenerationVersion) {
+  if (!chapterId.value) return
+  const targetChapterId = chapterId.value
+  const requestId = ++versionContentRequestId
+  versionPreview.value = version
+  versionPreviewContent.value = ''
+  versionPreviewVisible.value = true
+  versionPreviewLoading.value = true
+  try {
+    const result = await getVersionContent(targetChapterId, version.version_id)
+    if (requestId === versionContentRequestId && chapterId.value === targetChapterId) {
+      versionPreviewContent.value = result.content
+    }
+  } catch (error) {
+    if (requestId === versionContentRequestId && chapterId.value === targetChapterId) {
+      message.error(errorMessage(error) || '读取版本正文失败')
+    }
+  } finally {
+    if (requestId === versionContentRequestId) versionPreviewLoading.value = false
+  }
 }
 
-function handleVersionCompare(versionId: string) {
-  message.info('版本对比功能开发中')
+function openVersionCompare(initialVersionId?: string) {
+  const current = generationVersions.value.find((item) => item.is_current)
+  const other = generationVersions.value.find((item) => item.version_id !== (initialVersionId ?? current?.version_id))
+  versionCompareLeftId.value = initialVersionId ?? other?.version_id ?? null
+  versionCompareRightId.value = current?.version_id ?? other?.version_id ?? null
+  if (versionCompareLeftId.value === versionCompareRightId.value) {
+    versionCompareRightId.value = generationVersions.value.find((item) => item.version_id !== versionCompareLeftId.value)?.version_id ?? null
+  }
+  versionCompareLeftContent.value = ''
+  versionCompareRightContent.value = ''
+  versionCompareVisible.value = true
+  if (canCompareVersions.value) void loadVersionComparison()
+}
+
+async function loadVersionComparison() {
+  if (!chapterId.value || !canCompareVersions.value) return
+  const targetChapterId = chapterId.value
+  const leftId = versionCompareLeftId.value!
+  const rightId = versionCompareRightId.value!
+  const requestId = ++versionContentRequestId
+  versionCompareLoading.value = true
+  try {
+    const [left, right] = await Promise.all([
+      getVersionContent(targetChapterId, leftId),
+      getVersionContent(targetChapterId, rightId),
+    ])
+    if (requestId === versionContentRequestId && chapterId.value === targetChapterId
+      && versionCompareLeftId.value === leftId && versionCompareRightId.value === rightId) {
+      versionCompareLeftContent.value = left.content
+      versionCompareRightContent.value = right.content
+    }
+  } catch (error) {
+    if (requestId === versionContentRequestId && chapterId.value === targetChapterId) {
+      message.error(errorMessage(error) || '读取版本比较内容失败')
+    }
+  } finally {
+    if (requestId === versionContentRequestId) versionCompareLoading.value = false
+  }
+}
+
+function versionLabel(versionId: string | null) {
+  const version = generationVersions.value.find((item) => item.version_id === versionId)
+  return version ? `v${version.version_number} · ${versionSourceType(version.source_type).label}` : '未选择版本'
+}
+
+async function toggleVersionFavorite(version: GenerationVersion) {
+  if (!chapterId.value) return
+  try {
+    await setVersionFavorite(chapterId.value, version.version_id, !version.is_favorite)
+    await loadVersions()
+    message.success(version.is_favorite ? '已取消收藏' : '已收藏版本')
+  } catch (error) {
+    message.error(errorMessage(error) || '收藏状态更新失败')
+  }
+}
+
+async function restoreVersion(version: GenerationVersion) {
+  if (!chapterId.value || version.is_current) return
+  const targetChapterId = chapterId.value
+  if (!window.confirm(`恢复 v${version.version_number} 会生成一条新的当前版本，并先保留编辑区现有正文。继续吗？`)) return
+  try {
+    if (!await persistChapterDraft(false)) return
+    const contentSnapshot = draft.value
+    // 先把尚未固化的当前稿保存为版本，再恢复目标稿，避免丢失作者的编辑内容。
+    await createVersionSnapshot(targetChapterId, contentSnapshot)
+    if (chapterId.value !== targetChapterId || draft.value !== contentSnapshot) {
+      throw new Error('正文在恢复期间发生变化，已取消恢复；当前稿保持不变。')
+    }
+    const result = await setCurrentVersion(targetChapterId, version.version_id, contentSnapshot)
+    if (chapterId.value !== targetChapterId) return
+    draft.value = result.content
+    markDraftPersisted()
+    await Promise.all([loadVersions(), loadResources()])
+    addEvent('恢复版本', `从 v${version.version_number} 创建了新版本`, 'success')
+    message.success('已恢复为新版本；原版本记录均已保留')
+    versionPreviewVisible.value = false
+  } catch (error) {
+    addEvent('恢复版本失败', errorMessage(error), 'error')
+    message.error(errorMessage(error) || '版本恢复失败')
+  }
+}
+
+function runStatusLabel(status: string) {
+  const labels: Record<string, string> = {
+    pending: '等待中', running: '运行中', paused: '已中断', completed: '已完成', failed: '失败', cancelled: '已取消',
+    skipped: '已跳过',
+  }
+  return labels[status] ?? status
+}
+
+function runStatusType(status: string): 'success' | 'info' | 'warning' | 'error' | 'default' {
+  if (status === 'completed') return 'success'
+  if (status === 'failed') return 'error'
+  if (status === 'paused' || status === 'cancelled') return 'warning'
+  if (status === 'running') return 'info'
+  return 'default'
+}
+
+function workflowTemplateLabel(templateName: string) {
+  return workflowTemplates.value.find((item) => item.name === templateName)?.label ?? templateName
+}
+
+function runChapterLabel(id: number | null) {
+  if (id === null) return '未关联章节'
+  return chapters.value.find((item) => item.id === id)?.title || `章节 ${id}`
+}
+
+async function showRunDetail(run: WorkflowRunRecord) {
+  const requestId = ++traceDetailRequestId
+  try {
+    const detail = await getWorkflowRunDetail(run.run_id)
+    if (requestId !== traceDetailRequestId || !detail) return
+    traceDetail.value = detail
+  } catch (error) {
+    message.error(errorMessage(error) || '运行详情读取失败')
+  }
+}
+
+async function refreshTrace() {
+  await loadAgentLogs()
+}
+
+function handleTabChange(tab: string) {
+  if (tab === 'versions') void loadVersions()
+  if (tab === 'preferences') void loadPreferences()
+  if (tab === 'logs') void refreshTrace()
 }
 
 // ---- 流水线步骤点击 ----
@@ -2840,6 +3192,23 @@ async function persistChapterDraft(silent = true): Promise<boolean> {
         draftAutosaveTimer = setTimeout(() => void persistChapterDraft(true), 0)
       }
     }
+  }
+}
+
+async function saveEditorPreference() {
+  if (!projectStore.currentProject) return
+  editorPrefsSaving.value = true
+  try {
+    await updateUserPreferences(projectStore.currentProject.id, {
+      editor_font_size: userPrefs.editor_font_size,
+    }, false)
+    addEvent('个人设置保存', `编辑器字号已保存为 ${userPrefs.editor_font_size}px`, 'success')
+    message.success('个人字号已保存')
+  } catch (error) {
+    addEvent('个人设置保存失败', errorMessage(error), 'error')
+    message.error('个人字号保存失败')
+  } finally {
+    editorPrefsSaving.value = false
   }
 }
 
@@ -3274,7 +3643,7 @@ async function analyze(options: { showToast?: boolean } = {}) {
       return false
     }
     await loadAgentLogs()
-    await loadResources()
+    await Promise.all([loadVersions(), loadResources()])
     await loadChapterChangeProposals()
     addEvent('分析完成', '摘要、人物变化、伏笔线索已生成')
     if (showToast) message.success('章节分析已完成')
@@ -3338,9 +3707,9 @@ async function doPolish() {
     })
     polishOriginal.value = beforePolish
     draft.value = result.content
-    await loadResources()
-    addEvent('精修完成', '正文已覆盖为精修版本，变化段落已高亮')
-    message.success('章节已精修')
+    await Promise.all([loadVersions(), loadResources()])
+    addEvent('精修完成', `已保存为 v${result.version_number}，变化段落已高亮`)
+    message.success(`精修稿已保存为 v${result.version_number}`)
   } catch (error) {
     addEvent('精修失败', errorMessage(error), 'error')
     message.error('章节精修失败')
@@ -4364,15 +4733,34 @@ watch(
   margin-bottom: 12px;
 }
 
+.versions-header > div,
+.logs-header > div {
+  display: grid;
+  gap: 3px;
+}
+
+.versions-header small,
+.logs-header small {
+  color: var(--n-text-color-3, #7b8494);
+  font-size: 11px;
+}
+
+.version-draft-note {
+  margin-bottom: 10px;
+}
+
+.version-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
 .empty-versions {
   text-align: center;
   padding: 40px 20px;
   color: var(--n-text-color-3, #999);
   font-size: 13px;
-}
-
-.version-timeline-wrap {
-  margin-bottom: 12px;
 }
 
 .version-list {
@@ -4385,7 +4773,7 @@ watch(
   padding: 12px;
   border: 1px solid var(--n-border-color, #e0e0e0);
   border-radius: 10px;
-  background: var(--n-color, #fff);
+  background: var(--n-color-embedded, rgba(30, 41, 59, 0.46));
   transition: all 0.2s ease;
 }
 
@@ -4395,8 +4783,8 @@ watch(
 }
 
 .version-item.current {
-  border-color: #10b981;
-  background: #f0fdf4;
+  border-color: rgba(52, 211, 153, 0.68);
+  background: rgba(16, 185, 129, 0.08);
 }
 
 .version-header {
@@ -4446,7 +4834,162 @@ watch(
 
 .version-actions {
   display: flex;
+  flex-wrap: wrap;
+  gap: 6px 12px;
   justify-content: flex-end;
+}
+
+.version-preview-meta {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 10px;
+  color: var(--n-text-color-3, #7b8494);
+  font-size: 12px;
+}
+
+.version-content-preview,
+.version-compare-columns pre {
+  max-height: min(70vh, 720px);
+  overflow: auto;
+  margin: 0;
+  padding: 14px;
+  border: 1px solid var(--n-border-color, rgba(148, 163, 184, 0.2));
+  border-radius: 8px;
+  color: var(--n-text-color, #e2e8f0);
+  background: rgba(15, 23, 42, 0.5);
+  font: inherit;
+  line-height: 1.75;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.version-compare-selectors {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+  margin-bottom: 14px;
+}
+
+.version-compare-columns {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.version-compare-columns h4 {
+  margin: 0 0 8px;
+  color: var(--n-text-color, #e2e8f0);
+}
+
+.editor-preference {
+  display: grid;
+  gap: 9px;
+  margin: 18px 0;
+  padding: 12px;
+  border: 1px solid var(--n-border-color, rgba(148, 163, 184, 0.2));
+  border-radius: 9px;
+  background: rgba(148, 163, 184, 0.04);
+}
+
+.editor-preference p {
+  margin: 0;
+  color: var(--n-text-color-3, #7b8494);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.run-history-list {
+  display: grid;
+  gap: 8px;
+}
+
+.run-history-card {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 11px;
+  border: 1px solid var(--n-border-color, rgba(148, 163, 184, 0.2));
+  border-radius: 9px;
+  background: rgba(148, 163, 184, 0.04);
+}
+
+.run-history-card.selected {
+  border-color: var(--n-primary-color, #6366f1);
+  background: rgba(99, 102, 241, 0.08);
+}
+
+.run-history-main {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 5px 8px;
+  min-width: 0;
+}
+
+.run-history-main strong,
+.run-history-main small,
+.run-detail-heading small {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.run-history-main small {
+  grid-column: 1 / -1;
+  color: var(--n-text-color-3, #7b8494);
+  font-size: 11px;
+}
+
+.run-history-main small:nth-of-type(2) {
+  grid-column: 1 / -1;
+}
+
+.run-detail-panel {
+  display: grid;
+  gap: 10px;
+  margin-top: 12px;
+  padding: 12px;
+  border: 1px solid var(--n-border-color, rgba(148, 163, 184, 0.2));
+  border-radius: 10px;
+  background: rgba(15, 23, 42, 0.28);
+}
+
+.run-detail-heading {
+  display: grid;
+  gap: 4px;
+}
+
+.run-detail-heading small {
+  color: var(--n-text-color-3, #7b8494);
+  font-size: 10px;
+}
+
+.run-error {
+  color: #f87171 !important;
+}
+
+.local-events-section {
+  display: grid;
+  gap: 7px;
+  margin-top: 18px;
+  padding-top: 12px;
+  border-top: 1px solid var(--n-border-color, rgba(148, 163, 184, 0.2));
+}
+
+.local-event-row {
+  display: grid;
+  gap: 3px;
+  padding: 8px;
+  border-radius: 7px;
+  background: rgba(148, 163, 184, 0.04);
+  font-size: 12px;
+}
+
+.local-event-row small {
+  color: var(--n-text-color-3, #7b8494);
+  font-size: 11px;
 }
 
 /* ===== 记忆偏好面板 ===== */
@@ -4455,6 +4998,19 @@ watch(
   justify-content: space-between;
   align-items: center;
   margin-bottom: 8px;
+}
+
+.generation-controls-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.generation-controls-grid small {
+  display: block;
+  margin-top: 5px;
+  color: var(--n-text-color-3, #7b8494);
+  font-size: 11px;
 }
 
 .prefs-desc {
@@ -4515,6 +5071,19 @@ watch(
 @media (max-width: 1400px) {
   .workbench {
     grid-template-columns: 240px 1fr 320px;
+  }
+}
+
+@media (max-width: 760px) {
+  .version-compare-selectors,
+  .version-compare-columns,
+  .generation-controls-grid,
+  .workflow-metrics-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .version-compare-selectors > span {
+    display: none;
   }
 }
 </style>

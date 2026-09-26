@@ -29,6 +29,7 @@
         <!-- 正文编辑器 -->
         <div class="editor-container">
           <n-input
+            :style="{ '--chapter-editor-font-size': `${editorFontSize}px` }"
             v-model:value="draft"
             type="textarea"
             class="chapter-textarea"
@@ -76,6 +77,7 @@ const props = defineProps<{
   draft: string
   wordCount: number
   chapterId: number | null
+  editorFontSize: number
   saveStatus: 'saved' | 'unsaved' | 'saving' | 'error'
   hasPolishHighlights: boolean
   polishSegments: PolishSegment[]
@@ -235,6 +237,10 @@ function captureSelection() {
 .chapter-textarea {
   min-height: 100%;
   background: transparent !important;
+}
+
+.chapter-textarea :deep(textarea) {
+  font-size: var(--chapter-editor-font-size, 16px);
 }
 
 .chapter-textarea :deep(textarea) {

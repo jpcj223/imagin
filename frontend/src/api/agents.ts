@@ -176,7 +176,7 @@ export async function analyzeChapter(payload: Record<string, unknown>) {
 
 export async function polishChapter(payload: Record<string, unknown>) {
   // 章节精修：保留事实基础上按指定模式重写当前章节。
-  const { data } = await apiClient.post<{ chapter_id: number; content: string }>('/agents/polish', payload)
+  const { data } = await apiClient.post<{ chapter_id: number; content: string; version_id: string; version_number: number }>('/agents/polish', payload)
   return data
 }
 

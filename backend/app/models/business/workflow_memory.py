@@ -88,6 +88,8 @@ class GenerationVersion(Base):
     content_file_path = Column(String(512), nullable=True)
     word_count = Column(Integer, default=0)
     summary = Column(Text, default="")
+    source_type = Column(String(32), nullable=True)
+    source_version_id = Column(String(64), nullable=True)
 
     rating = Column(Integer, nullable=True)
     feedback = Column(Text, default="")

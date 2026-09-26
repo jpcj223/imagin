@@ -52,6 +52,7 @@ export interface WorkflowRunRecord {
   progress: number
   word_count: number
   output_preview: string
+  error_message?: string
   variant_selections?: Record<string, unknown>
   started_at: string | null
   completed_at: string | null
@@ -106,6 +107,8 @@ export interface GenerationVersion {
   summary: string
   rating: number | null
   is_favorite: number
+  source_type: 'generated' | 'dialogue_edit' | 'polish' | 'restored' | 'manual_edit' | null
+  source_version_id: string | null
   created_at: string
 }
 
@@ -437,12 +440,32 @@ export async function getVersionContent(chapterId: number, versionId: string) {
   return data
 }
 
-export async function setCurrentVersion(chapterId: number, versionId: string) {
+export async function setCurrentVersion(chapterId: number, versionId: string, expectedContent?: string) {
   const { data } = await apiClient.post<{
     success: boolean
     content: string
     version: GenerationVersion | null
-  }>(`/agents/v3/versions/${chapterId}/set-current`, { version_id: versionId })
+    restored?: boolean
+  }>(`/agents/v3/versions/${chapterId}/set-current`, {
+    version_id: versionId,
+    expected_content: expectedContent,
+  })
+  return data
+}
+
+export async function createVersionSnapshot(chapterId: number, content: string) {
+  const { data } = await apiClient.post<{ success: boolean; version: GenerationVersion }>(
+    `/agents/v3/versions/${chapterId}/snapshot`,
+    { content },
+  )
+  return data
+}
+
+export async function setVersionFavorite(chapterId: number, versionId: string, isFavorite: boolean) {
+  const { data } = await apiClient.post<GenerationVersion>(
+    `/agents/v3/versions/${chapterId}/${versionId}/favorite`,
+    { is_favorite: isFavorite },
+  )
   return data
 }
 

@@ -333,6 +333,8 @@ class WorkflowPersistence:
         word_count: int = 0,
         summary: str = "",
         version_number: int | None = None,
+        source_type: str = "generated",
+        source_version_id: str | None = None,
     ) -> str:
         """创建生成版本。
 
@@ -367,6 +369,8 @@ class WorkflowPersistence:
                 content_file_path=content_file_path,
                 word_count=word_count,
                 summary=summary[:500] if summary else "",
+                source_type=source_type,
+                source_version_id=source_version_id,
             )
             db.add(version)
             db.commit()
@@ -380,6 +384,7 @@ class WorkflowPersistence:
         expected_content: str,
         revised_content: str,
         summary: str = "",
+        source_type: str = "dialogue_edit",
     ) -> dict | None:
         """原子应用对话改稿并保留正文版本；原稿不匹配时拒绝覆盖。"""
         version_id = str(uuid.uuid4())
@@ -428,6 +433,7 @@ class WorkflowPersistence:
                 content_file_path=content_file_path,
                 word_count=len(revised_content),
                 summary=summary[:500] if summary else "对话改稿",
+                source_type=source_type,
             ))
             db.commit()
 
@@ -489,17 +495,73 @@ class WorkflowPersistence:
         }
 
     @staticmethod
-    def get_version_content(version_id: str) -> str:
-        """获取版本的完整内容。"""
+    def get_version_content(chapter_id: int, version_id: str) -> str | None:
+        """按章节读取版本正文，防止跨章节猜测版本 ID。"""
         with get_business_db() as db:
             version = (
                 db.query(GenerationVersion)
-                .filter(GenerationVersion.version_id == version_id)
+                .filter(
+                    GenerationVersion.chapter_id == chapter_id,
+                    GenerationVersion.version_id == version_id,
+                )
                 .first()
             )
-            if not version or not version.content_file_path:
+            if not version:
+                return None
+            if not version.content_file_path:
                 return ""
             return _read_version_content(version.content_file_path)
+
+    @staticmethod
+    def set_version_favorite(chapter_id: int, version_id: str, is_favorite: bool) -> dict | None:
+        """切换指定章节版本的收藏状态。"""
+        with get_business_db() as db:
+            version = db.query(GenerationVersion).filter(
+                GenerationVersion.chapter_id == chapter_id,
+                GenerationVersion.version_id == version_id,
+            ).first()
+            if not version:
+                return None
+            version.is_favorite = 1 if is_favorite else 0
+            db.commit()
+            db.refresh(version)
+            return row_to_dict(version)
+
+    @staticmethod
+    def create_manual_version(chapter_id: int, expected_content: str) -> dict | None:
+        """将当前已自动保存的草稿显式固化为不可变用户版本。"""
+        version_id = str(uuid.uuid4())
+        with get_business_db() as db:
+            chapter = db.query(Chapter).filter(Chapter.id == chapter_id).with_for_update().first()
+            if not chapter or (chapter.content or "") != expected_content or not expected_content.strip():
+                return None
+            current = db.query(GenerationVersion).filter(
+                GenerationVersion.chapter_id == chapter_id,
+                GenerationVersion.is_current == 1,
+            ).first()
+            if current and current.content_file_path and _read_version_content(current.content_file_path) == expected_content:
+                return row_to_dict(current)
+            latest = db.query(GenerationVersion.version_number).filter(
+                GenerationVersion.chapter_id == chapter_id,
+            ).order_by(GenerationVersion.version_number.desc()).first()
+            version_number = (latest[0] if latest else 0) + 1
+            db.query(GenerationVersion).filter(
+                GenerationVersion.chapter_id == chapter_id,
+            ).update({"is_current": 0})
+            version = GenerationVersion(
+                version_id=version_id,
+                chapter_id=chapter_id,
+                version_number=version_number,
+                is_current=1,
+                content_file_path=_save_version_content(chapter_id, version_id, expected_content),
+                word_count=len(expected_content),
+                summary="手动固化编辑稿",
+                source_type="manual_edit",
+            )
+            db.add(version)
+            db.commit()
+            db.refresh(version)
+            return row_to_dict(version)
 
     @staticmethod
     def get_versions(chapter_id: int, limit: int = 10) -> list[dict]:
@@ -515,8 +577,8 @@ class WorkflowPersistence:
             return rows_to_dicts(rows)
 
     @staticmethod
-    def set_current_version(chapter_id: int, version_id: str) -> dict:
-        """设置当前版本，并回滚章节内容到该版本。
+    def set_current_version(chapter_id: int, version_id: str, expected_content: str | None = None) -> dict:
+        """以新版本恢复指定旧稿，保留所有已存在版本的历史状态。
 
         Returns:
             {"success": bool, "content": str, "version": dict | None}
@@ -530,30 +592,52 @@ class WorkflowPersistence:
                 )
                 .first()
             )
-            if not version:
+            chapter = db.query(Chapter).filter(Chapter.id == chapter_id).with_for_update().first()
+            if not version or not chapter:
                 return {"success": False, "content": "", "version": None}
+            if expected_content is not None and (chapter.content or "") != expected_content:
+                return {"success": False, "content": "", "version": None, "conflict": True}
 
-            # 取消其他版本的当前标记
+            content = _read_version_content(version.content_file_path) if version.content_file_path else ""
+            if version.is_current and (chapter.content or "") == content:
+                return {"success": True, "content": content, "version": row_to_dict(version), "restored": False}
+
+            # 步骤 1：恢复只增加一条来源明确的新版本，旧历史记录不再改写。
+            latest = db.query(GenerationVersion.version_number).filter(
+                GenerationVersion.chapter_id == chapter_id,
+            ).order_by(GenerationVersion.version_number.desc()).first()
+            restored_version = GenerationVersion(
+                version_id=str(uuid.uuid4()),
+                chapter_id=chapter_id,
+                run_id=None,
+                version_number=(latest[0] if latest else 0) + 1,
+                is_current=1,
+                content_file_path=None,
+                word_count=len(content),
+                summary=f"恢复自 v{version.version_number}：{version.summary or '历史版本'}"[:500],
+                source_type="restored",
+                source_version_id=version.version_id,
+            )
+            # 步骤 3：快照文件名与数据库中的版本 ID 保持一致。
+            if content:
+                restored_version.content_file_path = _save_version_content(
+                    chapter_id, restored_version.version_id, content,
+                )
+
+            # 步骤 2：仅移动当前指针到新增记录，并同步正文到该恢复快照。
             db.query(GenerationVersion).filter(
                 GenerationVersion.chapter_id == chapter_id
             ).update({"is_current": 0})
-
-            version.is_current = 1
-
-            # 读取版本内容
-            content = _read_version_content(version.content_file_path) if version.content_file_path else ""
-
-            # 回滚章节内容
-            chapter = db.query(Chapter).filter(Chapter.id == chapter_id).first()
-            if chapter and content:
-                chapter.content = content
-
+            db.add(restored_version)
+            chapter.content = content
             db.commit()
+            db.refresh(restored_version)
 
             return {
                 "success": True,
                 "content": content,
-                "version": row_to_dict(version),
+                "version": row_to_dict(restored_version),
+                "restored": True,
             }
 
     # ----------------------------------------------------------

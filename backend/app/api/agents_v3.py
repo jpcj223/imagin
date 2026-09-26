@@ -104,6 +104,22 @@ class PreferenceUpdateRequest(BaseModel):
     project_level: bool = True
 
 
+class VersionSnapshotRequest(BaseModel):
+    """将编辑器中已保存的草稿固化为一个版本。"""
+    content: str
+
+
+class VersionFavoriteRequest(BaseModel):
+    """更新章节版本的收藏状态。"""
+    is_favorite: bool
+
+
+class VersionRestoreRequest(BaseModel):
+    """带当前正文快照的安全恢复请求。"""
+    version_id: str
+    expected_content: str | None = None
+
+
 # ============================================================
 # 查询接口：模板 / Skill / 变体 / Agent
 # ============================================================
@@ -527,15 +543,39 @@ def get_generation_versions(chapter_id: int, limit: int = 10) -> list[dict]:
 @router.get("/versions/{chapter_id}/{version_id}/content")
 def get_version_content(chapter_id: int, version_id: str) -> dict:
     """获取指定版本的完整内容。"""
-    content = WorkflowPersistence.get_version_content(version_id)
+    content = WorkflowPersistence.get_version_content(chapter_id, version_id)
+    if content is None:
+        raise HTTPException(status_code=404, detail="章节版本不存在")
     return {"version_id": version_id, "content": content}
 
 
 @router.post("/versions/{chapter_id}/set-current")
-def set_current_version(chapter_id: int, version_id: str) -> dict:
-    """设置当前版本，并回滚章节内容到该版本。"""
-    result = WorkflowPersistence.set_current_version(chapter_id, version_id)
+def set_current_version(chapter_id: int, payload: VersionRestoreRequest) -> dict:
+    """从历史版本新建一条当前版本，不改写历史标记。"""
+    result = WorkflowPersistence.set_current_version(chapter_id, payload.version_id, payload.expected_content)
+    if result.get("conflict"):
+        raise HTTPException(status_code=409, detail="章节正文在恢复期间已变化；请先保存当前稿，再重新恢复")
+    if not result.get("success"):
+        raise HTTPException(status_code=404, detail="章节版本不存在")
     return result
+
+
+@router.post("/versions/{chapter_id}/snapshot")
+def create_version_snapshot(chapter_id: int, payload: VersionSnapshotRequest) -> dict:
+    """把正文草稿明确保存为历史版本；正文若已变化则要求前端重试。"""
+    version = WorkflowPersistence.create_manual_version(chapter_id, payload.content)
+    if not version:
+        raise HTTPException(status_code=409, detail="草稿为空或正文已变化，请刷新后重试")
+    return {"success": True, "version": version}
+
+
+@router.post("/versions/{chapter_id}/{version_id}/favorite")
+def set_version_favorite(chapter_id: int, version_id: str, payload: VersionFavoriteRequest) -> dict:
+    """收藏或取消收藏指定的章节版本。"""
+    version = WorkflowPersistence.set_version_favorite(chapter_id, version_id, payload.is_favorite)
+    if not version:
+        raise HTTPException(status_code=404, detail="章节版本不存在")
+    return version
 
 
 # ============================================================
@@ -770,6 +810,7 @@ def _create_generation_version(
         content=content,
         word_count=word_count,
         summary=summary,
+        source_type="generated",
     )
 
 

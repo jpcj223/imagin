@@ -452,7 +452,10 @@ def chapter_analyze(payload: ChapterAnalyzeRequest) -> dict:
 @router.post("/polish")
 def polish(payload: PolishRequest) -> dict:
     """按指定模式精修章节正文。"""
-    return polish_chapter(payload.project_id, payload.chapter_id, payload.mode, payload.instruction)
+    try:
+        return polish_chapter(payload.project_id, payload.chapter_id, payload.mode, payload.instruction)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
 @router.post("/consistency-check")
