@@ -4,6 +4,12 @@
     <!-- 生成后沉淀 -->
     <div class="form-block">
       <div class="block-title">生成后沉淀</div>
+      <n-alert v-if="props.analysisIsStale" type="warning" :show-icon="true">
+        当前正文已在分析后修改。下方摘要和变化提案仍对应旧正文，请重新分析后再审核写回。
+      </n-alert>
+      <n-alert v-else-if="props.analysisFreshnessUnknown" type="info" :show-icon="true">
+        这条历史分析没有正文来源指纹，无法确认是否仍对应当前内容；重新分析可建立准确关联。
+      </n-alert>
       <n-alert v-if="props.analysisStatus === 'unavailable'" type="warning" :show-icon="true">
         {{ props.analysis || '模型服务不可用，本次未保存章节分析；配置模型后可重新分析。' }}
       </n-alert>
@@ -70,6 +76,7 @@
                   {{ proposalStatusLabel(proposal.status) }}
                 </n-tag>
                 <n-tag v-if="proposal.operation === 'create'" size="small" type="info">新增</n-tag>
+                <n-tag v-if="proposal.is_stale" size="small" type="error">正文已变化</n-tag>
               </div>
               <span v-if="proposal.version_id" class="proposal-source">来源版本 {{ proposal.version_id.slice(0, 8) }}</span>
             </div>
@@ -84,8 +91,12 @@
               </div>
             </div>
             <p v-if="proposal.review_note" class="proposal-review-note">{{ proposal.review_note }}</p>
+            <n-alert v-if="proposal.is_stale" type="warning" :show-icon="true" class="stale-proposal-alert">
+              来源正文已变化或无法核实。请按当前正文重新分析；此提案不能写回。
+            </n-alert>
             <div v-if="proposal.status === 'pending'" class="proposal-actions">
               <n-button
+                v-if="!proposal.is_stale"
                 size="small"
                 quaternary
                 :disabled="props.proposalBusyIds.includes(proposal.proposal_id)"
@@ -102,7 +113,11 @@
               >
                 拒绝
               </n-button>
+              <n-button v-if="proposal.is_stale" size="small" type="info" @click="emit('reanalyze')">
+                重新分析
+              </n-button>
               <n-button
+                v-if="!proposal.is_stale"
                 size="small"
                 type="success"
                 :loading="props.proposalBusyIds.includes(proposal.proposal_id)"
@@ -181,6 +196,8 @@ interface AnalysisSections {
 interface Props {
   analysis: string
   analysisStatus: string
+  analysisIsStale: boolean
+  analysisFreshnessUnknown: boolean
   analysisSections: AnalysisSections
   pendingProposalCount: number
   proposalLoading: boolean
@@ -367,6 +384,10 @@ function shortText(value: string, max = 58): string {
   background: var(--n-color-1, #1e2228);
   border: 1px solid var(--n-border-color, #2a2f3a);
   border-radius: 8px;
+}
+
+.stale-proposal-alert {
+  margin-top: 8px;
 }
 
 .card-label {

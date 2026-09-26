@@ -6,7 +6,8 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
-from app.models.business import ChapterChangeProposal, OrganizationRelation
+from app.models.business import Chapter, ChapterChangeProposal, OrganizationRelation
+from app.services.chapter_content import content_has_changed
 from app.services.organization_history import (
     capture_organization_relation_snapshot,
     capture_organization_snapshot,
@@ -104,6 +105,18 @@ def review_proposal(
         return {"proposal": _serialize_proposal(proposal), "idempotent": True, "conflict": False}
     if proposal.status != "pending":
         raise ValueError(f"提案当前状态为 {proposal.status}，不能重复审核")
+    if decision == "approve":
+        chapter = db.query(Chapter).filter(
+            Chapter.id == chapter_id,
+            Chapter.project_id == project_id,
+        ).first()
+        if not chapter:
+            raise LookupError("章节不存在或不属于当前项目")
+        freshness = content_has_changed(proposal.source_content_hash, chapter.content)
+        if freshness is True:
+            raise ValueError("章节正文已在分析后修改；请重新分析，再审核这条提案。")
+        if freshness is None:
+            raise ValueError("这条历史提案没有正文来源记录；请重新分析后再审核。")
 
     organization_before_snapshot: dict[str, Any] | None = None
     foreshadowing_before_snapshot: dict[str, Any] = {}

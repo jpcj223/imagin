@@ -19,6 +19,8 @@ class ChapterChangeProposal(Base):
     chapter_id = Column(Integer, ForeignKey("chapters.id", ondelete="CASCADE"), nullable=False, index=True)
     run_id = Column(String(64), nullable=True, index=True)
     version_id = Column(String(64), nullable=True)
+    # 审核写回前据此确认提案仍对应当前章节正文。
+    source_content_hash = Column(String(64), nullable=True)
 
     entity_type = Column(String(32), nullable=False)
     operation = Column(String(16), nullable=False, default="update")

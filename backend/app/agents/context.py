@@ -34,6 +34,7 @@ def build_context_preview(
     outline_id: int | None = None,
     query: str = "",
     selection: dict[str, list[int]] | None = None,
+    manual_selection: dict[str, list[int]] | None = None,
 ) -> dict[str, Any]:
     """生成章节生成实际会读取的上下文预览。
 
@@ -44,10 +45,24 @@ def build_context_preview(
     context = build_chapter_context(project_id, chapter_no, outline_id, query, selection)
     world = context["world"]
     outline = context["outline"]
+    selection = selection or {}
+    manual_selection = manual_selection or {}
+
+    def source_for(kind: str, item_id: int | None) -> str:
+        """预览标注作者明确优先项、推荐优先项和普通相关检索项。"""
+        if item_id in set(manual_selection.get(kind, [])):
+            return "manual"
+        if item_id in set(selection.get(kind, [])):
+            return "recommended"
+        return "automatic"
 
     # 步骤 2：压缩成预览卡片所需的数据结构，但列表来源保持与 Agent 输入一致。
     return {
         "chapter_no": chapter_no,
+        "required_context": [
+            {"label": "本章大纲", "title": outline.get("title", ""), "content": outline.get("description", "")},
+            {"label": "项目世界观", "title": world.get("title") or world.get("era", ""), "content": world.get("rules", "")},
+        ],
         "outline": {
             "title": outline.get("title", ""),
             "description": outline.get("description", ""),
@@ -63,6 +78,7 @@ def build_context_preview(
                 "title": item.get("title") or item.get("era", ""),
                 "category": item.get("category", ""),
                 "importance": item.get("importance", ""),
+                "selection_source": source_for("world_setting_ids", item.get("id")),
             }
             for item in context["world_settings"]
         ],
@@ -72,6 +88,7 @@ def build_context_preview(
                 "name": item.get("name", ""),
                 "role_type": item.get("role_type", ""),
                 "motivation": item.get("motivation", ""),
+                "selection_source": source_for("character_ids", item.get("id")),
             }
             for item in context["characters"]
         ],
@@ -82,6 +99,7 @@ def build_context_preview(
                 "goal": item.get("goal", ""),
                 "power_level": item.get("power_level", 0),
                 "relations": item.get("relations", []),
+                "selection_source": source_for("organization_ids", item.get("id")),
             }
             for item in context["organizations"]
         ],
@@ -91,6 +109,7 @@ def build_context_preview(
                 "keyword": item.get("keyword", ""),
                 "status": item.get("status", ""),
                 "payoff_chapter": item.get("payoff_chapter"),
+                "selection_source": source_for("foreshadowing_ids", item.get("id")),
             }
             for item in context["foreshadowings"]
         ],
@@ -99,6 +118,7 @@ def build_context_preview(
                 "id": item.get("id"),
                 "summary": item.get("summary", ""),
                 "timeline_events": item.get("timeline_events", ""),
+                "selection_source": "system",
             }
             for item in context["recent_summaries"]
         ],
@@ -109,6 +129,7 @@ def build_context_preview(
                 "content_summary": (item.get("content_summary") or item.get("content") or "")[:120],
                 "importance": item.get("importance") or 0,
                 "source_type": item.get("source_type") or "",
+                "selection_source": "system",
             }
             for item in context["long_term_memories"]
         ],

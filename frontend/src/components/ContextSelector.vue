@@ -55,6 +55,7 @@
                   type="checkbox"
                   :value="char.id"
                   v-model="localSelectedCharacterIds"
+                  @change="onManualSelectionChange('character_ids', char.id, $event)"
                   class="item-checkbox"
                 />
                 <div class="item-content">
@@ -119,6 +120,7 @@
                   type="checkbox"
                   :value="org.id"
                   v-model="localSelectedOrganizationIds"
+                  @change="onManualSelectionChange('organization_ids', org.id, $event)"
                   class="item-checkbox"
                 />
                 <div class="item-content">
@@ -182,6 +184,7 @@
                   type="checkbox"
                   :value="ws.id"
                   v-model="localSelectedWorldIds"
+                  @change="onManualSelectionChange('world_setting_ids', ws.id, $event)"
                   class="item-checkbox"
                 />
                 <div class="item-content">
@@ -245,6 +248,7 @@
                   type="checkbox"
                   :value="fs.id"
                   v-model="localSelectedForeshadowingIds"
+                  @change="onManualSelectionChange('foreshadowing_ids', fs.id, $event)"
                   class="item-checkbox"
                 />
                 <div class="item-content">
@@ -412,6 +416,8 @@ const emit = defineEmits<{
   'update:selectedWorldIds': [ids: number[]]
   'update:selectedForeshadowingIds': [ids: number[]]
   'auto-recommend': []
+  'manual-selection-change': [category: string, id: number, selected: boolean]
+  'manual-selection-replace': [category: string, ids: number[]]
 }>()
 
 // ===== 面板展开状态 =====
@@ -426,6 +432,10 @@ const expanded = ref({
 
 function togglePanel(key: keyof typeof expanded.value) {
   expanded.value[key] = !expanded.value[key]
+}
+
+function onManualSelectionChange(category: string, id: number, event: Event) {
+  emit('manual-selection-change', category, id, (event.target as HTMLInputElement).checked)
 }
 
 // ===== 搜索关键词 =====
@@ -500,10 +510,13 @@ const filteredForeshadowings = computed(() => {
 
 // ===== 角色操作 =====
 function selectAllCharacters() {
-  emit('update:selectedCharacterIds', props.characters.map(c => c.id))
+  const ids = props.characters.map(c => c.id)
+  emit('update:selectedCharacterIds', ids)
+  emit('manual-selection-replace', 'character_ids', ids)
 }
 function clearCharacters() {
   emit('update:selectedCharacterIds', [])
+  emit('manual-selection-replace', 'character_ids', [])
 }
 function resetCharacters() {
   emit('auto-recommend')
@@ -511,10 +524,13 @@ function resetCharacters() {
 
 // ===== 组织操作 =====
 function selectAllOrganizations() {
-  emit('update:selectedOrganizationIds', props.organizations.map(o => o.id))
+  const ids = props.organizations.map(o => o.id)
+  emit('update:selectedOrganizationIds', ids)
+  emit('manual-selection-replace', 'organization_ids', ids)
 }
 function clearOrganizations() {
   emit('update:selectedOrganizationIds', [])
+  emit('manual-selection-replace', 'organization_ids', [])
 }
 function resetOrganizations() {
   emit('auto-recommend')
@@ -522,10 +538,13 @@ function resetOrganizations() {
 
 // ===== 世界观操作 =====
 function selectAllWorldSettings() {
-  emit('update:selectedWorldIds', props.worldSettings.map(w => w.id))
+  const ids = props.worldSettings.map(w => w.id)
+  emit('update:selectedWorldIds', ids)
+  emit('manual-selection-replace', 'world_setting_ids', ids)
 }
 function clearWorldSettings() {
   emit('update:selectedWorldIds', [])
+  emit('manual-selection-replace', 'world_setting_ids', [])
 }
 function resetWorldSettings() {
   emit('auto-recommend')
@@ -533,10 +552,13 @@ function resetWorldSettings() {
 
 // ===== 伏笔操作 =====
 function selectAllForeshadowings() {
-  emit('update:selectedForeshadowingIds', props.foreshadowings.map(f => f.id))
+  const ids = props.foreshadowings.map(f => f.id)
+  emit('update:selectedForeshadowingIds', ids)
+  emit('manual-selection-replace', 'foreshadowing_ids', ids)
 }
 function clearForeshadowings() {
   emit('update:selectedForeshadowingIds', [])
+  emit('manual-selection-replace', 'foreshadowing_ids', [])
 }
 function resetForeshadowings() {
   emit('auto-recommend')

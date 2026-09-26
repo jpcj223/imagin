@@ -18,6 +18,7 @@ from app.services.chapter_targets import get_project_next_chapter_target, requir
 from app.db.repository import rows_to_dicts
 from app.db.session import get_business_db
 from app.models.business import Chapter, ChapterSummary, GenerationLog, GenerationVersion
+from app.services.chapter_content import content_has_changed
 from app.services.chapter_edit_sessions import (
     create_chapter_edit_session,
     get_chapter_edit_session,
@@ -135,6 +136,8 @@ def chapter_summaries(project_id: int, limit: int = 20) -> list[dict]:
                 ChapterSummary.timeline_events,
                 ChapterSummary.source_run_id,
                 ChapterSummary.source_version_id,
+                ChapterSummary.source_content_hash,
+                Chapter.content.label("current_content"),
                 GenerationVersion.version_number.label("source_version_number"),
                 ChapterSummary.created_at,
             )
@@ -159,6 +162,7 @@ def chapter_summaries(project_id: int, limit: int = 20) -> list[dict]:
             "timeline_events": row.timeline_events,
             "source_run_id": row.source_run_id,
             "source_version_id": row.source_version_id,
+            "is_stale": content_has_changed(row.source_content_hash, row.current_content),
             "source_version_number": row.source_version_number,
             "created_at": row.created_at.isoformat() if row.created_at else None,
         }
@@ -221,6 +225,7 @@ def context_preview(
     outline_id: int | None = None,
     query: str = "",
     selection: str = "",
+    manual_selection: str = "",
 ) -> dict:
     """预览章节生成会读取的上下文包。
 
@@ -230,13 +235,16 @@ def context_preview(
     # 步骤 1：验证选择参数为 JSON 对象，避免预览请求静默退回自动推荐。
     try:
         context_selection = json.loads(selection) if selection else None
+        manual_context_selection = json.loads(manual_selection) if manual_selection else None
     except json.JSONDecodeError as exc:
         raise HTTPException(status_code=422, detail="上下文选择格式无效") from exc
     if context_selection is not None and not isinstance(context_selection, dict):
         raise HTTPException(status_code=422, detail="上下文选择必须是对象")
+    if manual_context_selection is not None and not isinstance(manual_context_selection, dict):
+        raise HTTPException(status_code=422, detail="手动上下文选择必须是对象")
 
     # 步骤 2：把用户要求和手动选择一并交给实际生成使用的检索器。
-    return build_context_preview(project_id, chapter_no, outline_id, query, context_selection)
+    return build_context_preview(project_id, chapter_no, outline_id, query, context_selection, manual_context_selection)
 
 
 @router.post("/chapter-draft")

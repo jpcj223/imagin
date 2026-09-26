@@ -45,6 +45,7 @@ def _serialize_proposal(row: ChapterChangeProposal) -> dict[str, Any]:
         "chapter_id": row.chapter_id,
         "run_id": row.run_id,
         "version_id": row.version_id,
+        "source_content_hash": row.source_content_hash,
         "entity_type": row.entity_type,
         "operation": row.operation,
         "target_id": row.target_id,
@@ -59,6 +60,7 @@ def _serialize_proposal(row: ChapterChangeProposal) -> dict[str, Any]:
         "reviewed_at": row.reviewed_at.isoformat() if row.reviewed_at else None,
         "applied_at": row.applied_at.isoformat() if row.applied_at else None,
         "created_at": row.created_at.isoformat() if row.created_at else None,
+        "is_stale": None,
     }
 
 def _proposal_key(
@@ -68,6 +70,7 @@ def _proposal_key(
     version_id: str | None,
     draft: dict[str, Any],
     before_value: dict[str, Any],
+    source_content_hash: str | None = None,
 ) -> str:
     """生成稳定幂等键，工作流重试时避免重复插入相同候选。"""
     identity = {
@@ -81,6 +84,7 @@ def _proposal_key(
         "target_label": draft.get("target_label", ""),
         "before_value": before_value,
         "proposed_value": draft["proposed_value"],
+        "source_content_hash": source_content_hash,
     }
     return hashlib.sha256(_json_dump(identity).encode("utf-8")).hexdigest()
 

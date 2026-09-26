@@ -67,6 +67,7 @@ export async function getContextPreview(
   outlineId?: number | null,
   query = '',
   selection?: Record<string, number[]>,
+  manualSelection?: Record<string, number[]>,
 ) {
   // 上下文包预览只读不写，用于生成前确认 Agent 实际会读取哪些资料。
   const { data } = await apiClient.get<ContextPreview>(`/agents/${projectId}/context-preview`, {
@@ -75,6 +76,7 @@ export async function getContextPreview(
       outline_id: outlineId ?? undefined,
       query: query || undefined,
       selection: selection ? JSON.stringify(selection) : undefined,
+      manual_selection: manualSelection ? JSON.stringify(manualSelection) : undefined,
     }
   })
   return data

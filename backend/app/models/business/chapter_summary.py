@@ -16,6 +16,8 @@ class ChapterSummary(Base):
     # 保存分析对应的生成来源，避免章节正文重写后旧摘要看起来仍属于最新版本。
     source_run_id = Column(String(64), nullable=True)
     source_version_id = Column(String(64), nullable=True)
+    # 版本外的草稿分析也需要准确标记来源正文。
+    source_content_hash = Column(String(64), nullable=True)
     summary = Column(Text, default="")
     character_changes = Column(Text, default="")
     world_changes = Column(Text, default="")

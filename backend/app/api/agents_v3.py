@@ -26,6 +26,7 @@ from app.agents_v3.presets import get_agent
 from app.agents_v3.variants import VariantManager
 from app.agents_v3.workflow_engine import WorkflowEngine, list_templates
 from app.memory.manager import MemoryManager
+from app.services.chapter_content import content_fingerprint
 from app.services.chapter_targets import require_next_chapter_target
 from app.skills.registry import SkillRegistry
 
@@ -909,6 +910,8 @@ def _auto_update_memory(
 
     # 步骤 3：章节摘要和提案同库提交，确保候选来源与摘要保持一致。
     summary = session_context.get("chapter_summary", "")
+    content = session_context.get("final_content") or session_context.get("draft_content", "")
+    source_content_hash = content_fingerprint(content)
     pending_count = 0
     if summary or proposal_drafts:
         from app.db.session import get_business_db
@@ -929,6 +932,7 @@ def _auto_update_memory(
                     "timeline_events": session_context.get("timeline_events", ""),
                     "source_run_id": run_id,
                     "source_version_id": version_id,
+                    "source_content_hash": source_content_hash,
                 }
                 if existing:
                     for key, value in changes.items():
@@ -945,6 +949,7 @@ def _auto_update_memory(
                     run_id=run_id,
                     version_id=version_id,
                     drafts=proposal_drafts,
+                    source_content_hash=source_content_hash,
                 )
                 pending_count = sum(1 for item in saved_proposals if item["status"] == "pending")
                 session_context["pending_change_count"] = pending_count

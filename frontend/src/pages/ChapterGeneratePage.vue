@@ -381,6 +381,8 @@
                 v-model:selected-foreshadowing-ids="selectedForeshadowingIds"
                 :current-chapter-no="form.chapter_no"
                 @auto-recommend="autoRecommendContext"
+                @manual-selection-change="handleManualContextSelectionChange"
+                @manual-selection-replace="replaceManualContextSelection"
               />
 
               <!-- 后端实际读取结果，核对选择器和模型输入是否一致 -->
@@ -392,40 +394,54 @@
                   </n-button>
                 </div>
                 <div class="resolved-context-footnote">
-                  手动勾选的资料优先注入；其余条目由系统按大纲和补充要求自动补充。
+                  手动选择与智能推荐项优先注入；自动匹配和系统记忆按本章大纲补充。
                 </div>
                 <n-spin :show="previewLoading">
                   <div v-if="contextPreview" class="resolved-context-groups">
+                    <div class="resolved-context-required">
+                      <div class="resolved-context-section-title">每次生成必读</div>
+                      <article v-for="item in contextPreview.required_context" :key="item.label" class="resolved-context-required-item">
+                        <strong>{{ item.label }} · {{ item.title || '未命名' }}</strong>
+                        <p>{{ item.content || '暂无补充说明' }}</p>
+                      </article>
+                    </div>
                     <div class="resolved-context-group">
                       <span class="resolved-context-label">人物</span>
                       <n-tag v-for="item in contextPreview.characters" :key="`character-${item.id}`" size="small">
-                        {{ item.name }}{{ selectedCharacterIds.includes(item.id) ? ' · 手选' : ' · 推荐' }}
+                        {{ item.name }} · {{ contextSourceLabel(item.selection_source) }}
                       </n-tag>
                       <span v-if="!contextPreview.characters.length" class="resolved-context-empty">暂无相关资料</span>
                     </div>
                     <div class="resolved-context-group">
                       <span class="resolved-context-label">组织</span>
                       <n-tag v-for="item in contextPreview.organizations" :key="`organization-${item.id}`" size="small">
-                        {{ item.name }}{{ selectedOrganizationIds.includes(item.id) ? ' · 手选' : ' · 推荐' }}
+                        {{ item.name }} · {{ contextSourceLabel(item.selection_source) }}
                       </n-tag>
                       <span v-if="!contextPreview.organizations.length" class="resolved-context-empty">暂无相关资料</span>
                     </div>
                     <div class="resolved-context-group">
                       <span class="resolved-context-label">世界观</span>
                       <n-tag v-for="item in contextPreview.world_settings" :key="`world-${item.id}`" size="small">
-                        {{ item.title }}{{ selectedWorldIds.includes(item.id) ? ' · 手选' : ' · 推荐' }}
+                        {{ item.title }} · {{ contextSourceLabel(item.selection_source) }}
                       </n-tag>
                       <span v-if="!contextPreview.world_settings.length" class="resolved-context-empty">暂无相关资料</span>
                     </div>
                     <div class="resolved-context-group">
                       <span class="resolved-context-label">伏笔</span>
                       <n-tag v-for="item in contextPreview.foreshadowings" :key="`foreshadowing-${item.id}`" size="small">
-                        {{ item.keyword }}{{ selectedForeshadowingIds.includes(item.id) ? ' · 手选' : ' · 推荐' }}
+                        {{ item.keyword }} · {{ contextSourceLabel(item.selection_source) }}
                       </n-tag>
                       <span v-if="!contextPreview.foreshadowings.length" class="resolved-context-empty">暂无相关资料</span>
                     </div>
-                    <div class="resolved-context-footnote">
-                      前情摘要 {{ contextPreview.recent_summaries.length }} 条 · 已确认长期记忆 {{ contextPreview.long_term_memories.length }} 条
+                    <div class="resolved-context-group system-context-group">
+                      <span class="resolved-context-label">系统记忆</span>
+                      <span v-if="!contextPreview.recent_summaries.length && !contextPreview.long_term_memories.length" class="resolved-context-empty">暂无前情摘要或长期记忆</span>
+                      <div v-for="item in contextPreview.recent_summaries" :key="`summary-${item.id}`" class="resolved-context-memory">
+                        <strong>前情摘要</strong><p>{{ item.summary || '暂无摘要' }}</p>
+                      </div>
+                      <div v-for="item in contextPreview.long_term_memories" :key="`memory-${item.memory_id}`" class="resolved-context-memory">
+                        <strong>{{ item.title || '长期记忆' }}</strong><p>{{ item.content_summary || '暂无内容' }}</p>
+                      </div>
                     </div>
                   </div>
                   <div v-else class="resolved-context-empty">选择大纲后可查看实际检索结果</div>
@@ -468,11 +484,13 @@
             <ChapterAnalysisPanel
               :analysis="analysis"
               :analysis-status="analysisStatus"
+              :analysis-is-stale="analysisIsStale"
+              :analysis-freshness-unknown="analysisFreshnessUnknown"
               :analysis-sections="analysisSections"
               :pending-proposal-count="pendingProposalCount"
               :proposal-loading="proposalLoading"
               :proposal-busy-ids="proposalBusyIds"
-              :change-proposals="changeProposals"
+              :change-proposals="visibleChangeProposals"
               :has-chapter="Boolean(chapterId)"
               :consistency-result="consistencyResult"
               :summaries="summaries"
@@ -763,13 +781,23 @@ const organizations = ref<OrganizationItem[]>([])
 const foreshadowings = ref<ForeshadowingItem[]>([])
 const summaries = ref<ChapterSummary[]>([])
 const changeProposals = ref<ChapterChangeProposal[]>([])
+const proposalContentSnapshot = ref<string | null>(null)
+const proposalSnapshotChapterId = ref<number | null>(null)
+let proposalLoadRequestId = 0
 const proposalLoading = ref(false)
 const proposalBusyIds = ref<string[]>([])
 const proposalEditVisible = ref(false)
 const proposalEditSaving = ref(false)
 const proposalEditText = ref('')
 const editingProposal = ref<ChapterChangeProposal | null>(null)
-const pendingProposalCount = computed(() => changeProposals.value.filter(item => item.status === 'pending').length)
+const visibleChangeProposals = computed(() => proposalSnapshotChapterId.value !== chapterId.value
+  ? []
+  : changeProposals.value.map((item) => ({
+      ...item,
+      is_stale: item.is_stale === true
+        || (proposalContentSnapshot.value !== null && proposalContentSnapshot.value !== draft.value),
+    })))
+const pendingProposalCount = computed(() => visibleChangeProposals.value.filter(item => item.status === 'pending').length)
 const agentLogs = ref<GenerationLog[]>([])
 const localEvents = ref<
   Array<{ id: string; title: string; detail: string; time: string; status: string }>
@@ -778,12 +806,42 @@ const contextPreview = ref<ContextPreview | null>(null)
 const nextChapterTarget = ref<NextChapterTarget | null>(null)
 const nextChapterTargetLoading = ref(false)
 const previewLoading = ref(false)
+let contextPreviewRequestId = 0
 
 // 上下文选择器状态
 const selectedCharacterIds = ref<number[]>([])
 const selectedOrganizationIds = ref<number[]>([])
 const selectedWorldIds = ref<number[]>([])
 const selectedForeshadowingIds = ref<number[]>([])
+const manualContextIds = reactive<Record<string, number[]>>({
+  character_ids: [], organization_ids: [], world_setting_ids: [], foreshadowing_ids: [],
+})
+
+function handleManualContextSelectionChange(category: string, id: number, selected: boolean) {
+  const ids = new Set(manualContextIds[category] ?? [])
+  if (selected) ids.add(id)
+  else ids.delete(id)
+  manualContextIds[category] = [...ids]
+}
+
+function replaceManualContextSelection(category: string, ids: number[]) {
+  manualContextIds[category] = [...ids]
+}
+
+function clearManualContextSelection() {
+  Object.keys(manualContextIds).forEach((category) => { manualContextIds[category] = [] })
+}
+
+function getManualContextSelectionPayload(): Record<string, number[]> {
+  return Object.fromEntries(Object.entries(manualContextIds).map(([category, ids]) => [category, [...ids]]))
+}
+
+function contextSourceLabel(source: string): string {
+  const labels: Record<string, string> = {
+    manual: '手动选择', recommended: '智能推荐', automatic: '自动匹配', system: '系统资料',
+  }
+  return labels[source] ?? '系统资料'
+}
 
 // 步骤 1：由页面集中维护上下文选择状态，子组件只负责触发选择事件。
 function toggleContextId(selectedIds: number[], id: number) {
@@ -813,6 +871,8 @@ function getContextSelectionPayload(): Record<string, number[]> {
 
 // 自动推荐上下文
 function autoRecommendContext() {
+  // 步骤 1：重跑推荐后，系统推荐项与作者主动选项保持来源区分。
+  clearManualContextSelection()
   if (!selectedOutline.value) {
     selectedCharacterIds.value = []
     selectedOrganizationIds.value = []
@@ -913,6 +973,13 @@ const analysisSections = reactive({
   new_foreshadowings: '',
   timeline_events: '',
 })
+const analysisContentSnapshot = ref<string | null>(null)
+const analysisPersistedStale = ref<boolean | null>(null)
+const analysisIsStale = computed(() => analysisPersistedStale.value === true
+  || (analysisContentSnapshot.value !== null && analysisContentSnapshot.value !== draft.value))
+const analysisFreshnessUnknown = computed(() => analysisPersistedStale.value === null
+  && analysisContentSnapshot.value !== null
+  && !analysisIsStale.value)
 
 // ---- 生成表单 ----
 const form = reactive({
@@ -1365,6 +1432,8 @@ function setAnalysisSections(result: Record<string, unknown>) {
 function clearAnalysisSections() {
   setAnalysisSections({})
   analysisStatus.value = ''
+  analysisContentSnapshot.value = null
+  analysisPersistedStale.value = null
 }
 
 /**
@@ -1376,6 +1445,8 @@ function applyWorkflowAnalysisResult(result: Record<string, unknown>) {
   if (result.analysis_status === 'unavailable') {
     const wasAlreadyUnavailable = analysisStatus.value === 'unavailable'
     setAnalysisSections({})
+    analysisContentSnapshot.value = null
+    analysisPersistedStale.value = null
     analysis.value = String(result.analysis_message || '模型服务不可用，本次未保存章节分析；配置模型后可重新分析。')
     analysisStatus.value = 'unavailable'
     if (!wasAlreadyUnavailable) addEvent('分析不可用', analysis.value, 'error')
@@ -1385,6 +1456,8 @@ function applyWorkflowAnalysisResult(result: Record<string, unknown>) {
   analysisStatus.value = 'completed'
   analysis.value = String(result.summary || result.content || '')
   setAnalysisSections(result)
+  analysisContentSnapshot.value = draft.value
+  analysisPersistedStale.value = false
 }
 
 async function loadChapterChangeProposals() {
@@ -1392,17 +1465,25 @@ async function loadChapterChangeProposals() {
   const currentChapterId = chapterId.value
   if (!projectId || !currentChapterId) {
     changeProposals.value = []
+    proposalContentSnapshot.value = null
+    proposalSnapshotChapterId.value = null
     return
   }
+  const requestId = ++proposalLoadRequestId
+  const contentSnapshot = draft.value
   proposalLoading.value = true
   try {
     const result = await getChapterChangeProposals(projectId, currentChapterId)
+    if (requestId !== proposalLoadRequestId || currentChapterId !== chapterId.value) return
     changeProposals.value = result.items
+    proposalContentSnapshot.value = contentSnapshot
+    proposalSnapshotChapterId.value = currentChapterId
   } catch {
+    if (requestId !== proposalLoadRequestId || currentChapterId !== chapterId.value) return
     // 章节刚切换或后端尚未升级时，保留页面其他功能并允许手动重试。
     changeProposals.value = []
   } finally {
-    proposalLoading.value = false
+    if (requestId === proposalLoadRequestId) proposalLoading.value = false
   }
 }
 
@@ -1527,7 +1608,7 @@ async function loadResources() {
     listResource<CharacterItem>(projectId, 'characters'),
     listResource<OrganizationItem>(projectId, 'organizations'),
     listResource<ForeshadowingItem>(projectId, 'foreshadowings'),
-    getChapterSummaries(projectId, 20),
+    getChapterSummaries(projectId, 100),
     getAgentLogs(projectId, 20),
     getNextChapterTarget(projectId),
   ])
@@ -1555,27 +1636,32 @@ async function refreshContextPreview(options: { silent?: boolean } = {}) {
   const projectId = await ensureProject()
   if (!projectId) return
 
+  const requestId = ++contextPreviewRequestId
   previewLoading.value = true
   try {
-    contextPreview.value = await getContextPreview(
+    const result = await getContextPreview(
       projectId,
       form.chapter_no,
       form.outline_id,
       form.instruction,
       getContextSelectionPayload(),
+      getManualContextSelectionPayload(),
     )
+    if (requestId !== contextPreviewRequestId) return
+    contextPreview.value = result
     if (!options.silent)
       addEvent(
         '拼装上下文',
         `角色 ${contextPreview.value.characters.length}，组织 ${contextPreview.value.organizations.length}，伏笔 ${contextPreview.value.foreshadowings.length}，长期记忆 ${contextPreview.value.long_term_memories.length}`
       )
   } catch (error) {
+    if (requestId !== contextPreviewRequestId) return
     if (!options.silent) {
       addEvent('上下文预览失败', errorMessage(error), 'error')
       message.error('上下文预览失败')
     }
   } finally {
-    previewLoading.value = false
+    if (requestId === contextPreviewRequestId) previewLoading.value = false
   }
 }
 
@@ -1823,6 +1909,20 @@ async function selectChapter(item: ChapterItem, options: { recordEvent?: boolean
   markDraftPersisted()
   analysis.value = ''
   clearAnalysisSections()
+  const savedAnalysis = summaries.value.find((summary) => summary.chapter_id === item.id)
+  if (savedAnalysis) {
+    analysis.value = savedAnalysis.summary || ''
+    analysisStatus.value = 'completed'
+    setAnalysisSections({
+      summary: savedAnalysis.summary,
+      character_changes: savedAnalysis.character_changes,
+      world_changes: savedAnalysis.world_changes,
+      new_foreshadowings: savedAnalysis.new_foreshadowings,
+      timeline_events: savedAnalysis.timeline_events,
+    })
+    analysisContentSnapshot.value = item.content
+    analysisPersistedStale.value = savedAnalysis.is_stale
+  }
   polishOriginal.value = ''
   consistencyResult.value = null
   if (options.recordEvent ?? true) {
@@ -3144,18 +3244,30 @@ async function analyze(options: { showToast?: boolean } = {}) {
     message.warning('请先生成或保存章节后再分析')
     return false
   }
+  // 步骤 1：先落库当前正文，避免摘要和提案关联到尚未保存的编辑内容。
+  if (draftFingerprint() !== persistedDraftFingerprint.value && !await persistChapterDraft(false)) {
+    message.error('章节草稿未能保存，当前分析已取消')
+    return false
+  }
+  const analyzedContent = draft.value
   addEvent('分析启动', `章节 ID ${chapterId.value} 正在沉淀摘要`, 'running')
   activeTab.value = 'analysis'
   try {
     const result = await analyzeChapter({
       project_id: projectStore.currentProject.id,
       chapter_id: chapterId.value,
-      content: draft.value,
+      content: analyzedContent,
     })
     analysis.value = result.analysis
     analysisStatus.value = String(result.analysis_status || 'completed')
     setAnalysisSections(result)
+    if (result.analysis_status !== 'unavailable') {
+      analysisContentSnapshot.value = analyzedContent
+      analysisPersistedStale.value = false
+    }
     if (result.analysis_status === 'unavailable') {
+      analysisContentSnapshot.value = null
+      analysisPersistedStale.value = null
       await loadAgentLogs()
       addEvent('分析不可用', result.analysis, 'error')
       message.warning('模型暂不可用；章节正文已保留，请检查 API 配置后重试')
@@ -3757,6 +3869,51 @@ watch(
   display: flex;
   flex-direction: column;
   gap: 8px;
+}
+
+.resolved-context-required {
+  padding: 10px;
+  border: 1px solid rgba(52, 211, 153, 0.22);
+  border-radius: 8px;
+  background: rgba(16, 185, 129, 0.05);
+}
+
+.resolved-context-section-title {
+  margin-bottom: 6px;
+  color: var(--text-primary);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.resolved-context-required-item + .resolved-context-required-item,
+.resolved-context-memory + .resolved-context-memory {
+  margin-top: 8px;
+}
+
+.resolved-context-required-item strong,
+.resolved-context-memory strong {
+  color: var(--text-primary);
+  font-size: 11px;
+}
+
+.resolved-context-required-item p,
+.resolved-context-memory p {
+  margin: 3px 0 0;
+  color: var(--text-secondary);
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+}
+
+.system-context-group {
+  align-items: flex-start;
+}
+
+.resolved-context-memory {
+  flex: 1 1 100%;
+  padding: 7px 8px;
+  border-radius: 6px;
+  background: rgba(148, 163, 184, 0.06);
 }
 
 .resolved-context-group {

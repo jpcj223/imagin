@@ -6,6 +6,7 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from app.models.business import Chapter, ChapterChangeProposal, GenerationVersion, WorkflowRun
+from app.services.chapter_content import content_fingerprint, content_has_changed
 from .common import (
     _get_entity,
     _json_dump,
@@ -27,6 +28,7 @@ def create_proposals(
     run_id: str | None,
     version_id: str | None,
     drafts: list[dict[str, Any]],
+    source_content_hash: str | None = None,
 ) -> list[dict[str, Any]]:
     """校验并保存一批提案。
 
@@ -41,6 +43,7 @@ def create_proposals(
     ).first()
     if not chapter:
         raise LookupError("章节不存在或不属于当前项目")
+    resolved_content_hash = source_content_hash or content_fingerprint(chapter.content)
 
     if run_id:
         run = db.query(WorkflowRun).filter(
@@ -130,7 +133,7 @@ def create_proposals(
                 raise ValueError("父组织不存在或不属于当前项目")
 
         before_value = _read_before_value(entity_type, entity, operation, proposed_value)
-        key = _proposal_key(project_id, chapter_id, run_id, version_id, draft, before_value)
+        key = _proposal_key(project_id, chapter_id, run_id, version_id, draft, before_value, resolved_content_hash)
         row = db.query(ChapterChangeProposal).filter(
             ChapterChangeProposal.proposal_key == key,
         ).first()
@@ -156,6 +159,7 @@ def create_proposals(
             chapter_id=chapter_id,
             run_id=run_id,
             version_id=version_id,
+            source_content_hash=resolved_content_hash,
             entity_type=entity_type,
             operation=operation,
             target_id=target_id,
@@ -184,7 +188,19 @@ def list_proposals(
     )
     if status:
         query = query.filter(ChapterChangeProposal.status == status)
-    return [_serialize_proposal(row) for row in query.order_by(ChapterChangeProposal.id.asc()).all()]
+    rows = query.order_by(ChapterChangeProposal.id.asc()).all()
+    chapter = db.query(Chapter).filter(
+        Chapter.id == chapter_id,
+        Chapter.project_id == project_id,
+    ).first()
+    return [
+        {
+            **_serialize_proposal(row),
+            # 无来源指纹的历史提案同样不能安全写回，按需要重新分析处理。
+            "is_stale": content_has_changed(row.source_content_hash, chapter.content if chapter else None) is not False,
+        }
+        for row in rows
+    ]
 
 def build_proposal_drafts(
     analysis: dict[str, Any],

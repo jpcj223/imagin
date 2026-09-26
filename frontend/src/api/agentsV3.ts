@@ -133,6 +133,8 @@ export interface ChapterChangeProposal {
   reviewed_at: string | null
   applied_at: string | null
   created_at: string | null
+  /** 当前章节正文与提案来源不一致时不可批准写回。 */
+  is_stale: boolean | null
 }
 
 export interface LongTermMemoryItem {

@@ -114,6 +114,8 @@ export interface ChapterSummary {
   source_version_id: string | null
   /** 正文版本号；兼容历史摘要时可能为空。 */
   source_version_number: number | null
+  /** 已有指纹时表示分析依据是否已偏离当前正文；旧记录为 null。 */
+  is_stale: boolean | null
   /** 摘要创建时间。 */
   created_at: string
 }
@@ -132,14 +134,16 @@ export interface ConsistencyCheckResult {
 export interface ContextPreview {
   /** 本次预览的章节号。 */
   chapter_no: number
+  /** 每次生成都会读取的本章大纲与项目基础世界观。 */
+  required_context: Array<{ label: string; title: string; content: string }>
   /** 实际选中的大纲摘要。 */
   outline: { title: string; description: string }
   /** 实际选中的世界观摘要。 */
   world: { title: string; category: string; rules: string }
   /** 本次实际注入写作上下文的世界观条目。 */
-  world_settings: Array<{ id: number; title: string; category: string; importance: string }>
+  world_settings: Array<{ id: number; title: string; category: string; importance: string; selection_source: 'manual' | 'recommended' | 'automatic' }>
   /** 会进入上下文的角色摘录。 */
-  characters: Array<{ id: number; name: string; role_type: string; motivation: string }>
+  characters: Array<{ id: number; name: string; role_type: string; motivation: string; selection_source: 'manual' | 'recommended' | 'automatic' }>
   /** 会进入上下文的组织摘录。 */
   organizations: Array<{
     id: number
@@ -147,13 +151,14 @@ export interface ContextPreview {
     goal: string
     power_level: number
     relations: Array<{ target_org_name: string; relation_type: 'alliance' | 'hostility'; description: string }>
+    selection_source: 'manual' | 'recommended' | 'automatic'
   }>
   /** 会进入上下文的伏笔摘录。 */
-  foreshadowings: Array<{ id: number; keyword: string; status: string; payoff_chapter: number | null }>
+  foreshadowings: Array<{ id: number; keyword: string; status: string; payoff_chapter: number | null; selection_source: 'manual' | 'recommended' | 'automatic' }>
   /** 最近章节摘要摘录。 */
-  recent_summaries: Array<{ id: number; summary: string; timeline_events: string }>
+  recent_summaries: Array<{ id: number; summary: string; timeline_events: string; selection_source: 'system' }>
   /** 已沉淀长期记忆摘录；待审核提案不会出现在此列表中。 */
-  long_term_memories: Array<{ memory_id: string; title: string; content_summary: string; importance: number; source_type: string }>
+  long_term_memories: Array<{ memory_id: string; title: string; content_summary: string; importance: number; source_type: string; selection_source: 'system' }>
 }
 
 export interface WorldSetting {
