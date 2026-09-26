@@ -33,9 +33,10 @@
           <div class="brief-row">
             <span class="brief-label">上下文</span>
             <span class="brief-value">
-              <span class="brief-count">{{ totalSelectedCount }}</span> 项资料
+              <span class="brief-count">{{ totalSelectedCount }}</span> 项手选资料
             </span>
           </div>
+          <div class="brief-tip">未手选的相关资料会按本章大纲自动推荐</div>
         </div>
 
         <!-- 资源 Tab 浏览器 -->
@@ -47,11 +48,12 @@
               class="resource-tab-item"
               :class="{ active: leftActiveTab === tab.key, 'has-match': keyword.trim() && tab.matchCount > 0, 'no-match': keyword.trim() && tab.matchCount === 0 }"
               @click="leftActiveTab = tab.key"
-              :title="keyword.trim() ? `${tab.label}：${tab.matchCount} 个匹配` : tab.label"
+              :title="`${tab.label}：已选 ${tab.selectedCount} / 共 ${tab.count}${keyword.trim() ? ` · 当前匹配 ${tab.matchCount}` : ''}`"
             >
               <span class="tab-icon">{{ tab.icon }}</span>
-              <span v-if="tab.count > 0" class="tab-badge" :class="{ 'match-badge': keyword.trim() && tab.matchCount > 0 }">
-                {{ keyword.trim() ? tab.matchCount : tab.count }}
+              <span class="tab-name">{{ tab.label }}</span>
+              <span class="tab-badge" :class="{ 'match-badge': keyword.trim() && tab.matchCount > 0 }">
+                {{ tab.selectedCount }}/{{ tab.count }}
               </span>
             </div>
           </div>
@@ -281,7 +283,7 @@ import type {
 } from '@/types/domain'
 
 type TabKey = 'outline' | 'chapter' | 'character' | 'organization' | 'world' | 'foreshadowing'
-type ResourceTab = { key: TabKey; label: string; icon: string; count: number; matchCount: number }
+type ResourceTab = { key: TabKey; label: string; icon: string; count: number; selectedCount: number; matchCount: number }
 
 type ResourceProps = {
   memoryLevels: MemoryLevel[]
@@ -354,12 +356,12 @@ const filteredForeshadowings = computed(() => {
   return foreshadowings.value.filter((item) => [item.keyword, item.description].join(' ').toLocaleLowerCase('zh-CN').includes(text))
 })
 const resourceTabs = computed<ResourceTab[]>(() => [
-  { key: 'outline', label: '大纲', icon: '📋', count: outlines.value.length, matchCount: filteredOutlines.value.length },
-  { key: 'chapter', label: '章节', icon: '📝', count: chapters.value.length, matchCount: filteredChapters.value.length },
-  { key: 'character', label: '人物', icon: '👤', count: characters.value.length, matchCount: filteredCharacters.value.length },
-  { key: 'organization', label: '组织', icon: '🏛️', count: organizations.value.length, matchCount: filteredOrganizations.value.length },
-  { key: 'world', label: '世界观', icon: '🌍', count: worlds.value.length, matchCount: filteredWorlds.value.length },
-  { key: 'foreshadowing', label: '伏笔', icon: '🎭', count: foreshadowings.value.length, matchCount: filteredForeshadowings.value.length },
+  { key: 'outline', label: '大纲', icon: '📋', count: outlines.value.length, selectedCount: outlineId.value ? 1 : 0, matchCount: filteredOutlines.value.length },
+  { key: 'chapter', label: '章节', icon: '📝', count: chapters.value.length, selectedCount: chapterId.value ? 1 : 0, matchCount: filteredChapters.value.length },
+  { key: 'character', label: '人物', icon: '👤', count: characters.value.length, selectedCount: selectedCharacterIds.value.length, matchCount: filteredCharacters.value.length },
+  { key: 'organization', label: '组织', icon: '🏛️', count: organizations.value.length, selectedCount: selectedOrganizationIds.value.length, matchCount: filteredOrganizations.value.length },
+  { key: 'world', label: '世界观', icon: '🌍', count: worlds.value.length, selectedCount: selectedWorldIds.value.length, matchCount: filteredWorlds.value.length },
+  { key: 'foreshadowing', label: '伏笔', icon: '🎭', count: foreshadowings.value.length, selectedCount: selectedForeshadowingIds.value.length, matchCount: filteredForeshadowings.value.length },
 ])
 const searchPlaceholder = computed(() => ({
   outline: '搜索大纲...', chapter: '搜索章节...', character: '搜索角色...',
@@ -528,6 +530,8 @@ function formatChars(content: string): string {
   background-clip: text;
 }
 
+.brief-tip { margin-top: -4px; padding-left: 68px; color: var(--text-muted); font-size: 10px; line-height: 1.45; }
+
 /* ===== 资源 Tab 浏览器 ===== */
 .resource-tabs {
   flex: 1 0 220px;
@@ -538,26 +542,22 @@ function formatChars(content: string): string {
 }
 
 .resource-tab-bar {
-  display: flex;
-  padding: 0 6px;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  padding: 4px 6px;
   background: rgba(255, 255, 255, 0.02);
   border-bottom: 1px solid var(--border);
   flex-shrink: 0;
-  overflow-x: auto;
-  scrollbar-width: none;
-}
-
-.resource-tab-bar::-webkit-scrollbar {
-  display: none;
 }
 
 .resource-tab-item {
   position: relative;
   display: flex;
-  flex-direction: column;
+  flex-direction: row;
   align-items: center;
-  gap: 3px;
-  padding: 10px 12px 8px;
+  justify-content: flex-start;
+  gap: 5px;
+  padding: 7px 5px;
   cursor: pointer;
   transition: all 0.2s ease;
   flex-shrink: 0;
@@ -573,26 +573,25 @@ function formatChars(content: string): string {
 }
 
 .tab-icon {
-  font-size: 18px;
+  font-size: 14px;
   line-height: 1;
+  flex-shrink: 0;
 }
 
+.tab-name { color: var(--text-secondary); font-size: 10px; white-space: nowrap; }
+.resource-tab-item.active .tab-name { color: #c7d2fe; }
+
 .tab-badge {
-  position: absolute;
-  top: 6px;
-  right: 6px;
-  min-width: 16px;
-  height: 16px;
-  padding: 0 4px;
-  background: var(--accent-gradient);
-  color: #fff;
-  font-size: 10px;
+  min-width: 24px;
+  padding: 2px 5px;
+  background: rgba(255, 255, 255, 0.06);
+  color: #9aa9bf;
+  font-size: 9px;
   font-weight: 600;
-  border-radius: 8px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
+  border-radius: 10px;
+  text-align: center;
   line-height: 1;
+  margin-left: auto;
 }
 
 .resource-tab-content {

@@ -8,7 +8,7 @@
           章节生成工作台
         </h1>
         <p class="page-subtitle">
-          选择大纲 → 调整参数 → 生成正文 → 分析沉淀
+          选择章节与资料 → 生成新稿或对话优化 → 预览修改并保存版本
         </p>
       </div>
       <div class="header-right">
@@ -35,9 +35,22 @@
       </div>
     </div>
 
-    <!-- 工作流流水线 - 页面架构主轴 -->
+    <!-- 默认只展示流程摘要；需要查看执行细节时再展开，给正文和资料选择留出空间。 -->
     <div v-if="pipelineSteps.length > 0" class="pipeline-section">
+      <button class="pipeline-summary" type="button" @click="pipelineExpanded = !pipelineExpanded">
+        <span class="pipeline-summary-title">{{ workflowTemplates.find(t => t.name === selectedWorkflow)?.label || '章节流程' }}</span>
+        <span
+          v-for="step in pipelineSteps"
+          :key="step.id"
+          class="pipeline-summary-step"
+          :class="step.status"
+        >
+          <i></i>{{ step.label }}
+        </span>
+        <span class="pipeline-summary-toggle">{{ pipelineExpanded ? '收起流程' : '查看流程详情' }}⌄</span>
+      </button>
       <WorkflowPipeline
+        v-if="pipelineExpanded"
         :steps="pipelineSteps"
         :active-step-id="currentWorkflowStep"
         :template-name="selectedWorkflow"
@@ -84,13 +97,14 @@
         :has-polish-highlights="hasPolishHighlights"
         :polish-segments="polishSegments"
         @close-polish-comparison="polishOriginal = ''"
+        @selection-change="handleEditorSelection"
       />
 
       <!-- ===== 右侧：Tab 面板 ===== -->
       <aside class="right-panel">
         <n-tabs v-model:value="activeTab" type="line" size="small" class="side-tabs">
           <!-- Tab: 生成参数 -->
-          <n-tab-pane name="params" tab="参数">
+          <n-tab-pane name="params" tab="生成">
             <div class="tab-content">
               <!-- Agent 插件卡片 - 架构可视化 -->
               <div class="form-block">
@@ -301,6 +315,24 @@
                 </div>
               </div>
             </div>
+          </n-tab-pane>
+
+          <!-- 对话改稿单独呈现；候选稿确认后才写入章节并创建版本。 -->
+          <n-tab-pane name="dialogue" tab="对话改稿">
+            <ChapterDialoguePanel
+              v-model:scope="dialogueScope"
+              :chapter-title="chapterTitle"
+              :messages="dialogueMessages"
+              :candidate="dialogueCandidate"
+              :selection-text="editorSelection?.text || ''"
+              :busy="dialogueBusy"
+              :applying="dialogueApplying"
+              :can-send="Boolean(projectStore.currentProject && draft.trim())"
+              :can-apply="canApplyDialogueCandidate"
+              @send="sendChapterDialogue"
+              @apply="applyChapterDialogueCandidate"
+              @discard="dialogueCandidate = null"
+            />
           </n-tab-pane>
 
           <!-- Tab: 上下文包 -->
@@ -636,6 +668,8 @@ import {
   getChapterSummaries,
   getContextPreview,
   polishChapter,
+  chatChapterEdit,
+  applyChapterEdit,
 } from '@/api/agents'
 import {
   getWorkflowTemplates,
@@ -660,6 +694,8 @@ import type { StepInfo } from '@/components/WorkflowProgress.vue'
 import WorkflowPipeline from '@/components/WorkflowPipeline.vue'
 import GenerationResourceBrowser from '@/components/chapter-generation/GenerationResourceBrowser.vue'
 import ChapterEditorPanel from '@/components/chapter-generation/ChapterEditorPanel.vue'
+import ChapterDialoguePanel from '@/components/chapter-generation/ChapterDialoguePanel.vue'
+import type { ChapterDialogueCandidate, ChapterDialogueMessage } from '@/components/chapter-generation/chapterDialogueTypes'
 import ChapterAnalysisPanel from '@/components/chapter-generation/ChapterAnalysisPanel.vue'
 import type { PipelineStep } from '@/components/WorkflowPipeline.vue'
 import type { MemoryLevel } from '@/components/MemoryLayer.vue'
@@ -693,6 +729,7 @@ const chapterTitle = ref('')
 const analysis = ref('')
 const analysisStatus = ref('')
 const activeTab = ref('params')
+const pipelineExpanded = ref(false)
 
 // ---- 资料数据 ----
 const outlines = ref<OutlineItem[]>([])
@@ -813,6 +850,21 @@ function autoRecommendContext() {
 }
 const chapterId = ref<number | null>(null)
 const chapterProjectId = ref<number | null>(null)
+const dialogueScope = ref<'chapter' | 'selection'>('chapter')
+const dialogueMessages = ref<ChapterDialogueMessage[]>([])
+const dialogueCandidate = ref<(ChapterDialogueCandidate & {
+  chapterId: number
+  selectionStart: number | null
+  instruction: string
+}) | null>(null)
+const editorSelection = ref<{ start: number; end: number; text: string } | null>(null)
+const dialogueBusy = ref(false)
+const dialogueApplying = ref(false)
+const canApplyDialogueCandidate = computed(() => Boolean(
+  dialogueCandidate.value
+  && dialogueCandidate.value.chapterId === chapterId.value
+  && dialogueCandidate.value.expectedContent === draft.value,
+))
 const draftSaveStatus = ref<'saved' | 'unsaved' | 'saving' | 'error'>('unsaved')
 const persistedDraftFingerprint = ref('')
 let draftAutosaveTimer: ReturnType<typeof setTimeout> | undefined
@@ -2559,6 +2611,194 @@ async function saveCurrentChapter() {
   if (await persistChapterDraft(false)) await loadResources()
 }
 
+function handleEditorSelection(selection: { start: number; end: number; text: string } | null) {
+  editorSelection.value = selection
+}
+
+function tokenUsageLabel(usage: { input_tokens?: number; output_tokens?: number; total_tokens?: number } | null) {
+  if (!usage) return '模型未返回 Token 用量'
+  const total = usage.total_tokens ?? ((usage.input_tokens ?? 0) + (usage.output_tokens ?? 0))
+  return `本次消耗 ${total.toLocaleString()} Tokens`
+}
+
+function chapterDialogueError(error: unknown) {
+  if (typeof error === 'object' && error !== null && 'response' in error) {
+    const response = (error as { response?: { data?: { detail?: unknown } } }).response
+    if (typeof response?.data?.detail === 'string') return response.data.detail
+  }
+  return errorMessage(error)
+}
+
+async function sendChapterDialogue(instruction: string) {
+  if (!projectStore.currentProject || !draft.value.trim()) {
+    message.warning('请先选择一章有正文的章节')
+    return
+  }
+  if (dialogueBusy.value || dialogueApplying.value) return
+
+  const pendingCandidate = dialogueCandidate.value
+  if (pendingCandidate && (pendingCandidate.chapterId !== chapterId.value || pendingCandidate.expectedContent !== draft.value)) {
+    message.warning('当前正文已经变化，请先舍弃过期候选，再基于新正文继续对话')
+    return
+  }
+  if (pendingCandidate && dialogueScope.value === 'selection' && pendingCandidate.scope !== 'selection') {
+    message.warning('当前候选是整章改稿，请保持“整章”继续调整，或先舍弃候选再选中片段')
+    return
+  }
+
+  const requestedChapterId = chapterId.value
+  const requestedContent = draft.value
+  const requestedTitle = chapterTitle.value
+  dialogueBusy.value = true
+  const userMessage: ChapterDialogueMessage = {
+    id: `user-${Date.now()}`,
+    role: 'user',
+    content: instruction,
+  }
+  dialogueMessages.value.push(userMessage)
+
+  try {
+    // 步骤 1：先把正在编辑的草稿落库，后端才能将确认后的改稿可靠地绑定到章节。
+    if (!await persistChapterDraft(true) || !chapterId.value) {
+      throw new Error('章节草稿保存失败，请稍后重试')
+    }
+    if (
+      draft.value !== requestedContent
+      || chapterTitle.value !== requestedTitle
+      || (requestedChapterId !== null && chapterId.value !== requestedChapterId)
+    ) {
+      throw new Error('章节已切换或正文有变化，请重新发送本轮要求')
+    }
+    const targetChapterId = chapterId.value
+    const expectedContent = pendingCandidate?.expectedContent ?? draft.value
+    const baseContent = pendingCandidate?.proposedContent ?? draft.value
+    let selectionStart: number | null = null
+    let selectionEnd: number | null = null
+
+    if (dialogueScope.value === 'selection') {
+      if (pendingCandidate?.scope === 'selection') {
+        selectionStart = pendingCandidate.selectionStart
+        selectionEnd = selectionStart === null ? null : selectionStart + pendingCandidate.revisedSegment.length
+      } else {
+        const currentSelection = editorSelection.value
+        if (!currentSelection || draft.value.slice(currentSelection.start, currentSelection.end) !== currentSelection.text) {
+          throw new Error('请先在正文中重新选中要修改的文字')
+        }
+        selectionStart = currentSelection.start
+        selectionEnd = currentSelection.end
+      }
+      if (selectionStart === null || selectionEnd === null || selectionEnd > baseContent.length) {
+        throw new Error('所选片段已失效，请重新选择正文')
+      }
+    }
+
+    const result = await chatChapterEdit({
+      project_id: projectStore.currentProject.id,
+      chapter_id: targetChapterId,
+      chapter_no: form.chapter_no,
+      chapter_title: chapterTitle.value,
+      outline_id: form.outline_id,
+      content: baseContent,
+      scope: dialogueScope.value,
+      selection_start: selectionStart,
+      selection_end: selectionEnd,
+      instruction,
+      conversation: dialogueMessages.value.slice(-9).map(({ role, content }) => ({ role, content })),
+      context_selection: getContextSelectionPayload(),
+    })
+
+    if (chapterId.value !== targetChapterId) {
+      message.info('已切换到其他章节，本次答复未混入当前对话')
+      return
+    }
+
+    const assistantMessage: ChapterDialogueMessage = {
+      id: `assistant-${Date.now()}`,
+      role: 'assistant',
+      content: result.reply || (result.action === 'proposal' ? '已根据你的要求准备候选稿。' : '我们可以继续讨论这一章。'),
+      usageLabel: tokenUsageLabel(result.usage),
+    }
+    dialogueMessages.value.push(assistantMessage)
+
+    if (result.action === 'proposal') {
+      const revisedSegment = result.candidate_text
+      const proposedContent = result.scope === 'selection'
+        ? `${baseContent.slice(0, selectionStart!)}${revisedSegment}${baseContent.slice(selectionEnd!)}`
+        : revisedSegment
+      const originalSegment = pendingCandidate?.scope === 'selection' && result.scope === 'selection'
+        ? pendingCandidate.originalSegment
+        : result.scope === 'selection'
+          ? expectedContent.slice(selectionStart!, selectionEnd!)
+          : expectedContent
+      dialogueCandidate.value = {
+        chapterId: targetChapterId,
+        scope: result.scope,
+        expectedContent,
+        proposedContent,
+        originalSegment,
+        revisedSegment: result.scope === 'selection' ? revisedSegment : proposedContent,
+        selectionStart: result.scope === 'selection' ? selectionStart : null,
+        instruction,
+      }
+    }
+  } catch (error) {
+    const detail = chapterDialogueError(error) || '对话改稿失败'
+    dialogueMessages.value.push({
+      id: `assistant-error-${Date.now()}`,
+      role: 'assistant',
+      content: `这次没有完成：${detail}`,
+    })
+    message.error(detail)
+  } finally {
+    dialogueBusy.value = false
+  }
+}
+
+async function applyChapterDialogueCandidate() {
+  const candidate = dialogueCandidate.value
+  const projectId = projectStore.currentProject?.id
+  if (!candidate || !projectId || !chapterId.value) return
+  if (!canApplyDialogueCandidate.value) {
+    message.warning('正文或章节已经变化，请重新生成候选稿后再应用')
+    return
+  }
+
+  dialogueApplying.value = true
+  try {
+    if (!await persistChapterDraft(true)) throw new Error('当前正文保存失败，不能应用候选稿')
+    const result = await applyChapterEdit({
+      project_id: projectId,
+      chapter_id: candidate.chapterId,
+      expected_content: candidate.expectedContent,
+      revised_content: candidate.proposedContent,
+      summary: `对话改稿：${candidate.instruction}`,
+    })
+
+    // 步骤 1：后端已同时更新正文与版本；步骤 2：同步编辑区和列表状态。
+    draft.value = candidate.proposedContent
+    persistedDraftFingerprint.value = draftFingerprint()
+    draftSaveStatus.value = 'saved'
+    dialogueCandidate.value = null
+    dialogueMessages.value.push({
+      id: `assistant-applied-${Date.now()}`,
+      role: 'assistant',
+      content: `候选稿已应用，并保存为 v${result.version_number}。原有版本仍可在“版本”中恢复。`,
+    })
+    await Promise.all([loadVersions(), loadResources()])
+    message.success(`改稿已应用，保存为 v${result.version_number}`)
+  } catch (error) {
+    const detail = chapterDialogueError(error) || '应用改稿失败'
+    message.error(detail)
+    if (
+      detail.includes('已发生变化')
+      || (typeof error === 'object' && error !== null && 'response' in error
+        && (error as { response?: { status?: number } }).response?.status === 409)
+    ) dialogueCandidate.value = null
+  } finally {
+    dialogueApplying.value = false
+  }
+}
+
 // ---- 分析章节 ----
 async function analyze(options: { showToast?: boolean } = {}) {
   const { showToast = true } = options
@@ -2749,6 +2989,15 @@ watch(
   { immediate: true },
 )
 
+// 切换章节时清空上一章的对话候选，避免误把改稿应用到其他正文。
+watch(chapterId, (currentId, previousId) => {
+  if (currentId === previousId || previousId === null) return
+  dialogueMessages.value = []
+  dialogueCandidate.value = null
+  editorSelection.value = null
+  dialogueScope.value = 'chapter'
+})
+
 // 切换模板时同步更新流水线步骤
 watch(
   () => selectedWorkflow.value,
@@ -2894,6 +3143,29 @@ watch(
   flex-shrink: 0;
 }
 
+.pipeline-summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 42px;
+  padding: 7px 11px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--bg-card);
+  color: var(--text-secondary);
+  cursor: pointer;
+  text-align: left;
+}
+.pipeline-summary:hover { border-color: rgba(99, 102, 241, .45); }
+.pipeline-summary-title { color: var(--text-primary); font-size: 12px; font-weight: 700; white-space: nowrap; }
+.pipeline-summary-step { display: inline-flex; align-items: center; gap: 5px; padding: 4px 7px; border-radius: 12px; background: rgba(255,255,255,.035); font-size: 11px; white-space: nowrap; }
+.pipeline-summary-step i { width: 7px; height: 7px; border-radius: 50%; background: #64748b; }
+.pipeline-summary-step.running i { background: #38bdf8; box-shadow: 0 0 7px #38bdf8; }
+.pipeline-summary-step.completed i { background: #34d399; }
+.pipeline-summary-step.failed i { background: #f87171; }
+.pipeline-summary-toggle { margin-left: auto; color: #91a0b6; font-size: 11px; white-space: nowrap; }
+
 .workbench {
   flex: 1;
   display: grid;
@@ -2926,7 +3198,10 @@ watch(
   flex-shrink: 0;
   background: rgba(255, 255, 255, 0.02) !important;
   border-bottom: 1px solid var(--border) !important;
+  overflow-x: auto;
+  scrollbar-width: none;
 }
+.side-tabs :deep(.n-tabs-nav)::-webkit-scrollbar { display: none; }
 
 .side-tabs :deep(.n-tabs-tab) {
   padding: 10px 14px;

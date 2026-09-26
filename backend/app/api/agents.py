@@ -3,13 +3,17 @@ from __future__ import annotations
 import json
 import traceback
 from collections.abc import Iterator
+from typing import Literal
 
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
+from pydantic import BaseModel, Field
 from sqlalchemy import desc, func
 
+from app.agents.chapter_edit import LLMError, propose_chapter_edit
 from app.agents.context import build_context_preview
 from app.agents.workflows import analyze_chapter, check_consistency, draft_chapter, draft_chapter_stream, polish_chapter, analyze_volume
+from app.agents_v3.persistence import WorkflowPersistence
 from app.db.repository import rows_to_dicts
 from app.db.session import get_business_db
 from app.models.business import Chapter, ChapterSummary, GenerationLog, GenerationVersion
@@ -17,6 +21,33 @@ from app.schemas.models import ChapterAnalyzeRequest, ChapterDraftRequest, Consi
 
 
 router = APIRouter()
+
+
+class ChapterEditChatRequest(BaseModel):
+    """章节对话改稿请求；正文由前端传入的编辑快照决定。"""
+
+    project_id: int
+    chapter_id: int
+    chapter_no: int = 1
+    chapter_title: str = ""
+    outline_id: int | None = None
+    content: str = Field(max_length=500_000)
+    scope: Literal["chapter", "selection"] = "chapter"
+    selection_start: int | None = None
+    selection_end: int | None = None
+    instruction: str = Field(min_length=1, max_length=5_000)
+    conversation: list[dict[str, str]] = Field(default_factory=list)
+    context_selection: dict[str, list[int]] | None = None
+
+
+class ChapterEditApplyRequest(BaseModel):
+    """确认候选改稿请求，带原稿快照用于并发冲突保护。"""
+
+    project_id: int
+    chapter_id: int
+    expected_content: str = Field(max_length=500_000)
+    revised_content: str = Field(min_length=1, max_length=500_000)
+    summary: str = Field(default="", max_length=500)
 
 
 @router.get("/{project_id}/logs")
@@ -211,6 +242,54 @@ def chapter_draft_stream(payload: ChapterDraftRequest) -> StreamingResponse:
             ) + "\n"
 
     return StreamingResponse(event_lines(), media_type="application/x-ndjson")
+
+
+@router.post("/chapter-edit/chat")
+def chapter_edit_chat(payload: ChapterEditChatRequest) -> dict:
+    """讨论或提出章节改稿候选，绝不在此接口直接覆盖正文。"""
+    with get_business_db() as db:
+        chapter = db.query(Chapter.id).filter(
+            Chapter.id == payload.chapter_id,
+            Chapter.project_id == payload.project_id,
+        ).first()
+    if not chapter:
+        raise HTTPException(status_code=404, detail="章节不存在或不属于当前项目")
+    try:
+        return propose_chapter_edit(
+            project_id=payload.project_id,
+            chapter_no=payload.chapter_no,
+            chapter_title=payload.chapter_title,
+            outline_id=payload.outline_id,
+            content=payload.content,
+            scope=payload.scope,
+            selection_start=payload.selection_start,
+            selection_end=payload.selection_end,
+            instruction=payload.instruction,
+            conversation=payload.conversation,
+            context_selection=payload.context_selection,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except LLMError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@router.post("/chapter-edit/apply")
+def chapter_edit_apply(payload: ChapterEditApplyRequest) -> dict:
+    """校验原稿仍未变化后，保存候选正文并创建新的当前版本。"""
+    result = WorkflowPersistence.apply_chapter_edit(
+        project_id=payload.project_id,
+        chapter_id=payload.chapter_id,
+        expected_content=payload.expected_content,
+        revised_content=payload.revised_content,
+        summary=payload.summary,
+    )
+    if result is None:
+        raise HTTPException(
+            status_code=409,
+            detail="章节正文已发生变化。请刷新当前内容后重新生成改稿候选，避免覆盖新修改。",
+        )
+    return {"success": True, **result}
 
 
 @router.post("/chapter-analyze")

@@ -366,6 +366,71 @@ class WorkflowPersistence:
         return version_id
 
     @staticmethod
+    def apply_chapter_edit(
+        project_id: int,
+        chapter_id: int,
+        expected_content: str,
+        revised_content: str,
+        summary: str = "",
+    ) -> dict | None:
+        """原子应用对话改稿并保留正文版本；原稿不匹配时拒绝覆盖。"""
+        version_id = str(uuid.uuid4())
+        with get_business_db() as db:
+            chapter = (
+                db.query(Chapter)
+                .filter(Chapter.id == chapter_id, Chapter.project_id == project_id)
+                .with_for_update()
+                .first()
+            )
+            if not chapter or (chapter.content or "") != expected_content:
+                return None
+
+            # 步骤 1：在数据库更新本身重复校验原稿，避免两个编辑请求同时通过前置读取。
+            changed_rows = db.query(Chapter).filter(
+                Chapter.id == chapter_id,
+                Chapter.project_id == project_id,
+                Chapter.content == expected_content,
+            ).update(
+                {"content": revised_content, "status": "draft"},
+                synchronize_session=False,
+            )
+            if changed_rows != 1:
+                db.rollback()
+                return None
+
+            latest_version = (
+                db.query(GenerationVersion.version_number)
+                .filter(GenerationVersion.chapter_id == chapter_id)
+                .order_by(GenerationVersion.version_number.desc())
+                .first()
+            )
+            version_number = (latest_version[0] if latest_version else 0) + 1
+            content_file_path = _save_version_content(chapter_id, version_id, revised_content)
+
+            # 步骤 2：在同一数据库事务中更新版本指针并保存版本快照。
+            db.query(GenerationVersion).filter(
+                GenerationVersion.chapter_id == chapter_id
+            ).update({"is_current": 0})
+            db.add(GenerationVersion(
+                version_id=version_id,
+                chapter_id=chapter_id,
+                run_id=None,
+                version_number=version_number,
+                is_current=1,
+                content_file_path=content_file_path,
+                word_count=len(revised_content),
+                summary=summary[:500] if summary else "对话改稿",
+            ))
+            db.commit()
+
+        return {
+            "chapter_id": chapter_id,
+            "version_id": version_id,
+            "version_number": version_number,
+            "word_count": len(revised_content),
+        }
+
+    @staticmethod
     def get_version_content(version_id: str) -> str:
         """获取版本的完整内容。"""
         with get_business_db() as db:

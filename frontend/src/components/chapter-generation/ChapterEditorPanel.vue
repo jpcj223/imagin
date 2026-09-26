@@ -34,6 +34,9 @@
             class="chapter-textarea"
             :autosize="{ minRows: 20 }"
             :bordered="false"
+            ref="editorInput"
+            @mouseup="captureSelection"
+            @keyup="captureSelection"
             placeholder="在这里写你的小说正文...
 
 提示：
@@ -64,7 +67,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
 
 type PolishSegment = { text: string; status: 'same' | 'changed' }
 
@@ -81,7 +84,10 @@ const emit = defineEmits<{
   (event: 'update:chapterTitle', value: string): void
   (event: 'update:draft', value: string): void
   (event: 'close-polish-comparison'): void
+  (event: 'selection-change', selection: { start: number; end: number; text: string } | null): void
 }>()
+
+const editorInput = ref<{ $el?: HTMLElement } | null>(null)
 
 // 步骤 1：将编辑值作为受控输入回传页面，正文保存和生成仍由工作台统一协调。
 const chapterTitle = computed({
@@ -101,6 +107,18 @@ const saveStatusText = computed(() => ({
 function closePolishComparison() {
   // 步骤 1：通知页面清空原稿快照，关闭精修前后对比。
   emit('close-polish-comparison')
+}
+
+function captureSelection() {
+  // 步骤 1：读取正文编辑器的原生选区偏移；步骤 2：把稳定的正文范围交给对话改稿面板。
+  const textarea = editorInput.value?.$el?.querySelector('textarea')
+  if (!(textarea instanceof HTMLTextAreaElement)) return
+  const { selectionStart: start, selectionEnd: end } = textarea
+  if (start === end) {
+    emit('selection-change', null)
+    return
+  }
+  emit('selection-change', { start, end, text: textarea.value.slice(start, end) })
 }
 </script>
 <style scoped>

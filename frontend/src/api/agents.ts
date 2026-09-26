@@ -159,6 +159,34 @@ export async function polishChapter(payload: Record<string, unknown>) {
   return data
 }
 
+export interface ChapterEditChatResult {
+  action: 'discussion' | 'proposal'
+  reply: string
+  candidate_text: string
+  scope: 'chapter' | 'selection'
+  selection_start: number | null
+  selection_end: number | null
+  usage: { input_tokens?: number; output_tokens?: number; total_tokens?: number } | null
+}
+
+export async function chatChapterEdit(payload: Record<string, unknown>) {
+  // 对话改稿只返回讨论答复或候选正文；确认应用另走版本化保存接口。
+  const { data } = await apiClient.post<ChapterEditChatResult>('/agents/chapter-edit/chat', payload)
+  return data
+}
+
+export async function applyChapterEdit(payload: Record<string, unknown>) {
+  // 确认候选时一并提交原稿快照，服务端会拒绝覆盖期间发生的其他编辑。
+  const { data } = await apiClient.post<{
+    success: boolean
+    chapter_id: number
+    version_id: string
+    version_number: number
+    word_count: number
+  }>('/agents/chapter-edit/apply', payload)
+  return data
+}
+
 export async function checkConsistency(payload: Record<string, unknown>) {
   // 一致性检查：当前支持 fallback 结构化结果，后续可无缝接入真实模型判断。
   const { data } = await apiClient.post<ConsistencyCheckResult>('/agents/consistency-check', payload)
