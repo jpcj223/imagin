@@ -7,7 +7,7 @@ export interface PipelineStep {
   label: string
   icon: string
   description: string
-  status: 'pending' | 'running' | 'completed' | 'failed' | 'active'
+  status: 'pending' | 'running' | 'completed' | 'failed' | 'active' | 'paused'
   durationMs?: number
   agentName?: string
   skillCount?: number
@@ -54,6 +54,7 @@ const statusMap: Record<string, { class: string; dot: string }> = {
   running:   { class: 'step-running',   dot: '' },
   completed: { class: 'step-completed', dot: '✓' },
   failed:    { class: 'step-failed',    dot: '✕' },
+  paused:    { class: 'step-paused',    dot: 'Ⅱ' },
   active:    { class: 'step-active',    dot: '▶' },
 }
 
@@ -564,6 +565,21 @@ function handleRestart(e: Event, stepId: string) {
 .step-failed .step-index {
   background: #ef4444;
   color: #fff;
+}
+
+.step-paused .step-node {
+  background: linear-gradient(135deg, #f59e0b, #d97706);
+  border-color: #f59e0b;
+  color: #fff;
+}
+
+.step-paused .step-index {
+  background: #d97706;
+  color: #fff;
+}
+
+.step-paused .step-card {
+  border-color: rgba(245, 158, 11, 0.38);
 }
 
 .step-active .step-node {

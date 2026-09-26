@@ -35,6 +35,8 @@ def create_writer_agent(variant: str = "default", **extra_params) -> BaseAgent:
         .with_user_prompt_template(
             "请生成第 {chapter_no} 章正文。\n\n"
             "节奏等级：{rhythm_level}\n"
+            "目标字数：约 {target_word_count} 字（允许根据剧情完整度合理浮动）\n"
+            "本次写作重点：\n{writing_skill_guidance}\n\n"
             "用户补充要求：{instruction}\n\n"
             "本章规划：{writing_plan}\n\n"
             "写作资料包：\n{_writing_context}\n\n"

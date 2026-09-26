@@ -14,10 +14,11 @@ from __future__ import annotations
 import json
 import traceback
 from collections.abc import Iterator
+from typing import Literal
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import func, or_
 
 from app.agents_v3.persistence import WorkflowPersistence
@@ -36,6 +37,16 @@ router = APIRouter()
 # 请求模型
 # ============================================================
 
+class GenerationOptionsRequest(BaseModel):
+    """本次生成参数，由后端工作流快照持久化以供续跑复用。"""
+    writer_variant: Literal["default", "shuangwen", "wenqing", "fast"] = "default"
+    temperature: float = Field(default=0.8, ge=0, le=2)
+    target_word_count: int = Field(default=3000, ge=500, le=10000)
+    active_skills: list[Literal["outline", "character", "world", "foreshadow", "rhythm", "emotion"]] = Field(
+        default_factory=lambda: ["outline", "character", "world", "rhythm"]
+    )
+
+
 class WorkflowGenerateRequest(BaseModel):
     """工作流生成请求。"""
     project_id: int
@@ -46,6 +57,7 @@ class WorkflowGenerateRequest(BaseModel):
     rhythm_level: str = "medium"
     chapter_id: int | None = None
     context_selection: dict[str, list[int]] | None = None
+    generation_options: GenerationOptionsRequest | None = None
 
 
 class WorkflowResumeRequest(BaseModel):
@@ -57,6 +69,7 @@ class WorkflowResumeRequest(BaseModel):
     rhythm_level: str = "medium"
     restart_from_step_id: str | None = None  # 从指定步骤开始重跑（可选）
     context_selection: dict[str, list[int]] | None = None
+    generation_options: GenerationOptionsRequest | None = None
 
 
 class AgentGenerateRequest(BaseModel):
@@ -179,6 +192,7 @@ def workflow_generate(payload: WorkflowGenerateRequest) -> dict:
         template_name=payload.template_name,
         chapter_id=target["chapter_id"],
         outline_id=target["outline_id"],
+        generation_options=payload.generation_options.model_dump() if payload.generation_options else None,
     )
     result = engine.run(
         chapter_no=target["chapter_no"],
@@ -186,6 +200,7 @@ def workflow_generate(payload: WorkflowGenerateRequest) -> dict:
         instruction=payload.instruction,
         rhythm_level=payload.rhythm_level,
         context_selection=payload.context_selection,
+        generation_options=payload.generation_options.model_dump() if payload.generation_options else None,
     )
 
     # 步骤 1：同步和流式生成共用持久化逻辑，避免无 chapter_id 时丢失整章结果。
@@ -222,6 +237,7 @@ def workflow_generate_stream(payload: WorkflowGenerateRequest) -> StreamingRespo
                 template_name=payload.template_name,
                 chapter_id=target["chapter_id"],
                 outline_id=target["outline_id"],
+                generation_options=payload.generation_options.model_dump() if payload.generation_options else None,
             )
             content_buffer: list[str] = []
             final_result: dict | None = None
@@ -232,6 +248,7 @@ def workflow_generate_stream(payload: WorkflowGenerateRequest) -> StreamingRespo
                 instruction=payload.instruction,
                 rhythm_level=payload.rhythm_level,
                 context_selection=payload.context_selection,
+                generation_options=payload.generation_options.model_dump() if payload.generation_options else None,
             ):
                 # 收集正文内容用于保存
                 if event.get("type") == "delta" and event.get("step_id") == "writer":
@@ -315,6 +332,7 @@ def workflow_resume(payload: WorkflowResumeRequest) -> dict:
         project_id=project_id,
         template_name=template_name,
         run_id=payload.run_id,
+        generation_options=payload.generation_options.model_dump() if payload.generation_options else None,
     )
 
     # 如果指定了重跑起点，重置该步骤及其下游步骤
@@ -327,6 +345,7 @@ def workflow_resume(payload: WorkflowResumeRequest) -> dict:
         instruction=payload.instruction,
         rhythm_level=payload.rhythm_level,
         context_selection=payload.context_selection,
+        generation_options=payload.generation_options.model_dump() if payload.generation_options else None,
     )
     if result.get("status") == "completed":
         # 步骤 1：续跑成功也必须保存正文版本、章节摘要和待审核变化。
@@ -373,6 +392,7 @@ def workflow_resume_stream(payload: WorkflowResumeRequest) -> StreamingResponse:
                 project_id=project_id,
                 template_name=template_name,
                 run_id=payload.run_id,
+                generation_options=payload.generation_options.model_dump() if payload.generation_options else None,
             )
 
             # 如果指定了重跑起点，重置该步骤及其下游步骤
@@ -387,6 +407,7 @@ def workflow_resume_stream(payload: WorkflowResumeRequest) -> StreamingResponse:
                 instruction=payload.instruction,
                 rhythm_level=payload.rhythm_level,
                 context_selection=payload.context_selection,
+                generation_options=payload.generation_options.model_dump() if payload.generation_options else None,
             ):
                 if event.get("type") == "delta" and event.get("step_id") == "writer":
                     content_buffer.append(event.get("content", ""))
@@ -464,10 +485,32 @@ def get_workflow_run_detail(run_id: str) -> dict | None:
         return None
 
     step_records = WorkflowPersistence.get_step_records(run_id)
+    restored = WorkflowPersistence.restore_workflow_state(run_id) or {}
+    restored_context = restored.get("session_context", {})
+    # 详情页只需要恢复中断片段和本次设置，避免把完整章节正文再次塞进响应。
+    session_context = {
+        key: restored_context[key]
+        for key in ("interrupted_partial_content", "generation_options")
+        if key in restored_context
+    }
     return {
         "run": run_info,
         "steps": step_records,
+        "session_context": session_context,
     }
+
+
+@router.post("/workflow/runs/{run_id}/pause")
+def pause_workflow_run(run_id: str) -> dict:
+    """暂停当前工作流并保留已完成步骤，稍后可继续。"""
+    run_info = WorkflowPersistence.get_run(run_id)
+    if not run_info:
+        raise HTTPException(status_code=404, detail="工作流运行不存在")
+    if run_info.get("status") != "running":
+        raise HTTPException(status_code=409, detail="当前工作流已不在运行状态")
+    if not WorkflowEngine.request_pause(run_id):
+        raise HTTPException(status_code=409, detail="工作流已完成或已暂停")
+    return {"run_id": run_id, "status": "paused"}
 
 
 # ============================================================

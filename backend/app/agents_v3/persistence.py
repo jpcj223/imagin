@@ -105,6 +105,10 @@ class WorkflowPersistence:
             if not run:
                 return
 
+            # 暂停态是用户的明确中断请求，后台步骤不能将其竞态覆盖为运行或完成。
+            if run.status == "paused" and status in {"running", "completed"}:
+                return
+
             run.status = status
             if current_step is not None:
                 run.current_step = current_step
@@ -236,6 +240,10 @@ class WorkflowPersistence:
             if not record:
                 return
 
+            # 中断请求可能与最后一个流式分片同时到达，保护暂停状态不被旧迭代覆盖。
+            if record.status == "paused" and status == "running":
+                return
+
             record.status = status
             if input_snapshot is not None:
                 record.input_snapshot = json.dumps(input_snapshot, ensure_ascii=False)
@@ -254,7 +262,7 @@ class WorkflowPersistence:
             if duration_ms is not None:
                 record.duration_ms = duration_ms
 
-            if status in ("completed", "failed", "skipped"):
+            if status in ("completed", "failed", "skipped", "paused"):
                 record.completed_at = datetime.utcnow()
                 if record.started_at:
                     delta = record.completed_at - record.started_at
@@ -423,6 +431,56 @@ class WorkflowPersistence:
             ))
             db.commit()
 
+    @staticmethod
+    def pause_run(run_id: str) -> bool:
+        """仅将活动运行转为暂停，阻止迟到的暂停请求覆盖已完成结果。"""
+        with get_business_db() as db:
+            run = (
+                db.query(WorkflowRun)
+                .filter(WorkflowRun.run_id == run_id, WorkflowRun.status == "running")
+                .first()
+            )
+            if not run:
+                return False
+            run.status = "paused"
+            run.error_message = ""
+            if run.current_step:
+                active_step = (
+                    db.query(WorkflowStepRecord)
+                    .filter(
+                        WorkflowStepRecord.run_id == run_id,
+                        WorkflowStepRecord.step_id == run.current_step,
+                        WorkflowStepRecord.status == "running",
+                    )
+                    .order_by(WorkflowStepRecord.id.desc())
+                    .first()
+                )
+                if active_step:
+                    active_step.status = "paused"
+                    active_step.error_message = "用户中断，等待继续生成"
+                    active_step.completed_at = datetime.utcnow()
+                    if active_step.started_at:
+                        active_step.duration_ms = int(
+                            (active_step.completed_at - active_step.started_at).total_seconds() * 1000
+                        )
+            db.commit()
+            return True
+
+    @staticmethod
+    def resume_run(run_id: str) -> bool:
+        """将暂停或失败的运行明确恢复为运行态。"""
+        with get_business_db() as db:
+            run = db.query(WorkflowRun).filter(WorkflowRun.run_id == run_id).first()
+            if not run or run.status not in {"paused", "failed", "pending", "running"}:
+                return False
+            run.status = "running"
+            run.started_at = run.started_at or datetime.utcnow()
+            run.completed_at = None
+            run.failed_at = None
+            run.error_message = ""
+            db.commit()
+            return True
+
         return {
             "chapter_id": chapter_id,
             "version_id": version_id,
@@ -536,6 +594,12 @@ class WorkflowPersistence:
         for step_id, record in latest_records.items():
             step_statuses[step_id] = record["status"]
 
+            # 中断时保存生成到一半的正文，供恢复界面展示；续跑仍会重跑该步骤。
+            if record["status"] == "paused" and isinstance(record.get("output_snapshot"), dict):
+                partial = record["output_snapshot"].get("partial_content")
+                if partial:
+                    session_context["interrupted_partial_content"] = partial
+
             if record["status"] == "completed" and record.get("output_snapshot"):
                 step_results[step_id] = record["output_snapshot"]
                 output = record["output_snapshot"]
@@ -550,6 +614,8 @@ class WorkflowPersistence:
             input_snapshot = record.get("input_snapshot")
             if isinstance(input_snapshot, dict) and "context_selection" in input_snapshot:
                 session_context["context_selection"] = input_snapshot["context_selection"]
+                if input_snapshot.get("generation_options"):
+                    session_context["generation_options"] = input_snapshot["generation_options"]
                 break
 
         return {

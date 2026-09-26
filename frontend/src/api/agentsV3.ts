@@ -52,6 +52,7 @@ export interface WorkflowRunRecord {
   progress: number
   word_count: number
   output_preview: string
+  variant_selections?: Record<string, unknown>
   started_at: string | null
   completed_at: string | null
   created_at: string
@@ -65,7 +66,7 @@ export interface WorkflowStepRecord {
   step_name: string
   agent_type: string
   variant_name: string
-  status: 'pending' | 'running' | 'completed' | 'failed' | 'skipped'
+  status: 'pending' | 'running' | 'completed' | 'failed' | 'skipped' | 'paused'
   started_at: string | null
   completed_at: string | null
   duration_ms: number | null
@@ -77,6 +78,12 @@ export interface WorkflowStepRecord {
 }
 
 export interface WorkflowStepInputSnapshot extends Record<string, unknown> {
+  generation_options?: {
+    writer_variant?: string
+    temperature?: number
+    target_word_count?: number
+    active_skills?: string[]
+  }
   context_summary?: {
     outline_title?: string
     characters?: string[]
@@ -379,6 +386,14 @@ export async function workflowResumeStream(
   return finalResult
 }
 
+/** 暂停活动工作流。接口会保留已完成步骤，续跑时从当前步骤重新执行。 */
+export async function pauseWorkflowRun(runId: string) {
+  const { data } = await apiClient.post<{ run_id: string; status: string }>(
+    `/agents/v3/workflow/runs/${runId}/pause`,
+  )
+  return data
+}
+
 // ============================================================
 // 历史记录
 // ============================================================
@@ -397,6 +412,7 @@ export async function getWorkflowRunDetail(runId: string) {
   const { data } = await apiClient.get<{
     run: WorkflowRunRecord
     steps: WorkflowStepRecord[]
+    session_context?: Record<string, unknown>
   }>(`/agents/v3/workflow/runs/${runId}`)
   return data
 }

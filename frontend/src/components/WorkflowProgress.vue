@@ -5,7 +5,7 @@ export interface StepInfo {
   id: string
   label: string
   icon: string
-  status: 'pending' | 'running' | 'completed' | 'failed' | 'skipped'
+  status: 'pending' | 'running' | 'completed' | 'failed' | 'skipped' | 'paused'
   durationMs?: number
   errorMessage?: string
   canRestart?: boolean  // 是否可以从该步骤重跑
@@ -26,6 +26,7 @@ const statusIcon = (status: string) => {
     case 'completed': return '✓'
     case 'running': return '▶'
     case 'failed': return '✕'
+    case 'paused': return 'Ⅱ'
     case 'skipped': return '⊘'
     default: return '○'
   }
@@ -208,6 +209,12 @@ function handleRestart(stepId: string) {
 .step-failed .step-icon {
   background: #ef4444;
   border-color: #ef4444;
+  color: #fff;
+}
+
+.step-paused .step-icon {
+  background: #d97706;
+  border-color: #f59e0b;
   color: #fff;
 }
 

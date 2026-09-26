@@ -114,11 +114,11 @@ function handleSkillToggle(skillId: string) {
       </transition>
     </div>
 
-    <!-- 技能组合 -->
+    <!-- 这些开关会转成明确的写作指令，随本次生成请求发送。 -->
     <div class="skills-section">
       <div class="section-label">
-        <span>🔧 技能组合</span>
-        <span class="skills-count">{{ activeSkillCount }}/{{ skills.length }} 激活</span>
+        <span>🔧 写作重点</span>
+        <span class="skills-count">{{ activeSkillCount }}/{{ skills.length }} 已启用</span>
       </div>
       <div class="skills-grid">
         <div

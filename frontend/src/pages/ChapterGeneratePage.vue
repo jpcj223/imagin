@@ -112,7 +112,7 @@
                   agent-name="写作师 Agent"
                   agent-description="v3.0 插件化架构"
                   agent-icon="✍️"
-                  :variant-id="userPrefs.default_writer_variant"
+                  :variant-id="selectedWriterVariant"
                   :variant-name="activeVariantName"
                   :variants="writerVariants"
                   :skills="agentSkills"
@@ -229,6 +229,16 @@
               <div class="form-block">
                 <div class="block-title">生成操作</div>
                 <div class="action-buttons">
+                  <n-button
+                    v-if="workflowStreamActive"
+                    type="warning"
+                    block
+                    :loading="stopRequested"
+                    :disabled="stopRequested || !currentRunId"
+                    @click="stopCurrentGeneration"
+                  >
+                    {{ stopRequested ? '正在安全中断…' : '中断并保留进度' }}
+                  </n-button>
                   <n-button
                     v-if="isInterrupted && interruptedRunId"
                     type="warning"
@@ -673,6 +683,7 @@ import {
   getWorkflowRunDetail,
   workflowGenerateStream,
   workflowResumeStream,
+  pauseWorkflowRun,
   getGenerationVersions,
   getChapterChangeProposals,
   reviewChapterChangeProposal,
@@ -721,6 +732,8 @@ const projectStore = useProjectStore()
 
 // ---- 基础状态 ----
 const loading = ref(false)
+const workflowStreamActive = ref(false)
+const stopRequested = ref(false)
 const draft = ref('')
 const chapterTitle = ref('')
 const analysis = ref('')
@@ -911,6 +924,7 @@ const versionsLoading = ref(false)
 const showWorkflowPanel = ref(false)  // 生成中显示步骤面板
 const isInterrupted = ref(false)  // 是否为中断状态
 const interruptedRunId = ref<string | null>(null)  // 中断的 run_id
+let replacePartialOnNextWriterDelta = false
 
 const workflowUsage = computed(() => {
   const steps = workflowRunDetail.value?.steps ?? []
@@ -1025,26 +1039,25 @@ const activeVariantName = computed(() => {
     default: '均衡风格',
     shuangwen: '爽文风',
     wenqing: '文青风',
-    fastpaced: '快节奏',
-    wuxia: '武侠风',
+    fast: '快节奏',
   }
-  return map[userPrefs.default_writer_variant] || '均衡风格'
+  return map[selectedWriterVariant.value] || '均衡风格'
 })
+
+const selectedWriterVariant = ref('default')
 
 const writerVariants = [
   { id: 'default',   name: '均衡风格', description: '叙事平稳，适合大多数题材', icon: '⚖️' },
   { id: 'shuangwen', name: '爽文风',   description: '节奏紧凑，打脸升级快感强', icon: '🔥' },
   { id: 'wenqing',   name: '文青风',   description: '文笔细腻，情感氛围浓厚',   icon: '🎨' },
-  { id: 'fastpaced', name: '快节奏',   description: '情节密集，悬念迭起',       icon: '⚡' },
-  { id: 'wuxia',     name: '武侠风',   description: '江湖气重，古风古韵',       icon: '⚔️' },
+  { id: 'fast',      name: '快节奏',   description: '情节密集，悬念迭起',       icon: '⚡' },
 ]
 
-async function handleVariantChange(variantId: string) {
-  userPrefs.default_writer_variant = variantId
-  await savePreferences()
+function handleVariantChange(variantId: string) {
+  if (loading.value) return
+  selectedWriterVariant.value = variantId
   addEvent('风格切换', `切换为 ${activeVariantName.value}`, 'info')
-  message.success(`已切换为 ${activeVariantName.value}`)
-  updateMemoryLevels()
+  message.success(`本次生成将使用${activeVariantName.value}；长期默认值可在偏好中保存`)
 }
 
 // ---- 记忆层级更新 ----
@@ -1932,6 +1945,13 @@ async function refreshWorkflowRunDetail(runId: string) {
     const detail = await getWorkflowRunDetail(runId)
     if (!detail) return
     workflowRunDetail.value = detail
+    if (detail.run.status === 'paused') {
+      currentRunId.value = runId
+      interruptedRunId.value = runId
+      isInterrupted.value = true
+      const partial = detail.session_context?.interrupted_partial_content
+      if (typeof partial === 'string' && partial && !draft.value.trim()) draft.value = partial
+    }
     for (const record of detail.steps) {
       const step = workflowSteps.value.find((item) => item.id === record.step_id)
       if (!step) continue
@@ -2004,6 +2024,21 @@ function workflowStepContextSummary(step: WorkflowStepRecord) {
 }
 
 // ---- v3 工作流生成 ----
+async function stopCurrentGeneration() {
+  const runId = currentRunId.value
+  if (!workflowStreamActive.value || !runId || stopRequested.value) return
+
+  stopRequested.value = true
+  try {
+    await pauseWorkflowRun(runId)
+    addEvent('请求中断', '已收到请求，正在结束当前步骤并保留进度', 'info')
+    message.info('正在安全中断，当前步骤会在最近一次模型输出后停止')
+  } catch (error) {
+    stopRequested.value = false
+    message.error(errorMessage(error) || '中断请求失败')
+  }
+}
+
 async function generateV3(options: { showToast?: boolean } = {}) {
   const { showToast = true } = options
   if (loading.value) return false
@@ -2048,6 +2083,8 @@ async function generateV3(options: { showToast?: boolean } = {}) {
   )
 
   try {
+    workflowStreamActive.value = true
+    stopRequested.value = false
     const result = await workflowGenerateStream(
       {
         project_id: projectId,
@@ -2058,6 +2095,12 @@ async function generateV3(options: { showToast?: boolean } = {}) {
         rhythm_level: form.rhythm_level,
         context_selection: getContextSelectionPayload(),
         template_name: selectedWorkflow.value,
+        generation_options: {
+          writer_variant: selectedWriterVariant.value,
+          temperature: userPrefs.default_temperature / 100,
+          target_word_count: userPrefs.default_target_word_count,
+          active_skills: agentSkills.value.filter(skill => skill.active).map(skill => skill.id),
+        },
       },
       {
         onStepStart: (stepId, label, runId) => {
@@ -2147,12 +2190,19 @@ async function generateV3(options: { showToast?: boolean } = {}) {
       interruptedRunId.value = currentRunId.value
     }
     analysis.value = previousAnalysis
-    addEvent('生成失败', errorMessage(error), 'error')
-    message.error(draft.value.trim() ? '生成中断，可点击「继续生成」或从步骤处重跑' : '章节生成失败')
+    if (stopRequested.value) {
+      addEvent('生成已暂停', '已保留已完成步骤和中断时的正文片段；继续时会重跑当前步骤', 'info')
+      message.info('已中断并保留进度，可随时继续')
+    } else {
+      addEvent('生成失败', errorMessage(error), 'error')
+      message.error(draft.value.trim() ? '生成中断，可点击「继续生成」或从步骤处重跑' : '章节生成失败')
+    }
     // showWorkflowPanel.value = false
     return false
   } finally {
     loading.value = false
+    workflowStreamActive.value = false
+    stopRequested.value = false
   }
 }
 
@@ -2170,6 +2220,9 @@ async function resumeGenerateV3() {
   addEvent('续传启动', `从 ${currentWorkflowStep.value ?? '中断处'} 继续生成`, 'running')
 
   try {
+    workflowStreamActive.value = true
+    stopRequested.value = false
+    replacePartialOnNextWriterDelta = Boolean(draft.value.trim())
     const result = await workflowResumeStream(
       {
         run_id: interruptedRunId.value,
@@ -2183,7 +2236,7 @@ async function resumeGenerateV3() {
         onStepStart: (stepId, label, runId) => {
           if (runId) currentRunId.value = runId
           currentWorkflowStep.value = stepId
-          if (stepId === 'writer') draft.value = ''
+          if (stepId === 'writer' && !replacePartialOnNextWriterDelta) draft.value = ''
           const step = workflowSteps.value.find(s => s.id === stepId)
           if (step) {
             step.status = 'running'
@@ -2192,6 +2245,10 @@ async function resumeGenerateV3() {
         },
         onDelta: (stepId, content) => {
           if (stepId === 'writer') {
+            if (replacePartialOnNextWriterDelta) {
+              draft.value = ''
+              replacePartialOnNextWriterDelta = false
+            }
             draft.value += content
           }
         },
@@ -2256,11 +2313,19 @@ async function resumeGenerateV3() {
       interruptedRunId.value = currentRunId.value
     }
     addEvent('续传失败', errorMessage(error), 'error')
-    message.error('续传失败，请重试')
+    if (stopRequested.value) {
+      addEvent('续传已暂停', '已保留已完成步骤和当前草稿，可继续恢复', 'info')
+      message.info('续传已中断并保留进度')
+    } else {
+      message.error('续传失败，请重试')
+    }
     showWorkflowPanel.value = false
     return false
   } finally {
     loading.value = false
+    workflowStreamActive.value = false
+    stopRequested.value = false
+    replacePartialOnNextWriterDelta = false
   }
 }
 
@@ -2292,6 +2357,8 @@ async function handleRestartFromStep(stepId: string) {
   // 使用续传接口 + restart_from_step_id 实现重跑
   isInterrupted.value = false
   loading.value = true
+  workflowStreamActive.value = true
+  stopRequested.value = false
   showWorkflowPanel.value = true
   workflowRunDetail.value = null
 
@@ -2366,6 +2433,8 @@ async function handleRestartFromStep(stepId: string) {
     showWorkflowPanel.value = false
   } finally {
     loading.value = false
+    workflowStreamActive.value = false
+    stopRequested.value = false
   }
 }
 
@@ -2417,6 +2486,11 @@ async function loadPreferences() {
   try {
     const prefs = await getUserPreferences(projectStore.currentProject.id)
     Object.assign(userPrefs, prefs)
+    const storedVariant = prefs.default_writer_variant
+    selectedWriterVariant.value = typeof storedVariant === 'string'
+      && writerVariants.some(item => item.id === storedVariant)
+      ? storedVariant
+      : 'default'
     // 如果偏好中有默认模板，同步到选中状态
     const defaultTpl = prefs.default_template as string | undefined
     if (defaultTpl && workflowTemplates.value.some(t => t.name === defaultTpl)) {
@@ -2435,6 +2509,7 @@ async function savePreferences() {
   prefsSaving.value = true
   try {
     await updateUserPreferences(projectStore.currentProject.id, { ...userPrefs })
+    selectedWriterVariant.value = userPrefs.default_writer_variant
     addEvent('偏好保存', '写作偏好已更新，下次生成自动应用', 'success')
     message.success('偏好已保存')
     // 同步默认模板到选中状态
@@ -2556,6 +2631,7 @@ function handlePipelineStepClick(stepId: string) {
 
 // ---- 技能开关 ----
 function handleSkillToggle(skillId: string) {
+  if (loading.value) return
   const skill = agentSkills.value.find(s => s.id === skillId)
   if (skill) skill.active = !skill.active
   addEvent('技能切换', `${skill?.name}: ${skill?.active ? '启用' : '禁用'}`, 'info')

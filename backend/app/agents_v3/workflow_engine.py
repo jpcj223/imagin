@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import json
+import threading
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -13,6 +14,10 @@ from typing import Any
 
 from app.memory.retriever import MemoryRetriever
 from .persistence import WorkflowPersistence
+from .generation_options import (
+    build_skill_guidance,
+    normalize_generation_options,
+)
 
 
 class WorkflowStatus(str, Enum):
@@ -31,6 +36,7 @@ class StepStatus(str, Enum):
     RUNNING = "running"
     COMPLETED = "completed"
     FAILED = "failed"
+    PAUSED = "paused"
     SKIPPED = "skipped"
 
 
@@ -212,6 +218,31 @@ class WorkflowEngine:
     支持断点续传：从 run_id 恢复未完成的工作流。
     """
 
+    _cancel_events: dict[str, threading.Event] = {}
+    _cancel_events_lock = threading.Lock()
+
+    @classmethod
+    def _event_for_run(cls, run_id: str) -> threading.Event:
+        with cls._cancel_events_lock:
+            return cls._cancel_events.setdefault(run_id, threading.Event())
+
+    @classmethod
+    def _release_cancel_event(cls, run_id: str, event: threading.Event) -> None:
+        """释放终态运行的取消信号，避免长时间运行后累积事件对象。"""
+        with cls._cancel_events_lock:
+            if cls._cancel_events.get(run_id) is event:
+                cls._cancel_events.pop(run_id, None)
+
+    @classmethod
+    def request_pause(cls, run_id: str) -> bool:
+        """请求正在执行的流式工作流暂停，并保留最近的未完成步骤。"""
+        event = cls._event_for_run(run_id)
+        event.set()
+        if not WorkflowPersistence.pause_run(run_id):
+            cls._release_cancel_event(run_id, event)
+            return False
+        return True
+
     def __init__(
         self,
         project_id: int,
@@ -219,6 +250,7 @@ class WorkflowEngine:
         run_id: str | None = None,
         chapter_id: int | None = None,
         outline_id: int | None = None,
+        generation_options: dict[str, Any] | None = None,
     ):
         """初始化工作流引擎。
 
@@ -233,6 +265,7 @@ class WorkflowEngine:
         self.template_name = template_name
         self.chapter_id = chapter_id
         self.outline_id = outline_id
+        self.generation_options = normalize_generation_options(generation_options)
 
         if template_name not in BUILTIN_TEMPLATES:
             raise ValueError(f"Template '{template_name}' not found")
@@ -257,12 +290,14 @@ class WorkflowEngine:
             self.run_id = ""
             self.status = WorkflowStatus.PENDING
             self._persist_new_run()
+        self._cancel_event = self._event_for_run(self.run_id)
 
     def _persist_new_run(self) -> None:
         """持久化新的工作流运行记录。"""
         variant_selections = {
             step.step_id: step.variant for step in self.template.steps
         }
+        variant_selections["generation_options"] = self.generation_options
         # 使用类的静态方法创建记录
         # 步骤 1：以持久化层实际生成的 ID 作为本次引擎 ID。
         # 保证运行状态、步骤记录、续跑和章节版本引用指向同一条记录。
@@ -284,13 +319,21 @@ class WorkflowEngine:
 
         run_info = state["run_info"]
         self.status = WorkflowStatus(run_info.get("status", "paused"))
+        stored_selections = run_info.get("variant_selections") or {}
+        stored_options = stored_selections.get("generation_options")
+        if stored_options:
+            self.generation_options = normalize_generation_options(stored_options)
 
         # 恢复步骤状态
         for step_id, status_str in state["step_statuses"].items():
             if step_id in self.step_statuses:
                 # 步骤 1：恢复时把上次运行中或失败的步骤重新排队，保留已完成步骤结果。
                 # 客户端断开时后端无法收到取消通知，因此数据库里的 running 也必须可重试。
-                if status_str in {StepStatus.RUNNING.value, StepStatus.FAILED.value}:
+                if status_str in {
+                    StepStatus.RUNNING.value,
+                    StepStatus.FAILED.value,
+                    StepStatus.PAUSED.value,
+                }:
                     self.step_statuses[step_id] = StepStatus.PENDING
                 else:
                     self.step_statuses[step_id] = StepStatus(status_str)
@@ -300,6 +343,10 @@ class WorkflowEngine:
 
         # 恢复会话上下文
         self.session_context = state["session_context"]
+        if self.session_context.get("generation_options"):
+            self.generation_options = normalize_generation_options(
+                self.session_context["generation_options"]
+            )
 
         # 步骤 2：续跑时保持工作流可执行状态；已完成步骤仍由快照恢复，不会重复生成。
         if self.status in {WorkflowStatus.RUNNING, WorkflowStatus.FAILED}:
@@ -401,6 +448,38 @@ class WorkflowEngine:
         context["outline_desc"] = base_context.get("outline", {}).get("description", "")
 
         return context
+
+    def _step_variant_and_params(
+        self,
+        step: WorkflowStep,
+        instruction: str,
+        rhythm_level: str,
+    ) -> tuple[str, dict[str, Any]]:
+        """应用本次生成选项，只覆盖写作步骤的风格和模型参数。"""
+        variant = (
+            self.generation_options["writer_variant"]
+            if step.agent_type == "writer"
+            else step.variant
+        )
+        params: dict[str, Any] = {
+            "instruction": instruction,
+            "rhythm_level": rhythm_level,
+            **step.params,
+        }
+        if step.agent_type == "writer":
+            params.update({
+                "temperature": self.generation_options["temperature"],
+                "target_word_count": self.generation_options["target_word_count"],
+                # 章节目标按中文字符估算 Token 上限，避免 3000 字目标被 2048 Token 默认值提前截断。
+                "max_tokens": min(
+                    20000,
+                    max(1024, self.generation_options["target_word_count"] * 2),
+                ),
+                "writing_skill_guidance": build_skill_guidance(
+                    self.generation_options["active_skills"]
+                ),
+            })
+        return variant, params
 
     @staticmethod
     def _summarize_step_context(context: dict[str, Any]) -> dict[str, Any]:
@@ -548,6 +627,7 @@ class WorkflowEngine:
         instruction: str = "",
         rhythm_level: str = "medium",
         context_selection: dict[str, list[int]] | None = None,
+        generation_options: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """同步执行工作流。
 
@@ -560,16 +640,18 @@ class WorkflowEngine:
         Returns:
             最终结果字典
         """
+        if generation_options is not None:
+            self.generation_options = normalize_generation_options(generation_options)
         self.status = WorkflowStatus.RUNNING
         self.session_context["instruction"] = instruction
         self.session_context["rhythm_level"] = rhythm_level
+        self.session_context["generation_options"] = self.generation_options
         if context_selection is not None:
             self.session_context["context_selection"] = context_selection
 
-        WorkflowPersistence.update_run_status(
-            run_id=self.run_id,
-            status="running",
-        )
+        self._cancel_event.clear()
+        if not WorkflowPersistence.resume_run(self.run_id):
+            WorkflowPersistence.update_run_status(run_id=self.run_id, status="running")
 
         from .presets import get_agent
 
@@ -585,18 +667,22 @@ class WorkflowEngine:
                 )
 
                 # 创建步骤记录
+                step_variant, params = self._step_variant_and_params(
+                    step, instruction, rhythm_level
+                )
                 context_preview = {
                     "chapter_no": chapter_no,
                     "outline_id": outline_id,
                     "instruction": instruction,
                     "context_selection": self.session_context.get("context_selection"),
+                    "generation_options": self.generation_options,
                 }
                 WorkflowPersistence.create_step_record(
                     run_id=self.run_id,
                     step_id=step.step_id,
                     step_name=step.label,
                     agent_type=step.agent_type,
-                    variant_name=step.variant,
+                    variant_name=step_variant,
                     input_snapshot=context_preview,
                 )
 
@@ -622,14 +708,11 @@ class WorkflowEngine:
                     context.update(self.session_context)
 
                     # 合并步骤参数
-                    params = {"instruction": instruction, "rhythm_level": rhythm_level}
-                    params.update(step.params)
-
                     # 创建并执行 Agent
                     # 步骤 2：开发兜底正文不能再进入分析器，避免虚构摘要和设定提案。
                     result = self._fallback_analysis_result() if step.agent_type == "analyzer" else None
                     if result is None:
-                        agent = get_agent(step.agent_type, step.variant)
+                        agent = get_agent(step.agent_type, step_variant)
                         result = agent.run(context, params)
 
                     # 保存结果
@@ -684,6 +767,7 @@ class WorkflowEngine:
         instruction: str = "",
         rhythm_level: str = "medium",
         context_selection: dict[str, list[int]] | None = None,
+        generation_options: dict[str, Any] | None = None,
     ) -> Iterator[dict[str, Any]]:
         """流式执行工作流。
 
@@ -695,16 +779,18 @@ class WorkflowEngine:
             - {"type": "workflow_done", "status": ...}
             - {"type": "error", "message": ...}
         """
+        if generation_options is not None:
+            self.generation_options = normalize_generation_options(generation_options)
         self.status = WorkflowStatus.RUNNING
         self.session_context["instruction"] = instruction
         self.session_context["rhythm_level"] = rhythm_level
+        self.session_context["generation_options"] = self.generation_options
         if context_selection is not None:
             self.session_context["context_selection"] = context_selection
 
-        WorkflowPersistence.update_run_status(
-            run_id=self.run_id,
-            status="running",
-        )
+        self._cancel_event.clear()
+        if not WorkflowPersistence.resume_run(self.run_id):
+            WorkflowPersistence.update_run_status(run_id=self.run_id, status="running")
 
         from .presets import get_agent
 
@@ -720,18 +806,22 @@ class WorkflowEngine:
                 )
 
                 # 创建步骤记录
+                step_variant, params = self._step_variant_and_params(
+                    step, instruction, rhythm_level
+                )
                 context_preview = {
                     "chapter_no": chapter_no,
                     "outline_id": outline_id,
                     "instruction": instruction,
                     "context_selection": self.session_context.get("context_selection"),
+                    "generation_options": self.generation_options,
                 }
                 WorkflowPersistence.create_step_record(
                     run_id=self.run_id,
                     step_id=step.step_id,
                     step_name=step.label,
                     agent_type=step.agent_type,
-                    variant_name=step.variant,
+                    variant_name=step_variant,
                     input_snapshot=context_preview,
                 )
 
@@ -760,12 +850,9 @@ class WorkflowEngine:
                         self.session_context["analysis_entity_catalog"] = self._capture_analysis_entity_catalog()
                     context.update(self.session_context)
 
-                    params = {"instruction": instruction, "rhythm_level": rhythm_level}
-                    params.update(step.params)
-
                     # 步骤 2：兜底正文不调用分析模型；正常内容则执行对应 Agent。
                     fallback_result = self._fallback_analysis_result() if step.agent_type == "analyzer" else None
-                    agent = get_agent(step.agent_type, step.variant) if fallback_result is None else None
+                    agent = get_agent(step.agent_type, step_variant) if fallback_result is None else None
 
                     # 流式执行
                     final_result = None
@@ -773,8 +860,25 @@ class WorkflowEngine:
                         # 步骤 3：保留明确的不可用结果并完成工作流，不调用分析模型。
                         final_result = {"type": "done", **fallback_result}
                     elif hasattr(agent, "run_stream") and agent.meta.supports_streaming:
-                        for event in agent.run_stream(context, params):
+                        partial_chunks: list[str] = []
+                        last_partial_checkpoint = 0
+                        agent_stream = iter(agent.run_stream(context, params))
+                        for event in agent_stream:
+                            if self._cancel_event.is_set():
+                                break
                             if event.get("type") == "delta":
+                                if step.agent_type in {"writer", "polisher"}:
+                                    partial_chunks.append(event.get("content", ""))
+                                    partial_content = "".join(partial_chunks)
+                                    # 定期保存未完成正文，刷新或断连时仍能恢复。
+                                    if len(partial_content) - last_partial_checkpoint >= 500:
+                                        WorkflowPersistence.update_step_record(
+                                            run_id=self.run_id,
+                                            step_id=step.step_id,
+                                            status="running",
+                                            output_snapshot={"partial_content": partial_content},
+                                        )
+                                        last_partial_checkpoint = len(partial_content)
                                 yield {
                                     "type": "delta",
                                     "step_id": step.step_id,
@@ -784,10 +888,36 @@ class WorkflowEngine:
                                 final_result = event
                             elif event.get("type") == "error":
                                 raise Exception(event.get("message", "Unknown error"))
+                        if self._cancel_event.is_set():
+                            close_stream = getattr(agent_stream, "close", None)
+                            if close_stream:
+                                close_stream()
+                            partial_content = "".join(partial_chunks)
+                            if partial_content:
+                                self.session_context["interrupted_partial_content"] = partial_content
+                            self.step_statuses[step.step_id] = StepStatus.PAUSED
+                            self.status = WorkflowStatus.PAUSED
+                            WorkflowPersistence.update_step_record(
+                                run_id=self.run_id,
+                                step_id=step.step_id,
+                                status="paused",
+                                output_snapshot={"partial_content": partial_content},
+                                error_message="用户中断，等待继续生成",
+                            )
+                            WorkflowPersistence.update_run_status(
+                                run_id=self.run_id,
+                                status="paused",
+                                word_count=len(partial_content),
+                                output_preview=partial_content,
+                            )
+                            break
                     else:
                         # 不支持流式，同步执行
                         result = agent.run(context, params)
                         final_result = {"type": "done", **result}
+
+                    if self.status == WorkflowStatus.PAUSED:
+                        break
 
                     if final_result is None:
                         final_result = {"type": "done", "content": ""}
@@ -820,13 +950,23 @@ class WorkflowEngine:
                     )
 
                     yield {"type": "error", "step_id": step.step_id, "message": str(exc)}
+                    self._release_cancel_event(self.run_id, self._cancel_event)
                     return
+
+                if self.status == WorkflowStatus.PAUSED:
+                    break
+
+            if self.status == WorkflowStatus.PAUSED:
+                break
 
         # 完成
         all_completed = all(
             s == StepStatus.COMPLETED for s in self.step_statuses.values()
         )
-        if all_completed:
+        # 即使用户在最后一个 token 已到达后立即点击中断，也不把运行报成完成。
+        if self._cancel_event.is_set():
+            self.status = WorkflowStatus.PAUSED
+        if all_completed and self.status != WorkflowStatus.PAUSED:
             # 步骤 1：让同步与流式工作流共用同一份最终正文定义。
             self.session_context["final_content"] = (
                 self.session_context.get("polished_content")
@@ -837,6 +977,7 @@ class WorkflowEngine:
                 self.run_id, "completed", progress=100
             )
 
+        self._release_cancel_event(self.run_id, self._cancel_event)
         yield {
             "type": "workflow_done",
             "status": self.status.value,
