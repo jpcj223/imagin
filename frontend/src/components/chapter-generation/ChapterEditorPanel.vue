@@ -18,8 +18,8 @@
               <span class="count-label">字</span>
             </div>
             <n-divider vertical />
-            <span class="save-status" :class="{ saved: chapterId }">
-              {{ chapterId ? '💾 已保存' : '📝 未保存' }}
+            <span class="save-status" :class="saveStatus">
+              {{ saveStatusText }}
             </span>
             <n-divider v-if="chapterId" vertical />
             <span v-if="chapterId" class="chapter-id">ID {{ chapterId }}</span>
@@ -73,6 +73,7 @@ const props = defineProps<{
   draft: string
   wordCount: number
   chapterId: number | null
+  saveStatus: 'saved' | 'unsaved' | 'saving' | 'error'
   hasPolishHighlights: boolean
   polishSegments: PolishSegment[]
 }>()
@@ -91,6 +92,12 @@ const draft = computed({
   get: () => props.draft,
   set: (value: string) => emit('update:draft', value),
 })
+const saveStatusText = computed(() => ({
+  saved: '💾 已保存',
+  unsaved: '📝 未保存',
+  saving: '⏳ 保存中',
+  error: '⚠️ 保存失败',
+}[props.saveStatus]))
 function closePolishComparison() {
   // 步骤 1：通知页面清空原稿快照，关闭精修前后对比。
   emit('close-polish-comparison')
@@ -167,6 +174,14 @@ function closePolishComparison() {
 
 .save-status.saved {
   color: #6ee7b7;
+}
+
+.save-status.saving {
+  color: #93c5fd;
+}
+
+.save-status.error {
+  color: #fca5a5;
 }
 
 .chapter-id {

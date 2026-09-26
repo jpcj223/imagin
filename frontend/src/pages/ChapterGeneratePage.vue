@@ -80,6 +80,7 @@
         v-model:draft="draft"
         :word-count="wordCount"
         :chapter-id="chapterId"
+        :save-status="draftSaveStatus"
         :has-polish-highlights="hasPolishHighlights"
         :polish-segments="polishSegments"
         @close-polish-comparison="polishOriginal = ''"
@@ -625,7 +626,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, onMounted, reactive, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useMessage } from 'naive-ui'
 import {
   analyzeChapter,
@@ -811,6 +812,12 @@ function autoRecommendContext() {
   selectedForeshadowingIds.value = fIds
 }
 const chapterId = ref<number | null>(null)
+const chapterProjectId = ref<number | null>(null)
+const draftSaveStatus = ref<'saved' | 'unsaved' | 'saving' | 'error'>('unsaved')
+const persistedDraftFingerprint = ref('')
+let draftAutosaveTimer: ReturnType<typeof setTimeout> | undefined
+let draftSaveInFlight: Promise<boolean> | null = null
+let draftSaveQueued = false
 const polishOriginal = ref('')
 const regenerateConfirmVisible = ref(false)
 const pendingGenerateMode = ref<'generate' | 'generateAndAnalyze' | null>(null)
@@ -1461,6 +1468,7 @@ async function loadResources() {
   foreshadowings.value = foreshadowingList
   summaries.value = summaryList
   agentLogs.value = logList
+  await restoreChapterSelection(projectId, chapterList)
   addEvent('读取资料', `大纲 ${outlineList.length}，角色 ${characterList.length}，摘要 ${summaryList.length}`)
 
   // 更新记忆层级可视化数据
@@ -1599,23 +1607,102 @@ function selectOutline(item: OutlineItem) {
   })
 }
 
-function selectChapter(item: ChapterItem) {
+function chapterSelectionStorageKey(projectId: number) {
+  return `imagin:last-chapter:${projectId}`
+}
+
+function rememberChapterSelection(projectId: number, id: number) {
+  try {
+    window.localStorage.setItem(chapterSelectionStorageKey(projectId), String(id))
+  } catch {
+    // 浏览器禁用本地存储时，服务端章节列表仍可用于恢复最近草稿。
+  }
+}
+
+function setActiveChapterId(id: number | null, projectId = projectStore.currentProject?.id ?? null) {
+  chapterId.value = id
+  form.chapter_id = id
+  chapterProjectId.value = id === null ? null : projectId
+  if (id !== null && projectId !== null) rememberChapterSelection(projectId, id)
+}
+
+function draftFingerprint(
+  id = chapterId.value,
+  title = chapterTitle.value,
+  content = draft.value,
+  chapterNo = form.chapter_no,
+  outlineId = form.outline_id,
+) {
+  return JSON.stringify([id, title, content, chapterNo, outlineId])
+}
+
+function markDraftPersisted() {
+  persistedDraftFingerprint.value = draftFingerprint()
+  draftSaveStatus.value = 'saved'
+}
+
+/** 页面刷新或切换项目后恢复最近编辑的草稿。 */
+async function restoreChapterSelection(projectId: number, chapterList: ChapterItem[]) {
+  const currentStillBelongsToProject = chapterProjectId.value === projectId
+    && chapterList.some((item) => item.id === chapterId.value)
+  if (currentStillBelongsToProject) return
+
+  // 步骤 1：先清理上一项目的编辑区，防止项目切换时短暂展示错章正文。
+  setActiveChapterId(null)
+  chapterTitle.value = ''
+  draft.value = ''
+  form.outline_id = null
+  form.chapter_no = 1
+  form.instruction = ''
+  analysis.value = ''
+  clearAnalysisSections()
+  polishOriginal.value = ''
+
+  // 步骤 2：优先恢复作者上次打开的章节，其次选择最新创建的章节草稿。
+  let rememberedId: number | null = null
+  try {
+    const storedId = Number(window.localStorage.getItem(chapterSelectionStorageKey(projectId)))
+    if (Number.isInteger(storedId) && storedId > 0) rememberedId = storedId
+  } catch {
+    // 本地存储不可用时继续按后端列表的最新记录恢复。
+  }
+  const chapter = chapterList.find((item) => item.id === rememberedId) ?? chapterList[0]
+  if (chapter) {
+    await selectChapter(chapter, { recordEvent: false })
+  } else {
+    persistedDraftFingerprint.value = draftFingerprint()
+    draftSaveStatus.value = 'unsaved'
+  }
+}
+
+async function selectChapter(item: ChapterItem, options: { recordEvent?: boolean } = {}) {
+  // 切换同一项目的章节前先落库，避免用户刚输入就点选下一章时丢失修改。
+  const sameProject = chapterProjectId.value === projectStore.currentProject?.id
+  if (
+    sameProject
+    && chapterId.value !== null
+    && chapterId.value !== item.id
+    && draftFingerprint() !== persistedDraftFingerprint.value
+  ) {
+    if (draftAutosaveTimer) clearTimeout(draftAutosaveTimer)
+    await persistChapterDraft(true)
+  }
+
   const relatedOutline = findOutlineForChapter(item)
-  chapterId.value = item.id
-  form.chapter_id = item.id
+  setActiveChapterId(item.id)
   form.outline_id = relatedOutline?.id ?? item.outline_id
   form.chapter_no = item.chapter_no
   form.instruction = relatedOutline?.description || form.instruction || item.title
   draft.value = item.content
   chapterTitle.value = item.title
+  markDraftPersisted()
   analysis.value = ''
   clearAnalysisSections()
   polishOriginal.value = ''
   consistencyResult.value = null
-  addEvent(
-    '载入章节',
-    relatedOutline ? `${item.title} 已载入，并恢复章纲目标` : `${item.title} 已进入正文编辑区`
-  )
+  if (options.recordEvent ?? true) {
+    addEvent('载入章节', relatedOutline ? `${item.title} 已载入，并恢复章纲目标` : `${item.title} 已进入正文编辑区`)
+  }
   void refreshContextPreview({ silent: true })
   void loadVersions()  // 加载版本列表
   nextTick(() => {
@@ -1664,8 +1751,7 @@ async function generate(options: { showToast?: boolean } = {}) {
       {
         onStart: (detail, startedChapterId) => {
           if (startedChapterId) {
-            chapterId.value = startedChapterId
-            form.chapter_id = startedChapterId
+            setActiveChapterId(startedChapterId, projectId)
           }
           addEvent('流式生成', detail, 'running')
         },
@@ -1676,12 +1762,12 @@ async function generate(options: { showToast?: boolean } = {}) {
       }
     )
     if (!result) throw new Error('流式生成未返回完成事件')
-    chapterId.value = result.chapter_id
-    form.chapter_id = result.chapter_id
+    setActiveChapterId(result.chapter_id, projectId)
     // 自动生成标题
     if (!chapterTitle.value) {
       chapterTitle.value = `第${form.chapter_no}章`
     }
+    markDraftPersisted()
     addEvent('保存章节', `章节 ID ${result.chapter_id} 已写入草稿库`)
     await loadResources()
     addEvent('生成完成', result.source === 'llm' ? '真实模型已返回正文' : result.source, 'success')
@@ -1743,9 +1829,9 @@ function applyWorkflowCompletion(
     })
   }
   if (typeof sessionContext.chapter_id === 'number') {
-    chapterId.value = sessionContext.chapter_id
-    form.chapter_id = sessionContext.chapter_id
+    setActiveChapterId(sessionContext.chapter_id)
   }
+  if (status === 'completed') markDraftPersisted()
 }
 
 /** 读取工作流持久化步骤详情，回填服务端耗时和 Token 用量。 */
@@ -1923,8 +2009,7 @@ async function generateV3(options: { showToast?: boolean } = {}) {
           applyWorkflowCompletion(status, runId, sessionContext, '工作流')
         },
         onChangeProposalsReady: (savedChapterId, pendingCount) => {
-          chapterId.value = savedChapterId
-          form.chapter_id = savedChapterId
+          setActiveChapterId(savedChapterId, projectId)
           addEvent('变化提案就绪', pendingCount + ' 条待审核', 'success')
           void loadChapterChangeProposals()
         },
@@ -2038,8 +2123,7 @@ async function resumeGenerateV3() {
           applyWorkflowCompletion(status, runId, sessionContext, '续传')
         },
         onChangeProposalsReady: (savedChapterId, pendingCount) => {
-          chapterId.value = savedChapterId
-          form.chapter_id = savedChapterId
+          setActiveChapterId(savedChapterId)
           addEvent('变化提案就绪', pendingCount + ' 条待审核', 'success')
           void loadChapterChangeProposals()
         },
@@ -2160,8 +2244,7 @@ async function handleRestartFromStep(stepId: string) {
           applyWorkflowCompletion(status, newRunId, sessionContext, '重跑')
         },
         onChangeProposalsReady: (savedChapterId, pendingCount) => {
-          chapterId.value = savedChapterId
-          form.chapter_id = savedChapterId
+          setActiveChapterId(savedChapterId)
           addEvent('变化提案就绪', pendingCount + ' 条待审核', 'success')
           void loadChapterChangeProposals()
         },
@@ -2388,31 +2471,92 @@ function handleSkillToggle(skillId: string) {
 }
 
 // ---- 保存章节 ----
-async function saveCurrentChapter() {
-  const projectId = await ensureProject()
-  if (!projectId) return
+async function persistChapterDraft(silent = true): Promise<boolean> {
+  if (loading.value) return false
+  if (draftSaveInFlight) {
+    draftSaveQueued = true
+    return draftSaveInFlight
+  }
 
+  // 空白编辑器不创建空记录；已有章节清空正文时仍允许保存这个修改。
+  if (!chapterId.value && !chapterTitle.value.trim() && !draft.value.trim()) return false
+  const projectId = await ensureProject()
+  if (!projectId) return false
+
+  const target = {
+    chapterId: chapterId.value,
+    title: chapterTitle.value.trim() || `第${form.chapter_no}章`,
+    content: draft.value,
+    chapterNo: form.chapter_no,
+    outlineId: form.outline_id,
+  }
   const payload = {
     project_id: projectId,
-    outline_id: form.outline_id,
-    chapter_no: form.chapter_no,
-    title: chapterTitle.value || `第${form.chapter_no}章`,
-    content: draft.value,
+    outline_id: target.outlineId,
+    chapter_no: target.chapterNo,
+    title: target.title,
+    content: target.content,
     status: 'draft',
   }
 
-  if (chapterId.value) {
-    await updateResource<ChapterItem>('chapters', chapterId.value, payload)
-    addEvent('保存章节', `章节 ID ${chapterId.value} 已更新`)
-    message.success('章节草稿已更新')
-  } else {
-    const created = await createResource<ChapterItem>('chapters', payload)
-    chapterId.value = created.id
-    form.chapter_id = created.id
-    addEvent('保存章节', `新章节 ID ${created.id} 已创建`)
-    message.success('章节草稿已保存')
+  draftSaveStatus.value = 'saving'
+  const request = (async () => {
+    try {
+      const saved = target.chapterId
+        ? await updateResource<ChapterItem>('chapters', target.chapterId, payload)
+        : await createResource<ChapterItem>('chapters', payload)
+
+      // 步骤 1：更新本地列表；步骤 2：仅在编辑目标未切换时回填当前章节 ID。
+      const existingIndex = chapters.value.findIndex((item) => item.id === saved.id)
+      if (existingIndex >= 0) chapters.value[existingIndex] = saved
+      else chapters.value.unshift(saved)
+      const sameEditor = projectStore.currentProject?.id === projectId
+        && (target.chapterId ? chapterId.value === target.chapterId : chapterId.value === null)
+      if (sameEditor) {
+        if (!target.chapterId) setActiveChapterId(saved.id, projectId)
+        if (!chapterTitle.value.trim()) chapterTitle.value = target.title
+        rememberChapterSelection(projectId, saved.id)
+        persistedDraftFingerprint.value = draftFingerprint(
+          saved.id,
+          target.title,
+          target.content,
+          target.chapterNo,
+          target.outlineId,
+        )
+        draftSaveStatus.value = draftFingerprint() === persistedDraftFingerprint.value ? 'saved' : 'unsaved'
+      }
+
+      if (!silent) {
+        addEvent('保存章节', `章节 ID ${saved.id} 已保存`)
+        message.success('章节草稿已保存')
+      }
+      return true
+    } catch (error) {
+      const sameEditor = projectStore.currentProject?.id === projectId
+        && (target.chapterId ? chapterId.value === target.chapterId : chapterId.value === null)
+      if (sameEditor) draftSaveStatus.value = 'error'
+      if (!silent) message.error(errorMessage(error) || '章节草稿保存失败')
+      return false
+    }
+  })()
+
+  draftSaveInFlight = request
+  try {
+    return await request
+  } finally {
+    if (draftSaveInFlight === request) draftSaveInFlight = null
+    if (draftSaveQueued) {
+      draftSaveQueued = false
+      if (draftFingerprint() !== persistedDraftFingerprint.value && !loading.value) {
+        if (draftAutosaveTimer) clearTimeout(draftAutosaveTimer)
+        draftAutosaveTimer = setTimeout(() => void persistChapterDraft(true), 0)
+      }
+    }
   }
-  await loadResources()
+}
+
+async function saveCurrentChapter() {
+  if (await persistChapterDraft(false)) await loadResources()
 }
 
 // ---- 分析章节 ----
@@ -2517,10 +2661,11 @@ async function doPolish() {
 async function removeChapter(id: number) {
   await deleteResource('chapters', id)
   if (chapterId.value === id) {
-    chapterId.value = null
-    form.chapter_id = null
+    setActiveChapterId(null)
     draft.value = ''
     chapterTitle.value = ''
+    persistedDraftFingerprint.value = draftFingerprint()
+    draftSaveStatus.value = 'unsaved'
     analysis.value = ''
     polishOriginal.value = ''
     consistencyResult.value = null
@@ -2533,6 +2678,33 @@ async function removeChapter(id: number) {
 
 // ---- 初始化 ----
 useProjectDataLoader(loadResources)
+
+// 步骤 1：正文、标题和章节归属变化后标记未保存；步骤 2：停止输入一小段时间后写回章节草稿。
+watch(
+  () => [chapterId.value, chapterTitle.value, draft.value, form.chapter_no, form.outline_id, loading.value],
+  () => {
+    if (draftFingerprint() === persistedDraftFingerprint.value) {
+      if (draftSaveStatus.value !== 'error') draftSaveStatus.value = 'saved'
+      return
+    }
+    draftSaveStatus.value = 'unsaved'
+    if (draftAutosaveTimer) clearTimeout(draftAutosaveTimer)
+    if (loading.value) return
+    if (!chapterId.value && !chapterTitle.value.trim() && !draft.value.trim()) return
+    draftAutosaveTimer = setTimeout(() => {
+      void persistChapterDraft(true)
+    }, 800)
+  },
+  { flush: 'post' },
+)
+
+// 离开页面时尽量提交还没到防抖时间的修改，服务端仍是正文的正式存储位置。
+onBeforeUnmount(() => {
+  if (draftAutosaveTimer) clearTimeout(draftAutosaveTimer)
+  if (draftFingerprint() !== persistedDraftFingerprint.value && !loading.value) {
+    void persistChapterDraft(true)
+  }
+})
 
 // 步骤 1：章节目标或勾选资料改变后，延迟刷新后端实际上下文预览。
 let contextPreviewRefreshTimer: ReturnType<typeof setTimeout> | undefined
