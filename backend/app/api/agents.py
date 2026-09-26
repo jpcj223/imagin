@@ -14,6 +14,7 @@ from app.agents.chapter_edit import LLMError, propose_chapter_edit
 from app.agents.context import build_context_preview
 from app.agents.workflows import analyze_chapter, check_consistency, draft_chapter, draft_chapter_stream, polish_chapter, analyze_volume
 from app.agents_v3.persistence import WorkflowPersistence
+from app.services.chapter_targets import get_project_next_chapter_target, require_next_chapter_target
 from app.db.repository import rows_to_dicts
 from app.db.session import get_business_db
 from app.models.business import Chapter, ChapterSummary, GenerationLog, GenerationVersion
@@ -48,6 +49,12 @@ class ChapterEditApplyRequest(BaseModel):
     expected_content: str = Field(max_length=500_000)
     revised_content: str = Field(min_length=1, max_length=500_000)
     summary: str = Field(default="", max_length=500)
+
+
+@router.get("/{project_id}/next-chapter")
+def next_chapter_target(project_id: int) -> dict:
+    """读取当前大纲顺序中的下一篇新稿目标。"""
+    return get_project_next_chapter_target(project_id)
 
 
 @router.get("/{project_id}/logs")
@@ -200,13 +207,19 @@ def chapter_draft(payload: ChapterDraftRequest) -> dict:
 
     支持指定大纲，也支持覆盖已有章节草稿。
     """
+    target = require_next_chapter_target(
+        payload.project_id,
+        payload.outline_id,
+        payload.chapter_no,
+        payload.chapter_id,
+    )
     return draft_chapter(
         payload.project_id,
-        payload.chapter_no,
+        target["chapter_no"],
         payload.instruction,
         payload.rhythm_level,
-        payload.outline_id,
-        payload.chapter_id,
+        target["outline_id"],
+        target["chapter_id"],
         payload.context_selection,
     )
 
@@ -218,15 +231,22 @@ def chapter_draft_stream(payload: ChapterDraftRequest) -> StreamingResponse:
     使用 NDJSON：每行一个事件对象，前端可以边读边追加到正文编辑区。
     """
 
+    target = require_next_chapter_target(
+        payload.project_id,
+        payload.outline_id,
+        payload.chapter_no,
+        payload.chapter_id,
+    )
+
     def event_lines() -> Iterator[str]:
         try:
             for event in draft_chapter_stream(
                 payload.project_id,
-                payload.chapter_no,
+                target["chapter_no"],
                 payload.instruction,
                 payload.rhythm_level,
-                payload.outline_id,
-                payload.chapter_id,
+                target["outline_id"],
+                target["chapter_id"],
                 payload.context_selection,
             ):
                 yield json.dumps(event, ensure_ascii=False) + "\n"

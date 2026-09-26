@@ -5,7 +5,11 @@ from sqlalchemy import func
 
 from app.db.session import get_business_db
 from app.models.business import Outline
-from .common import _renumber_all_chapters
+from .common import (
+    _link_legacy_chapters_to_outlines,
+    _renumber_all_chapters,
+    _sync_linked_chapter_numbers,
+)
 
 router = APIRouter()
 
@@ -22,6 +26,7 @@ def renumber_outlines(payload: dict) -> dict:
         raise HTTPException(status_code=400, detail="缺少 project_id")
 
     with get_business_db() as db:
+        _link_legacy_chapters_to_outlines(db, project_id)
         # 先获取所有卷，按 volume_no 排序
         volumes = db.query(Outline).filter(
             Outline.project_id == project_id,
@@ -78,6 +83,7 @@ def renumber_outlines(payload: dict) -> dict:
                 ch.chapter_no = chapter_no
                 ch.sort_index = chapter_no
 
+        _sync_linked_chapter_numbers(db, project_id)
         db.commit()
 
     return {"ok": True, "chapter_no": chapter_no}
@@ -105,6 +111,7 @@ def reorder_volume(payload: dict) -> dict:
             raise HTTPException(status_code=400, detail="不能跨项目移动")
 
         project_id = source.project_id
+        _link_legacy_chapters_to_outlines(db, project_id)
 
         # 获取所有卷，按当前 volume_no 排序
         volumes = db.query(Outline).filter(
@@ -139,6 +146,7 @@ def reorder_volume(payload: dict) -> dict:
                 ch.chapter_no = chapter_no
                 ch.sort_index = chapter_no
 
+        _sync_linked_chapter_numbers(db, project_id)
         db.commit()
 
     return {"ok": True}
@@ -166,6 +174,7 @@ def reorder_chapter(payload: dict) -> dict:
             raise HTTPException(status_code=400, detail="不能跨项目移动")
 
         project_id = source.project_id
+        _link_legacy_chapters_to_outlines(db, project_id)
         target_volume_id = target.volume_id
 
         # 获取目标卷的所有章节，按 sort_index 排序
@@ -223,6 +232,7 @@ def move_chapter(payload: dict) -> dict:
             raise HTTPException(status_code=400, detail="不能跨项目移动")
 
         project_id = chapter.project_id
+        _link_legacy_chapters_to_outlines(db, project_id)
 
         # 修改所属卷
         chapter.volume_id = volume_id

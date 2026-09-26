@@ -26,6 +26,25 @@ export async function getChapterSummaries(projectId: number, limit = 20) {
   return data
 }
 
+export interface NextChapterTarget {
+  available: boolean
+  reason: string
+  outline_id: number | null
+  chapter_no: number | null
+  outline_title: string
+  instruction: string
+  chapter_id: number | null
+  chapter_title: string
+  position: number | null
+  total_outlines: number
+}
+
+export async function getNextChapterTarget(projectId: number) {
+  // 目标由后端按当前已保存的大纲顺序解析，避免页面缓存或拖动排序后生成错章。
+  const { data } = await apiClient.get<NextChapterTarget>(`/agents/${projectId}/next-chapter`)
+  return data
+}
+
 export interface ChapterAnalysisStatus {
   chapter_id: number
   chapter_no: number

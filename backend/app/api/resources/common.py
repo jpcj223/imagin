@@ -3,7 +3,47 @@
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
-from app.models.business import Outline
+from app.models.business import Chapter, Outline
+
+
+def _link_legacy_chapters_to_outlines(db: Session, project_id: int) -> None:
+    """排序变化前，把章号唯一对应的旧章节绑定到稳定的大纲 ID。"""
+    outlines = db.query(Outline).filter(
+        Outline.project_id == project_id,
+        Outline.node_type == "chapter",
+        Outline.chapter_no.isnot(None),
+    ).all()
+    outlines_by_number: dict[int, list[Outline]] = {}
+    for outline in outlines:
+        outlines_by_number.setdefault(int(outline.chapter_no), []).append(outline)
+
+    legacy_chapters = db.query(Chapter).filter(
+        Chapter.project_id == project_id,
+        Chapter.outline_id.is_(None),
+    ).all()
+    for chapter in legacy_chapters:
+        matches = outlines_by_number.get(int(chapter.chapter_no), [])
+        if len(matches) == 1:
+            chapter.outline_id = matches[0].id
+
+
+def _sync_linked_chapter_numbers(db: Session, project_id: int) -> None:
+    """大纲重排后，同步已绑定章节的展示序号。"""
+    outline_numbers = {
+        outline.id: outline.chapter_no
+        for outline in db.query(Outline).filter(
+            Outline.project_id == project_id,
+            Outline.node_type == "chapter",
+        ).all()
+    }
+    linked_chapters = db.query(Chapter).filter(
+        Chapter.project_id == project_id,
+        Chapter.outline_id.isnot(None),
+    ).all()
+    for chapter in linked_chapters:
+        chapter_no = outline_numbers.get(chapter.outline_id)
+        if chapter_no is not None:
+            chapter.chapter_no = chapter_no
 
 def _renumber_all_volumes(db: Session, project_id: int) -> int:
     """内部工具：全局重新排列卷号。"""
@@ -37,6 +77,7 @@ def _renumber_all_chapters(db: Session, project_id: int) -> int:
             ch.chapter_no = chapter_no
             ch.sort_index = chapter_no
 
+    _sync_linked_chapter_numbers(db, project_id)
     return chapter_no
 
 

@@ -164,8 +164,18 @@
                 <div class="block-title">章节设置</div>
                 <n-form label-placement="top" :show-label="true">
                   <div class="form-row">
-                    <n-form-item label="章节号" style="flex: 0 0 100px">
-                      <n-input-number v-model:value="form.chapter_no" :min="1" style="width: 100%" />
+                    <n-form-item label="本次生成目标" class="generation-target-field">
+                      <div class="generation-target-card" :class="{ unavailable: !nextChapterTarget?.available }">
+                        <strong v-if="nextChapterTargetLoading">正在读取大纲顺序…</strong>
+                        <strong v-else-if="nextChapterTarget?.available">
+                          第 {{ nextChapterTarget.chapter_no }} 章 · {{ nextChapterTarget.outline_title || '未命名章节' }}
+                        </strong>
+                        <strong v-else>暂无可生成章节</strong>
+                        <small v-if="nextChapterTarget?.available">
+                          按已保存的大纲顺序生成第 {{ nextChapterTarget.position }} / {{ nextChapterTarget.total_outlines }} 章
+                        </small>
+                        <small v-else>{{ nextChapterTarget?.reason || '刷新资料后重试' }}</small>
+                      </div>
                     </n-form-item>
                     <n-form-item label="节奏等级">
                       <n-select v-model:value="form.rhythm_level" :options="rhythmOptions" />
@@ -245,21 +255,21 @@
                     block
                     size="large"
                     :loading="loading"
-                    :disabled="loading"
+                    :disabled="loading || !nextChapterTarget?.available"
                     @click="requestGenerate('generate')"
                   >
                     <template #icon>✨</template>
-                    {{ isInterrupted ? '从头重新生成' : (hasExistingDraft ? '重新生成章节' : '生成章节') }}
+                    生成下一章
                   </n-button>
                   <n-button
                     v-if="!useV3Workflow"
                     block
                     :loading="loading"
-                    :disabled="loading"
+                    :disabled="loading || !nextChapterTarget?.available"
                     @click="requestGenerate('generateAndAnalyze')"
                   >
                     <template #icon>🔄</template>
-                    生成 + 分析沉淀
+                    生成下一章 + 分析沉淀
                   </n-button>
                 </div>
               </div>
@@ -639,21 +649,6 @@
       </template>
     </n-modal>
 
-    <!-- 重新生成确认弹窗 -->
-    <n-modal v-model:show="regenerateConfirmVisible" :mask-closable="!loading">
-      <div class="confirm-modal">
-        <div class="confirm-icon">⚠️</div>
-        <div class="confirm-title">{{ regenerateConfirmTitle }}</div>
-        <p class="confirm-text">{{ regenerateConfirmText }}</p>
-        <p class="confirm-note">{{ regenerateConfirmNote }}</p>
-        <div class="confirm-actions">
-          <n-button :disabled="loading" @click="cancelRegenerate">取消</n-button>
-          <n-button type="primary" :loading="loading" @click="confirmRegenerate">
-            {{ pendingGenerateMode === 'generateAndAnalyze' ? '确认重新生成并分析' : '确认重新生成' }}
-          </n-button>
-        </div>
-      </div>
-    </n-modal>
   </div>
 </template>
 
@@ -666,11 +661,13 @@ import {
   draftChapterStream,
   getAgentLogs,
   getChapterSummaries,
+  getNextChapterTarget,
   getContextPreview,
   polishChapter,
   chatChapterEdit,
   applyChapterEdit,
 } from '@/api/agents'
+import type { NextChapterTarget } from '@/api/agents'
 import {
   getWorkflowTemplates,
   getWorkflowRunDetail,
@@ -752,6 +749,8 @@ const localEvents = ref<
   Array<{ id: string; title: string; detail: string; time: string; status: string }>
 >([])
 const contextPreview = ref<ContextPreview | null>(null)
+const nextChapterTarget = ref<NextChapterTarget | null>(null)
+const nextChapterTargetLoading = ref(false)
 const previewLoading = ref(false)
 
 // 上下文选择器状态
@@ -871,8 +870,6 @@ let draftAutosaveTimer: ReturnType<typeof setTimeout> | undefined
 let draftSaveInFlight: Promise<boolean> | null = null
 let draftSaveQueued = false
 const polishOriginal = ref('')
-const regenerateConfirmVisible = ref(false)
-const pendingGenerateMode = ref<'generate' | 'generateAndAnalyze' | null>(null)
 const consistencyResult = ref<ConsistencyCheckResult | null>(null)
 
 const analysisSections = reactive({
@@ -1221,20 +1218,6 @@ const selectedChapter = computed(
   () => chapters.value.find((item) => item.id === chapterId.value) ?? null
 )
 const wordCount = computed(() => draft.value.replace(/\s/g, '').length)
-const hasExistingDraft = computed(() => Boolean(draft.value.trim()))
-
-const regenerateConfirmTitle = computed(() =>
-  pendingGenerateMode.value === 'generateAndAnalyze' ? '确认重新生成并分析？' : '确认重新生成？'
-)
-const regenerateConfirmText = computed(() =>
-  `当前正文区已有 ${wordCount.value} 字，确认清空并重新生成第 ${form.chapter_no} 章？`
-)
-const regenerateConfirmNote = computed(() => {
-  const instruction = form.instruction.trim()
-  return instruction
-    ? `本次会沿用当前本章目标：${shortText(instruction)}`
-    : '当前没有本章目标，建议先选择大纲或填写目标后再重新生成。'
-})
 
 const polishSegments = computed(() => {
   const before = splitParagraphs(polishOriginal.value)
@@ -1502,6 +1485,7 @@ async function loadResources() {
     foreshadowingList,
     summaryList,
     logList,
+    nextTarget,
   ] = await Promise.all([
     listResource<OutlineItem>(projectId, 'outlines'),
     listResource<ChapterItem>(projectId, 'chapters'),
@@ -1511,6 +1495,7 @@ async function loadResources() {
     listResource<ForeshadowingItem>(projectId, 'foreshadowings'),
     getChapterSummaries(projectId, 20),
     getAgentLogs(projectId, 20),
+    getNextChapterTarget(projectId),
   ])
   outlines.value = outlineList
   chapters.value = chapterList
@@ -1520,6 +1505,7 @@ async function loadResources() {
   foreshadowings.value = foreshadowingList
   summaries.value = summaryList
   agentLogs.value = logList
+  nextChapterTarget.value = nextTarget
   await restoreChapterSelection(projectId, chapterList)
   addEvent('读取资料', `大纲 ${outlineList.length}，角色 ${characterList.length}，摘要 ${summaryList.length}`)
 
@@ -1560,21 +1546,89 @@ async function refreshContextPreview(options: { silent?: boolean } = {}) {
 }
 
 // ---- 生成相关 ----
-function requestGenerate(mode: 'generate' | 'generateAndAnalyze') {
-  if (loading.value) return
-  hydrateInstructionFromSelection()
-  ensureActiveOutline()
+async function requestGenerate(mode: 'generate' | 'generateAndAnalyze') {
+  if (isInterrupted.value && interruptedRunId.value) {
+    message.warning('当前章节生成尚未完成，请先继续或重跑这次任务，再生成下一章')
+    return
+  }
+  if (loading.value || !await prepareNextGenerationTarget()) return
   if (!hasGenerationGoal()) {
-    message.warning('请先选择大纲或填写本章目标')
-    addEvent('生成拦截', '缺少大纲或本章目标，已取消生成', 'error')
+    message.warning('当前没有可用的章节大纲，请先补充章节大纲')
+    addEvent('生成拦截', '没有可生成的下一章大纲', 'error')
     return
   }
-  if (hasExistingDraft.value) {
-    pendingGenerateMode.value = mode
-    regenerateConfirmVisible.value = true
-    return
+  await runGenerateMode(mode)
+}
+
+/** 保存当前编辑，再把正文区明确切换到后端解析出的下一章目标。 */
+async function prepareNextGenerationTarget() {
+  const projectId = await ensureProject()
+  if (!projectId) return false
+
+  // 步骤 1：切换生成目标前先保存旧章，避免新章输出覆盖旧章编辑区。
+  if (
+    (chapterId.value !== null || chapterTitle.value.trim() || draft.value.trim())
+    && draftFingerprint() !== persistedDraftFingerprint.value
+  ) {
+    if (!await persistChapterDraft(true)) {
+      message.error('当前章节草稿未能保存，先解决保存问题再生成下一章')
+      return false
+    }
   }
-  void runGenerateMode(mode)
+
+  nextChapterTargetLoading.value = true
+  try {
+    // 步骤 2：点击生成时重新向服务端取目标，避免拖动大纲后使用页面缓存。
+    const target = await getNextChapterTarget(projectId)
+    nextChapterTarget.value = target
+    if (!target.available || target.outline_id === null || target.chapter_no === null) {
+      message.warning(target.reason || '当前没有可生成的下一章')
+      addEvent('生成拦截', target.reason || '当前没有可生成的下一章', 'error')
+      return false
+    }
+
+    const blankChapter = target.chapter_id === null
+      ? null
+      : chapters.value.find((item) => item.id === target.chapter_id) ?? {
+          id: target.chapter_id,
+          project_id: projectId,
+          outline_id: target.outline_id,
+          chapter_no: target.chapter_no,
+          title: target.chapter_title || target.outline_title || `第${target.chapter_no}章`,
+          content: '',
+          status: 'draft',
+        }
+
+    if (blankChapter) {
+      if (!chapters.value.some((item) => item.id === blankChapter.id)) chapters.value.unshift(blankChapter)
+      await selectChapter(blankChapter, { recordEvent: false })
+    } else {
+      // 步骤 3：新大纲尚无草稿记录时解除旧章绑定，只在当前编辑区准备新目标。
+      setActiveChapterId(null)
+      chapterTitle.value = ''
+      draft.value = ''
+      form.chapter_id = null
+      analysis.value = ''
+      analysisStatus.value = ''
+      clearAnalysisSections()
+      consistencyResult.value = null
+      polishOriginal.value = ''
+    }
+
+    form.outline_id = target.outline_id
+    form.chapter_no = target.chapter_no
+    form.chapter_id = target.chapter_id
+    form.instruction = target.instruction || target.outline_title
+    markDraftPersisted()
+    addEvent('生成目标', `按当前大纲顺序准备第 ${target.chapter_no} 章：${target.outline_title || '未命名章节'}`)
+    await refreshContextPreview({ silent: true })
+    return true
+  } catch (error) {
+    message.error(`读取下一章目标失败：${errorMessage(error)}`)
+    return false
+  } finally {
+    nextChapterTargetLoading.value = false
+  }
 }
 
 async function runGenerateMode(mode: 'generate' | 'generateAndAnalyze') {
@@ -1589,21 +1643,6 @@ async function runGenerateMode(mode: 'generate' | 'generateAndAnalyze') {
     return
   }
   await generate()
-}
-
-function cancelRegenerate() {
-  pendingGenerateMode.value = null
-  regenerateConfirmVisible.value = false
-}
-
-async function confirmRegenerate() {
-  const mode = pendingGenerateMode.value
-  pendingGenerateMode.value = null
-  regenerateConfirmVisible.value = false
-  if (!mode) return
-  hydrateInstructionFromSelection()
-  ensureActiveOutline()
-  await runGenerateMode(mode)
 }
 
 function findOutlineForChapter(item: ChapterItem) {
@@ -3283,6 +3322,45 @@ watch(
 .form-row {
   display: flex;
   gap: 10px;
+}
+
+.generation-target-field {
+  flex: 1;
+  min-width: 0;
+}
+
+.generation-target-card {
+  width: 100%;
+  min-height: 42px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 4px;
+  padding: 8px 10px;
+  border: 1px solid rgba(99, 102, 241, 0.35);
+  border-radius: 8px;
+  background: rgba(99, 102, 241, 0.08);
+  box-sizing: border-box;
+}
+
+.generation-target-card strong {
+  overflow: hidden;
+  color: var(--text-primary);
+  font-size: 12px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.generation-target-card small {
+  color: var(--text-muted);
+  font-size: 10px;
+  line-height: 1.4;
+}
+
+.generation-target-card.unavailable {
+  border-color: rgba(245, 158, 11, 0.3);
+  background: rgba(245, 158, 11, 0.06);
 }
 
 /* 生成按钮组 */

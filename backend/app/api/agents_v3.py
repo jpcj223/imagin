@@ -25,6 +25,7 @@ from app.agents_v3.presets import get_agent
 from app.agents_v3.variants import VariantManager
 from app.agents_v3.workflow_engine import WorkflowEngine, list_templates
 from app.memory.manager import MemoryManager
+from app.services.chapter_targets import require_next_chapter_target
 from app.skills.registry import SkillRegistry
 
 
@@ -167,15 +168,21 @@ def get_agents_info() -> list[dict]:
 @router.post("/workflow/generate")
 def workflow_generate(payload: WorkflowGenerateRequest) -> dict:
     """同步执行工作流生成章节。"""
+    target = require_next_chapter_target(
+        payload.project_id,
+        payload.outline_id,
+        payload.chapter_no,
+        payload.chapter_id,
+    )
     engine = WorkflowEngine(
         project_id=payload.project_id,
         template_name=payload.template_name,
-        chapter_id=payload.chapter_id,
-        outline_id=payload.outline_id,
+        chapter_id=target["chapter_id"],
+        outline_id=target["outline_id"],
     )
     result = engine.run(
-        chapter_no=payload.chapter_no,
-        outline_id=payload.outline_id,
+        chapter_no=target["chapter_no"],
+        outline_id=target["outline_id"],
         instruction=payload.instruction,
         rhythm_level=payload.rhythm_level,
         context_selection=payload.context_selection,
@@ -185,9 +192,9 @@ def workflow_generate(payload: WorkflowGenerateRequest) -> dict:
     if result.get("status") == "completed":
         _persist_completed_workflow_output(
             project_id=payload.project_id,
-            chapter_no=payload.chapter_no,
-            outline_id=payload.outline_id,
-            chapter_id=payload.chapter_id,
+            chapter_no=target["chapter_no"],
+            outline_id=target["outline_id"],
+            chapter_id=target["chapter_id"],
             result=result,
         )
 
@@ -201,20 +208,27 @@ def workflow_generate_stream(payload: WorkflowGenerateRequest) -> StreamingRespo
     使用 NDJSON：每行一个事件对象。
     """
 
+    target = require_next_chapter_target(
+        payload.project_id,
+        payload.outline_id,
+        payload.chapter_no,
+        payload.chapter_id,
+    )
+
     def event_lines() -> Iterator[str]:
         try:
             engine = WorkflowEngine(
                 project_id=payload.project_id,
                 template_name=payload.template_name,
-                chapter_id=payload.chapter_id,
-                outline_id=payload.outline_id,
+                chapter_id=target["chapter_id"],
+                outline_id=target["outline_id"],
             )
             content_buffer: list[str] = []
             final_result: dict | None = None
 
             for event in engine.run_stream(
-                chapter_no=payload.chapter_no,
-                outline_id=payload.outline_id,
+                chapter_no=target["chapter_no"],
+                outline_id=target["outline_id"],
                 instruction=payload.instruction,
                 rhythm_level=payload.rhythm_level,
                 context_selection=payload.context_selection,
@@ -238,9 +252,9 @@ def workflow_generate_stream(payload: WorkflowGenerateRequest) -> StreamingRespo
                 session_context.setdefault("draft_content", "".join(content_buffer))
                 persisted = _persist_completed_workflow_output(
                     project_id=payload.project_id,
-                    chapter_no=payload.chapter_no,
-                    outline_id=payload.outline_id,
-                    chapter_id=payload.chapter_id,
+                    chapter_no=target["chapter_no"],
+                    outline_id=target["outline_id"],
+                    chapter_id=target["chapter_id"],
                     result=final_result,
                 )
                 # 步骤 2：把保存结果带入完成事件，前端可立即锁定本章与正文版本。
@@ -628,7 +642,7 @@ def _save_chapter_content(
 ) -> dict:
     """保存最终正文并保留章节已有标题和大纲关联。
 
-    步骤 1：优先按明确章节 ID 定位，其次只复用同号草稿或生成中的章节。
+    步骤 1：按明确章节 ID 或稳定的大纲 ID 定位，不用变化中的章号覆盖旧正文。
     步骤 2：已有章节只更新本次正文及明确传入的大纲，不覆盖作者维护的标题。
     步骤 3：没有可复用章节时创建默认标题的新章节并返回数据库 ID。
     """
@@ -643,19 +657,33 @@ def _save_chapter_content(
                 .filter(Chapter.id == chapter_id, Chapter.project_id == project_id)
                 .first()
             )
-        else:
+        elif outline_id is not None:
             chapter = (
                 db.query(Chapter)
                 .filter(
                     Chapter.project_id == project_id,
-                    Chapter.chapter_no == chapter_no,
+                    Chapter.outline_id == outline_id,
                     Chapter.status.in_(["draft", "generating"]),
                 )
                 .order_by(Chapter.id.desc())
                 .first()
             )
+            if not chapter:
+                # 兼容尚未绑定大纲 ID 的旧草稿；已绑定其他大纲的章节绝不按章号复用。
+                legacy_rows = db.query(Chapter).filter(
+                    Chapter.project_id == project_id,
+                    Chapter.outline_id.is_(None),
+                    Chapter.chapter_no == chapter_no,
+                    Chapter.status.in_(["draft", "generating"]),
+                ).all()
+                if len(legacy_rows) == 1:
+                    chapter = legacy_rows[0]
+        else:
+            raise HTTPException(status_code=409, detail="生成新章必须先选择已保存的章节大纲。")
 
         if chapter:
+            if str(chapter.content or "").strip():
+                raise HTTPException(status_code=409, detail="目标章节已有正文，不能作为新章目标覆盖。")
             if outline_id is not None:
                 chapter.outline_id = outline_id
             chapter.chapter_no = chapter_no

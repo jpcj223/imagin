@@ -15,7 +15,12 @@ from app.services.foreshadowing_history import (
     record_foreshadowing_history,
 )
 from app.services.organization_history import capture_organization_snapshot, record_organization_history
-from .common import _renumber_all_chapters, _renumber_all_volumes, _resource_table
+from .common import (
+    _link_legacy_chapters_to_outlines,
+    _renumber_all_chapters,
+    _renumber_all_volumes,
+    _resource_table,
+)
 
 router = APIRouter()
 
@@ -254,6 +259,10 @@ def delete_resource(resource: str, item_id: int) -> dict:
             if item:
                 project_id = item.project_id
                 node_type = item.node_type
+                if node_type in ("chapter", "volume"):
+                    # 删除导致外键置空之前，先给可唯一定位的旧章节绑定稳定大纲 ID。
+                    _link_legacy_chapters_to_outlines(db, project_id)
+                    db.commit()
 
     delete_row(table, item_id)
 
