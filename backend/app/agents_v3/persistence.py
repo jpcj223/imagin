@@ -698,8 +698,14 @@ class WorkflowPersistence:
             input_snapshot = record.get("input_snapshot")
             if isinstance(input_snapshot, dict) and "context_selection" in input_snapshot:
                 session_context["context_selection"] = input_snapshot["context_selection"]
+                if "manual_context_selection" in input_snapshot:
+                    session_context["manual_context_selection"] = input_snapshot["manual_context_selection"]
                 if input_snapshot.get("generation_options"):
                     session_context["generation_options"] = input_snapshot["generation_options"]
+                if "instruction" in input_snapshot:
+                    session_context["instruction"] = input_snapshot["instruction"]
+                if input_snapshot.get("rhythm_level"):
+                    session_context["rhythm_level"] = input_snapshot["rhythm_level"]
                 break
 
         return {

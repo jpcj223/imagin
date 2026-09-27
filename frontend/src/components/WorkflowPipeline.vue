@@ -239,8 +239,8 @@ function handleRestart(e: Event, stepId: string) {
 
 <style scoped>
 .workflow-pipeline {
-  background: linear-gradient(180deg, #0f172a 0%, #1e293b 100%);
-  border: 1px solid rgba(99, 102, 241, 0.2);
+  background: var(--bg-secondary, #182234);
+  border: 1px solid var(--border, rgba(99, 102, 241, 0.2));
   border-radius: 12px;
   padding: 12px 18px 16px;
   position: relative;
@@ -283,7 +283,7 @@ function handleRestart(e: Event, stepId: string) {
 .pipeline-name {
   font-size: 15px;
   font-weight: 600;
-  color: #e2e8f0;
+  color: var(--text-primary, #e2e8f0);
   letter-spacing: 0.3px;
 }
 
@@ -305,7 +305,7 @@ function handleRestart(e: Event, stepId: string) {
 .progress-bar {
   width: 120px;
   height: 4px;
-  background: rgba(255, 255, 255, 0.1);
+  background: var(--border, rgba(255, 255, 255, 0.1));
   border-radius: 2px;
   overflow: hidden;
 }
@@ -319,7 +319,7 @@ function handleRestart(e: Event, stepId: string) {
 
 .progress-text {
   font-size: 12px;
-  color: #94a3b8;
+  color: var(--text-secondary, #94a3b8);
   min-width: 60px;
 }
 
@@ -345,7 +345,7 @@ function handleRestart(e: Event, stepId: string) {
 .connector-line {
   position: absolute;
   inset: 0;
-  background: rgba(255, 255, 255, 0.08);
+  background: var(--border, rgba(255, 255, 255, 0.08));
   border-radius: 1px;
 }
 
@@ -381,8 +381,8 @@ function handleRestart(e: Event, stepId: string) {
   width: 36px;
   height: 36px;
   border-radius: 50%;
-  background: #1e293b;
-  border: 2px solid rgba(255, 255, 255, 0.15);
+  background: var(--bg-card, #1e293b);
+  border: 2px solid var(--border, rgba(255, 255, 255, 0.15));
   display: flex;
   align-items: center;
   justify-content: center;
@@ -400,15 +400,15 @@ function handleRestart(e: Event, stepId: string) {
   right: -6px;
   width: 16px;
   height: 16px;
-  background: #334155;
-  color: #94a3b8;
+  background: var(--bg-primary, #0f172a);
+  color: var(--text-secondary, #94a3b8);
   font-size: 9px;
   border-radius: 50%;
   display: flex;
   align-items: center;
   justify-content: center;
   font-weight: 600;
-  border: 2px solid #0f172a;
+  border: 2px solid var(--bg-secondary, #182234);
 }
 
 /* 脉冲动画 */
@@ -441,8 +441,8 @@ function handleRestart(e: Event, stepId: string) {
 
 /* 步骤卡片 */
 .step-card {
-  background: rgba(30, 41, 59, 0.7);
-  border: 1px solid rgba(255, 255, 255, 0.06);
+  background: var(--bg-card, rgba(30, 41, 59, 0.7));
+  border: 1px solid var(--border, rgba(255, 255, 255, 0.06));
   border-radius: 8px;
   padding: 8px 10px;
   width: 100%;
@@ -452,7 +452,7 @@ function handleRestart(e: Event, stepId: string) {
 
 .pipeline-step:hover .step-card {
   border-color: rgba(99, 102, 241, 0.4);
-  background: rgba(30, 41, 59, 0.9);
+  background: var(--bg-secondary, rgba(30, 41, 59, 0.9));
 }
 
 .step-card-header {
@@ -465,7 +465,7 @@ function handleRestart(e: Event, stepId: string) {
 .step-label {
   font-size: 13px;
   font-weight: 600;
-  color: #cbd5e1;
+  color: var(--text-primary, #cbd5e1);
 }
 
 .step-duration {
@@ -478,7 +478,7 @@ function handleRestart(e: Event, stepId: string) {
 
 .step-desc {
   font-size: 11px;
-  color: #64748b;
+  color: var(--text-muted, #64748b);
   line-height: 1.4;
   margin-bottom: 6px;
 }
@@ -488,7 +488,7 @@ function handleRestart(e: Event, stepId: string) {
   align-items: center;
   gap: 4px;
   font-size: 10px;
-  color: #94a3b8;
+  color: var(--text-secondary, #94a3b8);
   margin-bottom: 4px;
 }
 
@@ -619,7 +619,7 @@ function handleRestart(e: Event, stepId: string) {
 /* 详情面板 */
 .step-detail-panel {
   margin-top: 16px;
-  background: rgba(15, 23, 42, 0.8);
+  background: var(--bg-primary, rgba(15, 23, 42, 0.8));
   border: 1px solid rgba(99, 102, 241, 0.3);
   border-radius: 10px;
   overflow: hidden;
@@ -702,7 +702,7 @@ function handleRestart(e: Event, stepId: string) {
 
 .detail-summary {
   font-size: 12px;
-  color: #cbd5e1;
+  color: var(--text-primary, #cbd5e1);
   line-height: 1.7;
   padding: 10px 12px;
   background: rgba(255, 255, 255, 0.03);

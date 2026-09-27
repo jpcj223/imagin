@@ -58,6 +58,7 @@ class WorkflowGenerateRequest(BaseModel):
     rhythm_level: str = "medium"
     chapter_id: int | None = None
     context_selection: dict[str, list[int]] | None = None
+    manual_context_selection: dict[str, list[int]] | None = None
     generation_options: GenerationOptionsRequest | None = None
 
 
@@ -66,10 +67,11 @@ class WorkflowResumeRequest(BaseModel):
     run_id: str
     chapter_no: int
     outline_id: int | None = None
-    instruction: str = ""
-    rhythm_level: str = "medium"
+    instruction: str | None = None
+    rhythm_level: str | None = None
     restart_from_step_id: str | None = None  # 从指定步骤开始重跑（可选）
     context_selection: dict[str, list[int]] | None = None
+    manual_context_selection: dict[str, list[int]] | None = None
     generation_options: GenerationOptionsRequest | None = None
 
 
@@ -217,6 +219,7 @@ def workflow_generate(payload: WorkflowGenerateRequest) -> dict:
         instruction=payload.instruction,
         rhythm_level=payload.rhythm_level,
         context_selection=payload.context_selection,
+        manual_context_selection=payload.manual_context_selection,
         generation_options=payload.generation_options.model_dump() if payload.generation_options else None,
     )
 
@@ -265,6 +268,7 @@ def workflow_generate_stream(payload: WorkflowGenerateRequest) -> StreamingRespo
                 instruction=payload.instruction,
                 rhythm_level=payload.rhythm_level,
                 context_selection=payload.context_selection,
+                manual_context_selection=payload.manual_context_selection,
                 generation_options=payload.generation_options.model_dump() if payload.generation_options else None,
             ):
                 # 收集正文内容用于保存
@@ -362,6 +366,7 @@ def workflow_resume(payload: WorkflowResumeRequest) -> dict:
         instruction=payload.instruction,
         rhythm_level=payload.rhythm_level,
         context_selection=payload.context_selection,
+        manual_context_selection=payload.manual_context_selection,
         generation_options=payload.generation_options.model_dump() if payload.generation_options else None,
     )
     if result.get("status") == "completed":
@@ -424,6 +429,7 @@ def workflow_resume_stream(payload: WorkflowResumeRequest) -> StreamingResponse:
                 instruction=payload.instruction,
                 rhythm_level=payload.rhythm_level,
                 context_selection=payload.context_selection,
+                manual_context_selection=payload.manual_context_selection,
                 generation_options=payload.generation_options.model_dump() if payload.generation_options else None,
             ):
                 if event.get("type") == "delta" and event.get("step_id") == "writer":

@@ -37,18 +37,29 @@
 
     <!-- 默认只展示流程摘要；需要查看执行细节时再展开，给正文和资料选择留出空间。 -->
     <div v-if="pipelineSteps.length > 0" class="pipeline-section">
-      <button class="pipeline-summary" type="button" @click="pipelineExpanded = !pipelineExpanded">
-        <span class="pipeline-summary-title">{{ workflowTemplates.find(t => t.name === selectedWorkflow)?.label || '章节流程' }}</span>
-        <span
-          v-for="step in pipelineSteps"
-          :key="step.id"
-          class="pipeline-summary-step"
-          :class="step.status"
-        >
-          <i></i>{{ step.label }}
-        </span>
-        <span class="pipeline-summary-toggle">{{ pipelineExpanded ? '收起流程' : '查看流程详情' }}⌄</span>
-      </button>
+      <div class="pipeline-summary">
+        <button class="pipeline-summary-main" type="button" @click="pipelineExpanded = !pipelineExpanded">
+          <span class="pipeline-summary-title">{{ workflowTemplates.find(t => t.name === selectedWorkflow)?.label || '章节流程' }}</span>
+          <span
+            v-for="step in pipelineSteps"
+            :key="step.id"
+            class="pipeline-summary-step"
+            :class="step.status"
+          >
+            <i></i>{{ step.label }}
+          </span>
+          <span v-if="currentRunId" class="pipeline-summary-usage">
+            {{ formatTokenCount(workflowUsage.totalTokens) }} Token · {{ workflowUsage.llmCalls }} 次请求
+          </span>
+          <span class="pipeline-summary-toggle">{{ pipelineExpanded ? '收起流程' : '查看流程详情' }}⌄</span>
+        </button>
+        <button
+          v-if="currentRunId || workflowRunDetail"
+          class="pipeline-summary-details"
+          type="button"
+          @click="openWorkflowRunDetails"
+        >本次详情</button>
+      </div>
       <WorkflowPipeline
         v-if="pipelineExpanded"
         :steps="pipelineSteps"
@@ -145,9 +156,11 @@
               <!-- 工作流进度（生成中/生成后显示） -->
               <div v-if="showWorkflowPanel" class="form-block workflow-progress-block">
                 <div class="block-title">
-                  生成进度
-                  <span class="progress-percent">{{ Math.round(workflowProgress) }}%</span>
-                  <n-button text size="tiny" @click="showWorkflowPanel = false">收起</n-button>
+                  <span>生成进度 <span class="progress-percent">{{ Math.round(workflowProgress) }}%</span></span>
+                  <div class="workflow-panel-actions">
+                    <n-button v-if="currentRunId || workflowRunDetail" text size="tiny" @click="openWorkflowRunDetails">查看完整记录</n-button>
+                    <n-button text size="tiny" @click="showWorkflowPanel = false">收起</n-button>
+                  </div>
                 </div>
                 <WorkflowProgress
                   :steps="workflowSteps"
@@ -155,27 +168,19 @@
                   :overall-progress="workflowProgress"
                   @restart="handleRestartFromStep"
                 />
-                <div v-if="workflowRunDetail" class="workflow-run-metrics">
+                <div v-if="currentRunId || workflowRunDetail" class="workflow-run-metrics">
                   <div class="workflow-metrics-heading">
-                    <strong>本次运行记录</strong>
-                    <span>{{ workflowRunDetail.run.status === 'completed' ? '已完成' : workflowRunDetail.run.status }}</span>
+                    <strong>本次生成消耗</strong>
+                    <span>{{ workflowRunDetail?.run.status === 'completed' ? '已完成' : workflowRunDetail?.run.status || (loading ? '执行中' : '已暂停') }}</span>
                   </div>
                   <div class="workflow-metrics-grid">
                     <div><strong>{{ workflowUsage.llmCalls }}</strong><span>模型请求</span></div>
-                    <div><strong>{{ formatTokenCount(workflowUsage.totalTokens) }}</strong><span>已返回 Token</span></div>
-                    <div><strong>{{ workflowUsage.measuredSteps }} / {{ workflowUsage.steps.length }}</strong><span>返回用量的步骤</span></div>
+                    <div><strong>{{ formatTokenCount(workflowUsage.inputTokens) }}</strong><span>输入 Token</span></div>
+                    <div><strong>{{ formatTokenCount(workflowUsage.outputTokens) }}</strong><span>输出 Token</span></div>
+                    <div><strong>{{ formatTokenCount(workflowUsage.totalTokens) }}</strong><span>合计 Token</span></div>
                     <div><strong>{{ formatWorkflowDuration(workflowUsage.durationMs) }}</strong><span>步骤耗时</span></div>
                   </div>
-                  <div class="workflow-step-usage">
-                    <div v-for="step in workflowUsage.steps" :key="step.id" class="workflow-step-usage-row">
-                      <div class="workflow-step-main">
-                        <span>{{ step.step_name || step.step_id }} · {{ workflowStepSource(step) }}</span>
-                        <small>{{ workflowStepContextSummary(step) }}</small>
-                      </div>
-                      <span>{{ workflowStepTokenUsage(step) }}</span>
-                    </div>
-                  </div>
-                  <p class="workflow-usage-note">模型请求数包含失败请求；Token 只统计服务商实际返回的用量，未返回时不估算。</p>
+                  <p class="workflow-usage-note">统计包含失败请求与重跑；Token 仅累计服务商返回值。当前未配置模型单价，不估算费用。</p>
                 </div>
               </div>
 
@@ -608,6 +613,16 @@
       </template>
     </n-modal>
 
+    <WorkflowRunDetailsModal
+      v-model:visible="showWorkflowRunDetails"
+      :run-id="currentRunId"
+      :run-detail="workflowRunDetail"
+      :steps="workflowSteps"
+      :current-step-id="currentWorkflowStep"
+      :progress="workflowProgress"
+      :clock="workflowClock"
+    />
+
     <!-- 精修模式选择弹窗 -->
     <n-modal v-model:show="showPolishModal" preset="card" title="选择精修模式" style="width: 480px">
       <div class="polish-modes">
@@ -683,6 +698,7 @@ import ChapterAnalysisPanel from '@/components/chapter-generation/ChapterAnalysi
 import ChapterVersionsPanel from '@/components/chapter-generation/ChapterVersionsPanel.vue'
 import ChapterTracePanel from '@/components/chapter-generation/ChapterTracePanel.vue'
 import ChapterPreferencesPanel from '@/components/chapter-generation/ChapterPreferencesPanel.vue'
+import WorkflowRunDetailsModal from '@/components/chapter-generation/WorkflowRunDetailsModal.vue'
 import type { PipelineStep } from '@/components/WorkflowPipeline.vue'
 import type { MemoryLevel } from '@/components/MemoryLayer.vue'
 import AgentPluginCard from '@/components/AgentPluginCard.vue'
@@ -951,30 +967,57 @@ const currentWorkflowStep = ref<string | null>(null)
 const workflowProgress = ref(0)
 const currentRunId = ref<string | null>(null)
 const workflowRunDetail = ref<{ run: WorkflowRunRecord; steps: WorkflowStepRecord[] } | null>(null)
+const showWorkflowRunDetails = ref(false)
 const chapterVersionsPanel = ref<InstanceType<typeof ChapterVersionsPanel> | null>(null)
 const chapterTracePanel = ref<InstanceType<typeof ChapterTracePanel> | null>(null)
 const showWorkflowPanel = ref(false)  // 生成中显示步骤面板
 const isInterrupted = ref(false)  // 是否为中断状态
 const interruptedRunId = ref<string | null>(null)  // 中断的 run_id
 let replacePartialOnNextWriterDelta = false
+const workflowClock = ref(Date.now())
+let workflowClockTimer: ReturnType<typeof setInterval> | undefined
 
 const workflowUsage = computed(() => {
-  const steps = workflowRunDetail.value?.steps ?? []
-  const usageSteps = steps.filter((step) => {
-    const usage = step.token_usage
-    return usage && [usage.input_tokens, usage.output_tokens, usage.total_tokens].some((value) => typeof value === 'number')
-  })
-  const totalTokens = usageSteps.reduce((total, step) => {
-    const usage = step.token_usage
-    if (!usage) return total
-    return total + (usage.total_tokens ?? ((usage.input_tokens ?? 0) + (usage.output_tokens ?? 0)))
-  }, 0)
+  // 步骤重跑会保留多条尝试记录；汇总所有记录，避免只显示最后一次而低估消耗。
+  const attempts = workflowRunDetail.value?.steps ?? []
+  const latestRecords = new Map<string, WorkflowStepRecord>()
+  for (const record of attempts) latestRecords.set(record.step_id, record)
+  let inputTokens = 0
+  let outputTokens = 0
+  let totalTokens = 0
+  let llmCalls = 0
+  let durationMs = 0
+  const hasUsage = (usage?: WorkflowStepRecord['token_usage']) => Boolean(
+    usage && [usage.input_tokens, usage.output_tokens, usage.total_tokens].some(value => typeof value === 'number'),
+  )
+  const addUsage = (usage?: WorkflowStepRecord['token_usage']) => {
+    if (!hasUsage(usage)) return
+    inputTokens += usage?.input_tokens ?? 0
+    outputTokens += usage?.output_tokens ?? 0
+    totalTokens += usage?.total_tokens ?? (usage?.input_tokens ?? 0) + (usage?.output_tokens ?? 0)
+  }
+  for (const attempt of attempts) {
+    addUsage(attempt.token_usage)
+    llmCalls += attempt.llm_calls ?? 0
+    durationMs += attempt.duration_ms ?? 0
+  }
+
+  // SSE 到达与详情刷新之间可能有短暂间隔，只在最新记录尚无数值时补入实时值，避免重复累计。
+  for (const liveStep of workflowSteps.value) {
+    const latest = latestRecords.get(liveStep.id)
+    if (!hasUsage(latest?.token_usage)) addUsage(liveStep.tokenUsage ?? undefined)
+    if (!latest?.llm_calls) llmCalls += liveStep.llmCalls ?? 0
+    if (latest?.duration_ms == null) {
+      durationMs += liveStep.durationMs
+        ?? (liveStep.startedAt ? workflowClock.value - liveStep.startedAt : 0)
+    }
+  }
   return {
-    steps,
-    measuredSteps: usageSteps.length,
+    inputTokens,
+    outputTokens,
     totalTokens,
-    llmCalls: steps.reduce((total, step) => total + (step.llm_calls || 0), 0),
-    durationMs: steps.reduce((total, step) => total + (step.duration_ms || 0), 0),
+    llmCalls,
+    durationMs,
   }
 })
 
@@ -996,6 +1039,9 @@ const pipelineSteps = computed<PipelineStep[]>(() => {
     agentName: stepAgentMap[s.id]?.agent,
     skillCount: stepAgentMap[s.id]?.skills,
     canRestart: s.status === 'completed',
+    output: s.outputSummary || s.outputContent
+      ? { summary: s.outputSummary || s.outputContent?.slice(0, 320), raw: s.outputContent }
+      : undefined,
   }))
 })
 
@@ -2125,11 +2171,74 @@ async function refreshWorkflowRunDetail(runId: string) {
       step.status = record.status
       step.durationMs = record.duration_ms ?? undefined
       step.errorMessage = record.error_message || undefined
+      step.tokenUsage = record.token_usage
+      step.llmCalls = record.llm_calls
+      step.contextSummary = record.input_snapshot?.context_summary
+      step.effectiveSettings = record.input_snapshot?.effective_settings
+      const output = record.output_snapshot ?? {}
+      if (step.id === 'planner' && typeof output.content === 'string') step.outputContent = output.content
+      if (step.id === 'analyzer' && typeof output.summary === 'string') step.outputSummary = output.summary
     }
   } catch (error) {
     // 步骤 3：统计详情不可用不改变章节正文或生成状态，只在事件记录中提示。
     addEvent('运行统计读取失败', errorMessage(error), 'error')
   }
+}
+
+function applyWorkflowStepStart(stepId: string) {
+  const step = workflowSteps.value.find((item) => item.id === stepId)
+  if (!step) return
+  step.status = 'running'
+  step.startedAt = Date.now()
+  step.durationMs = undefined
+  step.errorMessage = undefined
+  step.tokenUsage = null
+  step.llmCalls = 0
+}
+
+function applyWorkflowStepContext(
+  stepId: string,
+  contextSummary: Record<string, unknown>,
+  effectiveSettings: Record<string, unknown>,
+) {
+  const step = workflowSteps.value.find((item) => item.id === stepId)
+  if (!step) return
+  step.contextSummary = contextSummary
+  step.effectiveSettings = effectiveSettings
+  step.llmCalls = effectiveSettings.model_called === true ? 1 : 0
+}
+
+function applyWorkflowStepDone(stepId: string, result: Record<string, unknown>) {
+  const step = workflowSteps.value.find((item) => item.id === stepId)
+  if (!step) return
+  step.status = 'completed'
+  step.durationMs = step.startedAt ? Date.now() - step.startedAt : undefined
+  step.startedAt = undefined
+  const tokenUsage = result.token_usage
+  step.tokenUsage = tokenUsage && typeof tokenUsage === 'object'
+    ? tokenUsage as { input_tokens?: number; output_tokens?: number; total_tokens?: number }
+    : null
+  step.llmCalls = typeof result.llm_calls === 'number' ? result.llm_calls : 0
+
+  const content = typeof result.content === 'string' ? result.content : ''
+  if (stepId === 'planner') step.outputContent = content
+  if (stepId === 'analyzer') {
+    step.outputSummary = String(result.summary || result.analysis_message || '')
+  } else if (stepId === 'writer' || stepId === 'polisher') {
+    step.outputSummary = content ? `正文已生成，${formatTokenCount(content.length)} 字。` : '步骤已完成。'
+  } else {
+    step.outputSummary = content.slice(0, 500)
+  }
+
+  const completedCount = workflowSteps.value.filter((item) => item.status === 'completed').length
+  workflowProgress.value = workflowSteps.value.length > 0
+    ? (completedCount / workflowSteps.value.length) * 100
+    : 0
+}
+
+function openWorkflowRunDetails() {
+  showWorkflowRunDetails.value = true
+  if (currentRunId.value) void refreshWorkflowRunDetail(currentRunId.value)
 }
 
 function formatTokenCount(value: number) {
@@ -2140,54 +2249,6 @@ function formatWorkflowDuration(value: number) {
   const seconds = Math.floor(value / 1000)
   if (seconds < 60) return `${seconds} 秒`
   return `${Math.floor(seconds / 60)} 分 ${seconds % 60} 秒`
-}
-
-function workflowStepSource(step: WorkflowStepRecord) {
-  const source = step.output_snapshot?.source
-  if (typeof source !== 'string') return '来源未记录'
-  return source.startsWith('fallback:') ? '兜底内容' : source === 'llm' ? '模型生成' : source
-}
-
-/** 仅格式化模型服务商真实返回的用量字段。 */
-function workflowStepTokenUsage(step: WorkflowStepRecord) {
-  const usage = step.token_usage
-  if (!usage || ![usage.input_tokens, usage.output_tokens, usage.total_tokens].some((value) => typeof value === 'number')) {
-    if (step.llm_calls) return '服务商未返回用量'
-    return workflowStepSource(step) === '兜底内容' ? '兜底 / 无 Token 记录' : '未调用模型'
-  }
-  const parts = [
-    usage.input_tokens != null ? `输入 ${formatTokenCount(usage.input_tokens)}` : '',
-    usage.output_tokens != null ? `输出 ${formatTokenCount(usage.output_tokens)}` : '',
-    usage.total_tokens != null ? `合计 ${formatTokenCount(usage.total_tokens)}` : '',
-  ].filter(Boolean)
-  return `${parts.join(' / ')} tokens`
-}
-
-/** 以名称概览本步骤实际读取的资料，不展示或持久化完整设定正文。 */
-function workflowStepContextSummary(step: WorkflowStepRecord) {
-  // 步骤 1：读取工作流保存的上下文摘要；旧运行没有摘要时说明该情况。
-  const summary = step.input_snapshot?.context_summary
-  if (!summary) return '资料清单未记录（旧运行）'
-
-  // 步骤 2：每类最多展示三个名称，超出时保留总数，控制记录区高度。
-  const previewNames = (label: string, values?: string[]) => {
-    if (!values?.length) return ''
-    const visible = values.slice(0, 3).join('、')
-    const remaining = values.length - Math.min(values.length, 3)
-    return `${label}：${visible}${remaining > 0 ? `等 ${values.length} 项` : ''}`
-  }
-  const items = [
-    summary.outline_title ? `大纲：${summary.outline_title}` : '',
-    previewNames('人物', summary.characters),
-    previewNames('组织', summary.organizations),
-    previewNames('世界观', summary.world_settings),
-    previewNames('伏笔', summary.foreshadowings),
-    summary.recent_chapters?.length ? `前情：第 ${summary.recent_chapters.join('、')} 章` : '',
-    previewNames('长期记忆', summary.long_term_memories),
-  ].filter(Boolean)
-
-  // 步骤 3：空清单也是有效结果，明确表明本步骤没有匹配到项目资料。
-  return items.length ? items.join(' · ') : '本步骤未匹配到项目资料'
 }
 
 // ---- v3 工作流生成 ----
@@ -2261,6 +2322,7 @@ async function generateV3(options: { showToast?: boolean } = {}) {
         instruction: form.instruction,
         rhythm_level: form.rhythm_level,
         context_selection: getContextSelectionPayload(),
+        manual_context_selection: getManualContextSelectionPayload(),
         template_name: selectedWorkflow.value,
         generation_options: {
           writer_variant: selectedWriterVariant.value,
@@ -2275,12 +2337,10 @@ async function generateV3(options: { showToast?: boolean } = {}) {
           if (runId) currentRunId.value = runId
           currentWorkflowStep.value = stepId
           if (stepId === 'writer') draft.value = ''
-          const step = workflowSteps.value.find(s => s.id === stepId)
-          if (step) {
-            step.status = 'running'
-          }
+          applyWorkflowStepStart(stepId)
           addEvent('步骤开始', label, 'running')
         },
+        onStepContext: applyWorkflowStepContext,
         onDelta: (stepId, content) => {
           // 只有写作步骤的 delta 写入正文
           if (stepId === 'writer') {
@@ -2288,14 +2348,8 @@ async function generateV3(options: { showToast?: boolean } = {}) {
           }
         },
         onStepDone: (stepId, result) => {
+          applyWorkflowStepDone(stepId, result)
           const step = workflowSteps.value.find(s => s.id === stepId)
-          if (step) {
-            step.status = 'completed'
-            step.durationMs = 0  // 后端可补充
-          }
-          // 更新进度
-          const completedCount = workflowSteps.value.filter(s => s.status === 'completed').length
-          workflowProgress.value = (completedCount / workflowSteps.value.length) * 100
           addEvent('步骤完成', step?.label ?? stepId, 'success')
 
           // 如果是分析步骤，保存分析结果
@@ -2395,21 +2449,16 @@ async function resumeGenerateV3() {
         run_id: interruptedRunId.value,
         chapter_no: form.chapter_no,
         outline_id: form.outline_id ?? undefined,
-        instruction: form.instruction,
-        rhythm_level: form.rhythm_level,
-        context_selection: getContextSelectionPayload(),
       },
       {
         onStepStart: (stepId, label, runId) => {
           if (runId) currentRunId.value = runId
           currentWorkflowStep.value = stepId
           if (stepId === 'writer' && !replacePartialOnNextWriterDelta) draft.value = ''
-          const step = workflowSteps.value.find(s => s.id === stepId)
-          if (step) {
-            step.status = 'running'
-          }
+          applyWorkflowStepStart(stepId)
           addEvent('步骤开始', label, 'running')
         },
+        onStepContext: applyWorkflowStepContext,
         onDelta: (stepId, content) => {
           if (stepId === 'writer') {
             if (replacePartialOnNextWriterDelta) {
@@ -2420,12 +2469,8 @@ async function resumeGenerateV3() {
           }
         },
         onStepDone: (stepId, stepResult) => {
+          applyWorkflowStepDone(stepId, stepResult)
           const step = workflowSteps.value.find(s => s.id === stepId)
-          if (step) {
-            step.status = 'completed'
-          }
-          const completedCount = workflowSteps.value.filter(s => s.status === 'completed').length
-          workflowProgress.value = (completedCount / workflowSteps.value.length) * 100
           addEvent('步骤完成', step?.label ?? stepId, 'success')
 
           if (stepId === 'analyzer' && stepResult) applyWorkflowAnalysisResult(stepResult)
@@ -2537,27 +2582,22 @@ async function handleRestartFromStep(stepId: string) {
         run_id: runId,
         chapter_no: form.chapter_no,
         outline_id: form.outline_id ?? undefined,
-        instruction: form.instruction,
-        rhythm_level: form.rhythm_level,
         restart_from_step_id: stepId,
-        context_selection: getContextSelectionPayload(),
       },
       {
         onStepStart: (sid, label, resumedRunId) => {
           if (resumedRunId) currentRunId.value = resumedRunId
           currentWorkflowStep.value = sid
           if (sid === 'writer') draft.value = ''
-          const s = workflowSteps.value.find(x => x.id === sid)
-          if (s) s.status = 'running'
+          applyWorkflowStepStart(sid)
         },
+        onStepContext: applyWorkflowStepContext,
         onDelta: (sid, content) => {
           if (sid === 'writer') draft.value += content
         },
         onStepDone: (sid, stepResult) => {
+          applyWorkflowStepDone(sid, stepResult)
           const s = workflowSteps.value.find(x => x.id === sid)
-          if (s) s.status = 'completed'
-          const completedCount = workflowSteps.value.filter(x => x.status === 'completed').length
-          workflowProgress.value = (completedCount / workflowSteps.value.length) * 100
           addEvent('步骤完成', s?.label ?? sid, 'success')
 
           if (sid === 'analyzer' && stepResult) applyWorkflowAnalysisResult(stepResult)
@@ -3403,7 +3443,12 @@ watch(
 )
 
 // 离开页面时尽量提交还没到防抖时间的修改，服务端仍是正文的正式存储位置。
+onMounted(() => {
+  workflowClockTimer = setInterval(() => { workflowClock.value = Date.now() }, 1000)
+})
+
 onBeforeUnmount(() => {
+  if (workflowClockTimer) clearInterval(workflowClockTimer)
   if (draftAutosaveTimer) clearTimeout(draftAutosaveTimer)
   if (draftFingerprint() !== persistedDraftFingerprint.value && !loading.value) {
     void persistChapterDraft(true)
@@ -3622,17 +3667,32 @@ watch(
   border-radius: 9px;
   background: var(--bg-card);
   color: var(--text-secondary);
-  cursor: pointer;
   text-align: left;
 }
 .pipeline-summary:hover { border-color: rgba(99, 102, 241, .45); }
+.pipeline-summary-main {
+  min-width: 0;
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0;
+  border: 0;
+  color: inherit;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+}
 .pipeline-summary-title { color: var(--text-primary); font-size: 12px; font-weight: 700; white-space: nowrap; }
 .pipeline-summary-step { display: inline-flex; align-items: center; gap: 5px; padding: 4px 7px; border-radius: 12px; background: rgba(255,255,255,.035); font-size: 11px; white-space: nowrap; }
 .pipeline-summary-step i { width: 7px; height: 7px; border-radius: 50%; background: #64748b; }
 .pipeline-summary-step.running i { background: #38bdf8; box-shadow: 0 0 7px #38bdf8; }
 .pipeline-summary-step.completed i { background: #34d399; }
 .pipeline-summary-step.failed i { background: #f87171; }
+.pipeline-summary-usage { color: #8f83ff; font-size: 11px; white-space: nowrap; }
 .pipeline-summary-toggle { margin-left: auto; color: #91a0b6; font-size: 11px; white-space: nowrap; }
+.pipeline-summary-details { flex-shrink: 0; padding: 5px 9px; border: 1px solid rgba(113, 104, 245, .35); border-radius: 7px; color: #b8b0ff; background: rgba(113, 104, 245, .1); font-size: 11px; cursor: pointer; }
+.pipeline-summary-details:hover { background: rgba(113, 104, 245, .2); }
 
 .workbench {
   flex: 1;
@@ -4330,11 +4390,12 @@ watch(
 
 /* ===== 工作流进度面板 ===== */
 .workflow-progress-block {
-  background: linear-gradient(135deg, #f8f9ff 0%, #f5f3ff 100%);
+  color: var(--text-primary);
+  background: var(--bg-secondary);
   border-radius: 12px;
   padding: 16px;
   margin-bottom: 16px;
-  border: 1px solid var(--n-border-color, #e0e7ff);
+  border: 1px solid var(--border);
 }
 
 .workflow-progress-block .block-title {
@@ -4343,6 +4404,8 @@ watch(
   align-items: center;
   margin-bottom: 12px;
 }
+
+.workflow-panel-actions { display: flex; align-items: center; gap: 8px; }
 
 .progress-percent {
   font-size: 14px;
@@ -4353,9 +4416,9 @@ watch(
 .workflow-run-metrics {
   margin-top: 16px;
   padding: 12px;
-  border: 1px solid var(--n-border-color, #e0e7ff);
+  border: 1px solid var(--border);
   border-radius: 10px;
-  background: rgba(255, 255, 255, 0.56);
+  background: rgba(9, 15, 27, 0.38);
 }
 
 .workflow-metrics-heading,
@@ -4380,7 +4443,7 @@ watch(
 
 .workflow-metrics-grid {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 8px;
 }
 
@@ -4391,7 +4454,7 @@ watch(
   min-width: 0;
   padding: 8px;
   border-radius: 8px;
-  background: rgba(99, 102, 241, 0.07);
+  background: rgba(99, 102, 241, 0.12);
 }
 
 .workflow-metrics-grid strong {

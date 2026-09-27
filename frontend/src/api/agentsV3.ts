@@ -86,6 +86,10 @@ export interface WorkflowStepInputSnapshot extends Record<string, unknown> {
     active_skills?: string[]
   }
   context_summary?: {
+    project_name?: string
+    project_settings?: { novel_type?: string; writing_style?: string; view_point?: string; pace_level?: number | string | null }
+    outline_segments?: Array<{ label: string; title: string; chapter_no?: number | null; summary?: string }>
+    sources?: Array<{ category: string; name: string; id?: number | null; source: string; summary?: string }>
     outline_title?: string
     characters?: string[]
     organizations?: string[]
@@ -93,6 +97,25 @@ export interface WorkflowStepInputSnapshot extends Record<string, unknown> {
     foreshadowings?: string[]
     recent_chapters?: string[]
     long_term_memories?: string[]
+  }
+  effective_settings?: {
+    agent_type?: string
+    variant?: string
+    rhythm_level?: string
+    model_called?: boolean
+    target_word_count?: number
+    agent_skills?: string[]
+    generation_skills?: string[]
+    model?: {
+      configured?: boolean
+      config_name?: string
+      model?: string
+      temperature?: number
+      max_tokens?: number
+      top_p?: number
+      frequency_penalty?: number
+      presence_penalty?: number
+    }
   }
 }
 
@@ -159,6 +182,7 @@ export interface LongTermMemoryItem {
 // 工作流流式事件类型
 export type WorkflowStreamEvent =
   | { type: 'step_start'; step_id: string; label: string; run_id?: string }
+  | { type: 'step_context'; step_id: string; context_summary: Record<string, unknown>; effective_settings: Record<string, unknown> }
   | { type: 'delta'; step_id: string; content: string }
   | { type: 'step_done'; step_id: string; result: Record<string, unknown> }
   | { type: 'workflow_done'; status: string; run_id: string; chapter_id?: number | null; version_id?: string | null; session_context: Record<string, unknown>; step_statuses: Record<string, string> }
@@ -167,6 +191,7 @@ export type WorkflowStreamEvent =
 
 export interface WorkflowStreamHandlers {
   onStepStart?: (stepId: string, label: string, runId?: string) => void
+  onStepContext?: (stepId: string, contextSummary: Record<string, unknown>, effectiveSettings: Record<string, unknown>) => void
   onDelta?: (stepId: string, content: string) => void
   onStepDone?: (stepId: string, result: Record<string, unknown>) => void
   onWorkflowDone?: (status: string, runId: string, sessionContext: Record<string, unknown>) => void
@@ -240,6 +265,9 @@ export async function workflowGenerateStream(
         case 'step_start':
           handlers.onStepStart?.(event.step_id, event.label, event.run_id)
           break
+        case 'step_context':
+          handlers.onStepContext?.(event.step_id, event.context_summary, event.effective_settings)
+          break
         case 'delta':
           handlers.onDelta?.(event.step_id, event.content)
           break
@@ -310,6 +338,7 @@ export async function workflowResumeStream(
     rhythm_level?: string
     restart_from_step_id?: string
     context_selection?: Record<string, number[]>
+    manual_context_selection?: Record<string, number[]>
   },
   handlers: WorkflowStreamHandlers,
 ): Promise<{ status: string; run_id: string; session_context: Record<string, unknown> } | null> {
@@ -339,6 +368,9 @@ export async function workflowResumeStream(
       switch (event.type) {
         case 'step_start':
           handlers.onStepStart?.(event.step_id, event.label, event.run_id)
+          break
+        case 'step_context':
+          handlers.onStepContext?.(event.step_id, event.context_summary, event.effective_settings)
           break
         case 'delta':
           handlers.onDelta?.(event.step_id, event.content)

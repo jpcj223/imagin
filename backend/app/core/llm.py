@@ -45,6 +45,28 @@ def get_active_model_config() -> dict[str, Any] | None:
     return dict(row) if row else None
 
 
+def get_effective_llm_settings(
+    overrides: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """返回本次模型调用的有效参数，不包含密钥、地址或代理信息。"""
+    config = get_active_model_config()
+    if not config:
+        return {"configured": False}
+
+    # 模型请求只允许调用参数覆盖温度和最大 Token；采样惩罚来自当前模型配置。
+    params = _build_payload(config, [], **(overrides or {}))
+    return {
+        "configured": True,
+        "config_name": config.get("name") or "",
+        "model": config.get("model") or "",
+        "temperature": params.get("temperature"),
+        "max_tokens": params.get("max_tokens"),
+        "top_p": params.get("top_p"),
+        "frequency_penalty": params.get("frequency_penalty"),
+        "presence_penalty": params.get("presence_penalty"),
+    }
+
+
 def _build_payload(config: dict[str, Any], messages: list[dict[str, str]],
                    temperature: float | None = None,
                    max_tokens: int | None = None,

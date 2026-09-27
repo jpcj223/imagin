@@ -7,6 +7,13 @@ export interface StepInfo {
   icon: string
   status: 'pending' | 'running' | 'completed' | 'failed' | 'skipped' | 'paused'
   durationMs?: number
+  startedAt?: number
+  tokenUsage?: { input_tokens?: number; output_tokens?: number; total_tokens?: number } | null
+  llmCalls?: number
+  outputSummary?: string
+  outputContent?: string
+  contextSummary?: Record<string, unknown>
+  effectiveSettings?: Record<string, unknown>
   errorMessage?: string
   canRestart?: boolean  // 是否可以从该步骤重跑
 }
@@ -166,7 +173,7 @@ function handleRestart(stepId: string) {
   justify-content: center;
   font-size: 16px;
   font-weight: 600;
-  background: var(--n-color, #fff);
+  background: var(--bg-secondary, var(--n-color, #1b2434));
   border: 2px solid var(--n-border-color, #e0e0e0);
   color: var(--n-text-color-3, #999);
   transition: all 0.3s ease;
@@ -233,7 +240,7 @@ function handleRestart(stepId: string) {
 .step-label {
   font-size: 14px;
   font-weight: 500;
-  color: var(--n-text-color, #333);
+  color: var(--text-primary, var(--n-text-color, #e5e7eb));
   margin-bottom: 4px;
 }
 
