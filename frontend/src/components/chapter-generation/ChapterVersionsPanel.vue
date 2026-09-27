@@ -50,7 +50,14 @@
           <n-button size="tiny" text @click="viewVersion(version)">查看正文</n-button>
           <n-button size="tiny" text :disabled="versions.length < 2" @click="openCompare(version.version_id)">比较</n-button>
           <n-button size="tiny" text @click="toggleFavorite(version)">{{ version.is_favorite ? '取消收藏' : '收藏' }}</n-button>
-          <n-button size="tiny" text type="warning" :disabled="version.is_current" @click="restore(version)">恢复为当前稿</n-button>
+          <n-button
+            size="tiny"
+            text
+            type="warning"
+            :loading="restoringVersionId === version.version_id"
+            :disabled="version.is_current || restoringVersionId !== null"
+            @click="restore(version)"
+          >恢复为当前稿</n-button>
         </div>
       </article>
     </div>
@@ -64,7 +71,13 @@
       <pre v-else class="content-preview">{{ previewContent }}</pre>
       <template #footer>
         <n-button @click="previewVisible = false">关闭</n-button>
-        <n-button v-if="previewVersion && !previewVersion.is_current" type="warning" @click="restore(previewVersion)">恢复为当前稿</n-button>
+        <n-button
+          v-if="previewVersion && !previewVersion.is_current"
+          type="warning"
+          :loading="restoringVersionId === previewVersion.version_id"
+          :disabled="restoringVersionId !== null"
+          @click="restore(previewVersion)"
+        >恢复为当前稿</n-button>
       </template>
     </n-modal>
 
@@ -118,6 +131,7 @@ const message = useMessage()
 const versions = ref<GenerationVersion[]>([])
 const loading = ref(false)
 const snapshotSaving = ref(false)
+const restoringVersionId = ref<string | null>(null)
 const previewVisible = ref(false)
 const previewLoading = ref(false)
 const previewVersion = ref<GenerationVersion | null>(null)
@@ -259,19 +273,22 @@ async function loadComparison() {
 
 async function toggleFavorite(version: GenerationVersion) {
   if (!props.chapterId) return
+  const chapterId = props.chapterId
   try {
-    await setVersionFavorite(props.chapterId, version.version_id, !version.is_favorite)
+    await setVersionFavorite(chapterId, version.version_id, !version.is_favorite)
+    if (props.chapterId !== chapterId) return
     await refresh()
     message.success(version.is_favorite ? '已取消收藏' : '已收藏版本')
   } catch (error) {
-    message.error(errorMessage(error, '收藏状态更新失败'))
+    if (props.chapterId === chapterId) message.error(errorMessage(error, '收藏状态更新失败'))
   }
 }
 
 async function restore(version: GenerationVersion) {
-  if (!props.chapterId || version.is_current) return
+  if (!props.chapterId || version.is_current || restoringVersionId.value !== null) return
   const chapterId = props.chapterId
   if (!window.confirm(`恢复 v${version.version_number} 会生成一条新的当前版本，并先保留编辑区现有正文。继续吗？`)) return
+  restoringVersionId.value = version.version_id
   try {
     if (!await props.persistDraft()) return
     const content = props.draft
@@ -280,12 +297,17 @@ async function restore(version: GenerationVersion) {
       throw new Error('正文在恢复期间发生变化，已取消恢复；当前稿保持不变。')
     }
     const result = await setCurrentVersion(chapterId, version.version_id, content)
+    // 切章后忽略旧章节的响应，避免把旧正文写入新章节的编辑器状态。
+    if (props.chapterId !== chapterId) return
     await refresh()
+    if (props.chapterId !== chapterId) return
     previewVisible.value = false
     emit('restore', { content: result.content, version: result.version ?? version })
     message.success('已恢复为新版本；原版本记录均已保留')
   } catch (error) {
-    message.error(errorMessage(error, '版本恢复失败'))
+    if (props.chapterId === chapterId) message.error(errorMessage(error, '版本恢复失败'))
+  } finally {
+    if (restoringVersionId.value === version.version_id) restoringVersionId.value = null
   }
 }
 
