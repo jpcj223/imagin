@@ -12,9 +12,10 @@
               size="large"
               :bordered="false"
             />
-            <span v-if="outlineTitle" class="outline-title" :title="outlineTitle">
-              大纲：{{ outlineTitle }}
-            </span>
+            <div v-if="outlineTitle" class="outline-context" :title="`${outlineLabel}：${outlineTitle}`">
+              <span class="outline-context-label">{{ outlineLabel }}</span>
+              <span class="outline-context-title">{{ outlineTitle }}</span>
+            </div>
           </div>
           <div class="toolbar-right">
             <div class="word-count">
@@ -78,6 +79,7 @@ type PolishSegment = { text: string; status: 'same' | 'changed' }
 
 const props = defineProps<{
   chapterTitle: string
+  outlineLabel: string
   outlineTitle: string
   draft: string
   wordCount: number
@@ -161,12 +163,21 @@ function captureSelection() {
 .title-input {
   font-size: 16px;
   font-weight: 600;
+  border-radius: 8px;
+  background: transparent !important;
+  transition: background-color 0.16s ease;
+}
+
+.title-input:hover,
+.title-input:focus-within {
+  background: rgba(255, 255, 255, 0.045) !important;
 }
 
 .title-input :deep(input) {
   font-size: 16px !important;
   font-weight: 600 !important;
   color: var(--text-primary) !important;
+  background: transparent !important;
 }
 
 .toolbar-right {
@@ -205,15 +216,31 @@ function captureSelection() {
   color: #6ee7b7;
 }
 
-.outline-title {
-  display: block;
+.outline-context {
+  display: flex;
+  align-items: center;
+  gap: 7px;
   overflow: hidden;
-  padding: 0 10px 0 12px;
-  color: var(--text-muted);
-  font-size: 12px;
-  line-height: 18px;
-  text-overflow: ellipsis;
+  padding: 2px 10px 0 12px;
+  line-height: 20px;
   white-space: nowrap;
+}
+
+.outline-context-label {
+  flex: none;
+  padding: 1px 6px;
+  border: 1px solid rgba(99, 102, 241, 0.2);
+  border-radius: 5px;
+  color: #a5b4fc;
+  background: rgba(99, 102, 241, 0.1);
+  font-size: 11px;
+}
+
+.outline-context-title {
+  overflow: hidden;
+  color: var(--text-secondary);
+  font-size: 13px;
+  text-overflow: ellipsis;
 }
 
 .save-status.saving {
@@ -232,14 +259,19 @@ function captureSelection() {
 
 @media (max-width: 760px) {
   .editor-toolbar {
-    align-items: flex-start;
+    align-items: center;
+    flex-wrap: wrap;
     gap: 6px;
     padding: 10px 12px;
   }
 
+  .toolbar-left {
+    flex: 1 1 220px;
+  }
+
   .toolbar-right {
     gap: 6px;
-    padding-top: 8px;
+    margin-left: auto;
   }
 
   .save-status {

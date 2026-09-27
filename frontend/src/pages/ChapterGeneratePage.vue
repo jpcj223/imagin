@@ -91,6 +91,7 @@
       <ChapterEditorPanel
         v-model:chapter-title="chapterTitle"
         v-model:draft="draft"
+        :outline-label="selectedOutline?.node_type === 'volume' ? '所属卷' : '章节大纲'"
         :outline-title="selectedOutline?.title || ''"
         :word-count="wordCount"
         :chapter-id="chapterId"
