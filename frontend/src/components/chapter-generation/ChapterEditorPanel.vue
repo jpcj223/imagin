@@ -327,25 +327,15 @@ function captureSelection() {
   padding: 16px;
   overflow-x: hidden;
   overflow-y: auto;
-  scrollbar-width: thin;
-  scrollbar-color: rgba(255, 255, 255, 0.18) transparent;
+  /* 外层只负责滚动承载内容，不显示自己的滚动条；保留正文框右侧的滚动条。 */
+  scrollbar-width: none;
+  -ms-overflow-style: none;
 }
 
 .editor-container::-webkit-scrollbar {
-  width: 5px;
-}
-
-.editor-container::-webkit-scrollbar-track {
-  background: transparent;
-}
-
-.editor-container::-webkit-scrollbar-thumb {
-  border-radius: 4px;
-  background: rgba(255, 255, 255, 0.18);
-}
-
-.editor-container::-webkit-scrollbar-thumb:hover {
-  background: rgba(255, 255, 255, 0.3);
+  display: none;
+  width: 0;
+  height: 0;
 }
 
 .chapter-textarea {
