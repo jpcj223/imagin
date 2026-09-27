@@ -327,23 +327,12 @@ function captureSelection() {
   padding: 16px;
   overflow-x: hidden;
   overflow-y: auto;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
 }
 
 .editor-container::-webkit-scrollbar {
-  width: 6px;
-}
-
-.editor-container::-webkit-scrollbar-track {
-  background: transparent;
-}
-
-.editor-container::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.12);
-  border-radius: 3px;
-}
-
-.editor-container::-webkit-scrollbar-thumb:hover {
-  background: rgba(255, 255, 255, 0.2);
+  display: none;
 }
 
 .chapter-textarea {
