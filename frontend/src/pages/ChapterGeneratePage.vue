@@ -91,8 +91,10 @@
       <ChapterEditorPanel
         v-model:chapter-title="chapterTitle"
         v-model:draft="draft"
-        :outline-label="selectedOutline?.node_type === 'volume' ? '所属卷' : '章节大纲'"
-        :outline-title="selectedOutline?.title || ''"
+        :chapter-no="form.chapter_no"
+        outline-label="所属卷"
+        :outline-title="editorVolumeOutline?.title || ''"
+        :chapter-outline-title="editorChapterOutline?.title || ''"
         :word-count="wordCount"
         :chapter-id="chapterId"
         :editor-font-size="userPrefs.editor_font_size"
@@ -1264,6 +1266,23 @@ const selectedVolumeOutline = computed(() => {
   const volumeId = selectedOutline.value?.volume_id
   if (volumeId === null || volumeId === undefined) return null
   return outlines.value.find((item) => item.id === volumeId && item.node_type === 'volume') ?? null
+})
+const editorVolumeOutline = computed(() =>
+  selectedOutline.value?.node_type === 'volume' ? selectedOutline.value : selectedVolumeOutline.value
+)
+const editorChapterOutline = computed(() => {
+  if (selectedOutline.value?.node_type === 'chapter') return selectedOutline.value
+  const nextTarget = nextChapterTarget.value
+  if (nextTarget?.available && nextTarget.chapter_no === form.chapter_no) {
+    const targetOutline = outlines.value.find((item) => item.id === nextTarget.outline_id)
+    if (targetOutline?.node_type === 'chapter') return targetOutline
+    if (nextTarget.outline_title) return { title: nextTarget.outline_title }
+  }
+  return outlines.value.find((item) =>
+    item.node_type === 'chapter'
+    && item.chapter_no === form.chapter_no
+    && (selectedOutline.value?.node_type !== 'volume' || item.volume_id === selectedOutline.value.id)
+  ) ?? null
 })
 const selectedChapter = computed(
   () => chapters.value.find((item) => item.id === chapterId.value) ?? null

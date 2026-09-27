@@ -4,17 +4,20 @@
         <!-- 编辑器工具栏 -->
         <div class="editor-toolbar">
           <div class="toolbar-left">
-            <n-input
-              v-model:value="chapterTitle"
-              class="title-input"
-              aria-label="正文标题"
-              placeholder="输入正文标题..."
-              size="large"
-              :bordered="false"
-            />
             <div v-if="outlineTitle" class="outline-context" :title="`${outlineLabel}：${outlineTitle}`">
               <span class="outline-context-label">{{ outlineLabel }}</span>
               <span class="outline-context-title">{{ outlineTitle }}</span>
+            </div>
+            <div class="title-row">
+              <span class="chapter-number">第{{ chapterNo }}章</span>
+              <n-input
+                v-model:value="chapterTitle"
+                class="title-input"
+                aria-label="章节标题"
+                :placeholder="chapterOutlineTitle || '输入章节标题...'"
+                size="large"
+                :bordered="false"
+              />
             </div>
           </div>
           <div class="toolbar-right">
@@ -79,8 +82,10 @@ type PolishSegment = { text: string; status: 'same' | 'changed' }
 
 const props = defineProps<{
   chapterTitle: string
+  chapterNo: number
   outlineLabel: string
   outlineTitle: string
+  chapterOutlineTitle: string
   draft: string
   wordCount: number
   chapterId: number | null
@@ -100,7 +105,8 @@ const editorInput = ref<{ $el?: HTMLElement } | null>(null)
 
 // 步骤 1：将编辑值作为受控输入回传页面，正文保存和生成仍由工作台统一协调。
 const chapterTitle = computed({
-  get: () => props.chapterTitle,
+  // 章节号由标题栏单独展示，避免把自动生成的“第 N 章”重复显示成正文标题。
+  get: () => props.chapterTitle.trim() === `第${props.chapterNo}章` ? '' : props.chapterTitle,
   set: (value: string) => emit('update:chapterTitle', value),
 })
 const draft = computed({
@@ -161,6 +167,8 @@ function captureSelection() {
 }
 
 .title-input {
+  flex: 1;
+  min-width: 0;
   font-size: 16px;
   font-weight: 600;
   border-radius: 8px;
@@ -174,10 +182,31 @@ function captureSelection() {
 }
 
 .title-input :deep(input) {
-  font-size: 16px !important;
+  font-size: 20px !important;
   font-weight: 600 !important;
   color: var(--text-primary) !important;
   background: transparent !important;
+}
+
+.title-input :deep(input::placeholder) {
+  color: var(--text-secondary) !important;
+  opacity: 0.8;
+}
+
+.title-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.chapter-number {
+  flex: none;
+  padding-left: 10px;
+  color: var(--text-primary);
+  font-size: 20px;
+  font-weight: 700;
+  white-space: nowrap;
 }
 
 .toolbar-right {
@@ -267,6 +296,10 @@ function captureSelection() {
 
   .toolbar-left {
     flex: 1 1 220px;
+  }
+
+  .chapter-number {
+    font-size: 18px;
   }
 
   .toolbar-right {
