@@ -178,7 +178,7 @@
               <div class="form-block">
                 <div class="block-title">章节设置</div>
                 <n-form label-placement="top" :show-label="true">
-                  <div class="form-row">
+                  <div class="form-row chapter-target-row">
                     <n-form-item label="本次生成目标" class="generation-target-field">
                       <div class="generation-target-card" :class="{ unavailable: !nextChapterTarget?.available }">
                         <strong v-if="nextChapterTargetLoading">正在读取大纲顺序…</strong>
@@ -192,7 +192,7 @@
                         <small v-else>{{ nextChapterTarget?.reason || '刷新资料后重试' }}</small>
                       </div>
                     </n-form-item>
-                    <n-form-item label="节奏等级">
+                    <n-form-item label="节奏等级" class="rhythm-field">
                       <n-select v-model:value="form.rhythm_level" :options="rhythmOptions" />
                     </n-form-item>
                   </div>
@@ -204,17 +204,35 @@
                       placeholder="选择大纲后会自动带入，也可以手动修改"
                     />
                   </n-form-item>
-                  <n-form-item label="本章重点伏笔">
-                    <n-select
-                      v-model:value="selectedForeshadowingIds"
-                      multiple
-                      filterable
-                      tag
-                      :options="foreshadowingOptions"
-                      placeholder="选择本章要埋设或回收的伏笔"
-                    />
-                    <div class="field-hint">
-                      选中的伏笔会优先进入上下文包，帮助 AI 在本章精准推进剧情线。
+                  <n-form-item label="本章重点伏笔" class="foreshadow-field">
+                    <div class="foreshadow-control">
+                      <n-select
+                        v-model:value="selectedForeshadowingIds"
+                        multiple
+                        filterable
+                        clearable
+                        :max-tag-count="1"
+                        :options="foreshadowingOptions"
+                        class="foreshadow-select"
+                        placeholder="搜索并选择本章要处理的伏笔"
+                      />
+                      <div v-if="selectedForeshadowings.length" class="selected-foreshadowings" aria-label="已选重点伏笔">
+                        <button
+                          v-for="item in selectedForeshadowings"
+                          :key="item.id"
+                          type="button"
+                          class="selected-foreshadowing-chip"
+                          :title="`${item.keyword} · 点击移除`"
+                          :aria-label="`移除重点伏笔：${item.keyword}`"
+                          @click="removeSelectedForeshadowing(item.id)"
+                        >
+                          <span>{{ item.keyword }}</span>
+                          <span class="chip-remove" aria-hidden="true">×</span>
+                        </button>
+                      </div>
+                      <div class="field-hint">
+                        系统会按章节大纲推荐相关伏笔；手动选中的伏笔会优先进入本次生成上下文。
+                      </div>
                     </div>
                   </n-form-item>
                 </n-form>
@@ -1224,6 +1242,15 @@ const foreshadowingOptions = computed(() =>
     value: item.id,
   }))
 )
+const selectedForeshadowings = computed(() =>
+  selectedForeshadowingIds.value
+    .map((id) => foreshadowings.value.find((item) => item.id === id))
+    .filter((item): item is ForeshadowingItem => Boolean(item))
+)
+
+function removeSelectedForeshadowing(id: number) {
+  selectedForeshadowingIds.value = selectedForeshadowingIds.value.filter((selectedId) => selectedId !== id)
+}
 
 // ---- 计算属性 ----
 const project = computed(() => projectStore.currentProject)
@@ -3388,6 +3415,7 @@ watch(
   color: var(--text-primary);
   display: flex;
   align-items: center;
+  justify-content: flex-start;
   gap: 6px;
 }
 
@@ -3598,8 +3626,25 @@ watch(
 }
 
 .form-row {
-  display: flex;
-  gap: 10px;
+  display: grid;
+  grid-template-columns: minmax(0, 1.35fr) minmax(112px, 0.75fr);
+  align-items: end;
+  gap: 12px;
+}
+
+.chapter-target-row :deep(.n-form-item) {
+  min-width: 0;
+  margin-bottom: 0;
+}
+
+.chapter-target-row :deep(.n-form-item-blank),
+.chapter-target-row :deep(.n-form-item-blank > *) {
+  width: 100%;
+  min-width: 0;
+}
+
+.rhythm-field :deep(.n-select) {
+  width: 100%;
 }
 
 .generation-target-field {
@@ -3622,23 +3667,90 @@ watch(
 }
 
 .generation-target-card strong {
+  display: -webkit-box;
   overflow: hidden;
   color: var(--text-primary);
   font-size: 12px;
   font-weight: 600;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
 }
 
 .generation-target-card small {
   color: var(--text-muted);
   font-size: 10px;
   line-height: 1.4;
+  overflow-wrap: anywhere;
 }
 
 .generation-target-card.unavailable {
   border-color: rgba(245, 158, 11, 0.3);
   background: rgba(245, 158, 11, 0.06);
+}
+
+.foreshadow-field :deep(.n-form-item-blank) {
+  display: block;
+  min-width: 0;
+}
+
+.foreshadow-control {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 100%;
+  min-width: 0;
+}
+
+.foreshadow-select {
+  width: 100%;
+  min-width: 0;
+}
+
+.selected-foreshadowings {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-width: 0;
+}
+
+.selected-foreshadowing-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  max-width: 100%;
+  min-width: 0;
+  padding: 4px 8px;
+  border: 1px solid rgba(99, 102, 241, 0.28);
+  border-radius: 7px;
+  background: rgba(99, 102, 241, 0.1);
+  color: #c7d2fe;
+  font: inherit;
+  font-size: 11px;
+  line-height: 1.4;
+  cursor: pointer;
+}
+
+.selected-foreshadowing-chip > span:first-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.selected-foreshadowing-chip:hover {
+  border-color: rgba(129, 140, 248, 0.65);
+  background: rgba(99, 102, 241, 0.18);
+}
+
+.chip-remove {
+  flex: 0 0 auto;
+  color: #9ca3af;
+  font-size: 14px;
+}
+
+.selected-foreshadowing-chip:hover .chip-remove {
+  color: #fff;
 }
 
 /* 生成按钮组 */
@@ -4226,6 +4338,29 @@ watch(
 }
 
 @media (max-width: 760px) {
+  .page-header {
+    align-items: flex-start;
+    gap: 12px;
+  }
+
+  .header-right {
+    gap: 8px;
+  }
+
+  .header-stats {
+    gap: 8px;
+    padding: 6px 9px;
+  }
+
+  .header-stats .stat {
+    min-width: 42px;
+  }
+
+  .form-row {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 4px;
+  }
+
   .generation-controls-grid,
   .workflow-metrics-grid {
     grid-template-columns: 1fr;
