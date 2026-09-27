@@ -7,10 +7,14 @@
             <n-input
               v-model:value="chapterTitle"
               class="title-input"
-              placeholder="章节标题..."
+              aria-label="正文标题"
+              placeholder="输入正文标题..."
               size="large"
               :bordered="false"
             />
+            <span v-if="outlineTitle" class="outline-title" :title="outlineTitle">
+              大纲：{{ outlineTitle }}
+            </span>
           </div>
           <div class="toolbar-right">
             <div class="word-count">
@@ -74,6 +78,7 @@ type PolishSegment = { text: string; status: 'same' | 'changed' }
 
 const props = defineProps<{
   chapterTitle: string
+  outlineTitle: string
   draft: string
   wordCount: number
   chapterId: number | null
@@ -139,7 +144,8 @@ function captureSelection() {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 12px 18px;
+  gap: 16px;
+  padding: 12px 18px 10px;
   border-bottom: 1px solid var(--border);
   flex-shrink: 0;
 }
@@ -147,6 +153,9 @@ function captureSelection() {
 .toolbar-left {
   flex: 1;
   min-width: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
 }
 
 .title-input {
@@ -196,6 +205,17 @@ function captureSelection() {
   color: #6ee7b7;
 }
 
+.outline-title {
+  display: block;
+  overflow: hidden;
+  padding: 0 10px 0 12px;
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 18px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .save-status.saving {
   color: #93c5fd;
 }
@@ -207,6 +227,30 @@ function captureSelection() {
 .chapter-id {
   font-size: 11px;
   color: var(--text-muted);
+  white-space: nowrap;
+}
+
+@media (max-width: 760px) {
+  .editor-toolbar {
+    align-items: flex-start;
+    gap: 6px;
+    padding: 10px 12px;
+  }
+
+  .toolbar-right {
+    gap: 6px;
+    padding-top: 8px;
+  }
+
+  .save-status {
+    font-size: 11px;
+    white-space: nowrap;
+  }
+
+  .chapter-id,
+  .toolbar-right :deep(.n-divider) {
+    display: none;
+  }
 }
 
 .editor-container {

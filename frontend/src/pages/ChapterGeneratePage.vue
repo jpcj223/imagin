@@ -91,6 +91,7 @@
       <ChapterEditorPanel
         v-model:chapter-title="chapterTitle"
         v-model:draft="draft"
+        :outline-title="selectedOutline?.title || ''"
         :word-count="wordCount"
         :chapter-id="chapterId"
         :editor-font-size="userPrefs.editor_font_size"
