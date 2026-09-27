@@ -91,7 +91,7 @@
       <ChapterEditorPanel
         v-model:chapter-title="chapterTitle"
         v-model:draft="draft"
-        :chapter-no="form.chapter_no"
+        :chapter-no="editorChapterNo"
         outline-label="所属卷"
         :outline-title="editorVolumeOutline?.title || ''"
         :chapter-outline-title="editorChapterOutline?.title || ''"
@@ -1270,23 +1270,36 @@ const selectedVolumeOutline = computed(() => {
 const editorVolumeOutline = computed(() =>
   selectedOutline.value?.node_type === 'volume' ? selectedOutline.value : selectedVolumeOutline.value
 )
+const selectedChapter = computed(
+  () => chapters.value.find((item) => item.id === chapterId.value) ?? null
+)
+const editorChapterNo = computed(() => {
+  const titleNumber = Number(chapterTitle.value.match(/^第\s*(\d+)\s*章$/)?.[1])
+  const candidates = [
+    selectedChapter.value?.chapter_no,
+    selectedOutline.value?.node_type === 'chapter' ? selectedOutline.value.chapter_no : undefined,
+    titleNumber,
+    nextChapterTarget.value?.chapter_no,
+    form.chapter_no,
+  ]
+  return candidates.find((value): value is number =>
+    typeof value === 'number' && Number.isInteger(value) && value > 0
+  ) ?? 1
+})
 const editorChapterOutline = computed(() => {
   if (selectedOutline.value?.node_type === 'chapter') return selectedOutline.value
   const nextTarget = nextChapterTarget.value
-  if (nextTarget?.available && nextTarget.chapter_no === form.chapter_no) {
+  if (nextTarget?.available && nextTarget.chapter_no === editorChapterNo.value) {
     const targetOutline = outlines.value.find((item) => item.id === nextTarget.outline_id)
     if (targetOutline?.node_type === 'chapter') return targetOutline
     if (nextTarget.outline_title) return { title: nextTarget.outline_title }
   }
   return outlines.value.find((item) =>
     item.node_type === 'chapter'
-    && item.chapter_no === form.chapter_no
+    && item.chapter_no === editorChapterNo.value
     && (selectedOutline.value?.node_type !== 'volume' || item.volume_id === selectedOutline.value.id)
   ) ?? null
 })
-const selectedChapter = computed(
-  () => chapters.value.find((item) => item.id === chapterId.value) ?? null
-)
 const wordCount = computed(() => draft.value.replace(/\s/g, '').length)
 
 const polishSegments = computed(() => {
@@ -1733,7 +1746,16 @@ function hydrateInstructionFromSelection() {
 
 function applyOutlineToForm(item: OutlineItem, options: { forceInstruction?: boolean } = {}) {
   form.outline_id = item.id
-  form.chapter_no = item.chapter_no ?? item.sort_index
+  if (item.node_type === 'volume') {
+    const firstChapter = outlines.value
+      .filter((outline) => outline.node_type === 'chapter' && outline.volume_id === item.id)
+      .sort((left, right) => (left.chapter_no ?? left.sort_index) - (right.chapter_no ?? right.sort_index))[0]
+    form.chapter_no = firstChapter
+      ? Math.max(1, firstChapter.chapter_no ?? firstChapter.sort_index)
+      : Math.max(1, form.chapter_no || 1)
+  } else {
+    form.chapter_no = Math.max(1, item.chapter_no ?? item.sort_index)
+  }
   if (options.forceInstruction || !form.instruction.trim()) {
     form.instruction = item.description
   }
@@ -1845,7 +1867,7 @@ async function selectChapter(item: ChapterItem, options: { recordEvent?: boolean
   const relatedOutline = findOutlineForChapter(item)
   setActiveChapterId(item.id)
   form.outline_id = relatedOutline?.id ?? item.outline_id
-  form.chapter_no = item.chapter_no
+  form.chapter_no = Number.isInteger(item.chapter_no) && item.chapter_no > 0 ? item.chapter_no : 1
   form.instruction = relatedOutline?.description || form.instruction || item.title
   draft.value = item.content
   chapterTitle.value = item.title

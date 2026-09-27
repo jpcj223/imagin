@@ -106,7 +106,10 @@ const editorInput = ref<{ $el?: HTMLElement } | null>(null)
 // 步骤 1：将编辑值作为受控输入回传页面，正文保存和生成仍由工作台统一协调。
 const chapterTitle = computed({
   // 章节号由标题栏单独展示，避免把自动生成的“第 N 章”重复显示成正文标题。
-  get: () => props.chapterTitle.trim() === `第${props.chapterNo}章` ? '' : props.chapterTitle,
+  get: () => {
+    const defaultNumber = props.chapterTitle.trim().match(/^第\s*(\d+)\s*章$/)?.[1]
+    return Number(defaultNumber) === props.chapterNo ? '' : props.chapterTitle
+  },
   set: (value: string) => emit('update:chapterTitle', value),
 })
 const draft = computed({
