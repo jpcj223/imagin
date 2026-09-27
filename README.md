@@ -120,10 +120,9 @@ flowchart LR
 ```powershell
 cd backend
 python -m venv .venv
-.\.venv\Scripts\Activate.ps1
-python -m pip install --upgrade pip
-pip install -r requirements.txt
-uvicorn app.main:app --reload --host 127.0.0.1 --port 8001
+.\.venv\Scripts\python.exe -m pip install --upgrade pip
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+.\.venv\Scripts\python.exe -m uvicorn app.main:app --reload --host 127.0.0.1 --port 8001
 ```
 
 后端启动时会自动运行核心库和业务库迁移。保持该终端运行。
@@ -138,7 +137,7 @@ npm run dev
 
 保持该终端运行，然后访问 <http://127.0.0.1:5173>。首次使用进入“API 配置”，填写模型服务地址、模型名称和 API Key。
 
-日常再次启动时，在后端终端进入 `backend/` 并激活 `.venv`，运行 `uvicorn app.main:app --reload --host 127.0.0.1 --port 8001`；在前端终端进入 `frontend/`，运行 `npm run dev`。依赖不需要重复安装。
+日常再次启动时，在后端终端进入 `backend/`，运行 `.\.venv\Scripts\python.exe -m uvicorn app.main:app --reload --host 127.0.0.1 --port 8001`；在前端终端进入 `frontend/`，运行 `npm run dev`。用虚拟环境中的 Python 启动 Uvicorn，可避免误用系统 Python。依赖不需要重复安装。
 
 ### 桌面端使用
 
