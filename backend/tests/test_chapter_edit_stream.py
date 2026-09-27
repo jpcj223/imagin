@@ -17,6 +17,13 @@ class ChapterEditStreamTests(unittest.TestCase):
             "organizations": [],
             "foreshadowings": [],
             "recent_summaries": [{"summary": "刚发现旧航道标记"}],
+            "long_term_memories": [{
+                "memory_type": "world_rule",
+                "title": "潮痕规律",
+                "content_summary": "潮痕只能保留短时回声。",
+                "source_type": "chapter_analysis",
+                "source_chapter_no": 1,
+            }],
         }
         conversation = [
             {"role": "user", "content": f"历史轮次{i}"}
@@ -44,6 +51,13 @@ class ChapterEditStreamTests(unittest.TestCase):
         self.assertEqual([turn["content"] for turn in payload["对话上下文"]], [f"历史轮次{i}" for i in range(2, 10)])
         self.assertEqual(payload["相关设定"]["本章大纲"]["标题"], "沉城")
         self.assertEqual(payload["相关设定"]["前情摘要"], ["刚发现旧航道标记"])
+        self.assertEqual(payload["相关设定"]["已确认长期记忆"], [{
+            "类别": "world_rule",
+            "标题": "潮痕规律",
+            "内容": "潮痕只能保留短时回声。",
+            "来源": "chapter_analysis",
+            "来源章节": 1,
+        }])
         build_context.assert_called_once_with(1, 3, 9, query="延续上文，但保持设定一致", selection=selection)
 
     def test_stream_returns_only_status_then_structured_candidate(self):
@@ -64,6 +78,8 @@ class ChapterEditStreamTests(unittest.TestCase):
             events = list(propose_chapter_edit_stream())
 
         self.assertEqual(events[0]["type"], "stage")
+        self.assertIn("相关记忆", events[0]["stage"])
+        self.assertIn("本会话历史", events[0]["stage"])
         self.assertTrue(all("content" not in event for event in events[:-1]))
         self.assertEqual(events[-1]["type"], "done")
         self.assertEqual(events[-1]["candidate_text"], "更紧凑的正文")

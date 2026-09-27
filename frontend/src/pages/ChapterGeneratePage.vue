@@ -2905,7 +2905,7 @@ async function sendChapterDialogue(instruction: string) {
   const requestedContent = draft.value
   const requestedTitle = chapterTitle.value
   dialogueBusy.value = true
-  dialogueBusyStatus.value = '正在整理本章正文与相关设定…'
+  dialogueBusyStatus.value = '正在整理正文、卷纲/章纲、前情摘要、相关记忆与本会话历史…'
   dialogueAbortController = new AbortController()
   const userMessage: ChapterDialogueMessage = {
     id: `user-${Date.now()}`,

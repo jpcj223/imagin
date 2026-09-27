@@ -675,6 +675,7 @@ class MemoryRetriever:
             source_chapter_no = chapter_numbers.get(int(match.group(1))) if match else None
             if chapter_no is not None and source_chapter_no is not None and source_chapter_no >= chapter_no:
                 continue
+            item["source_chapter_no"] = source_chapter_no
 
             # 步骤 3：先按记忆重要度排序，再将与本章大纲/补充要求直接相关的条目提到前面。
             title = str(item.get("title") or "")

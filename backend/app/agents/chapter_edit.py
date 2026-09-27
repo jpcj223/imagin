@@ -15,6 +15,7 @@ def _compact_context(context: dict[str, Any]) -> dict[str, Any]:
     outline = context.get("outline") or {}
     volume_outline = context.get("volume_outline") or {}
     world = context.get("world") or {}
+    long_term_memories = context.get("long_term_memories") or []
     return {
         "本卷大纲": format_volume_outline(volume_outline),
         "本章大纲": {
@@ -37,6 +38,17 @@ def _compact_context(context: dict[str, Any]) -> dict[str, Any]:
         "前情摘要": [
             str(item.get("summary", ""))[:500]
             for item in context.get("recent_summaries", [])[:3]
+        ],
+        "已确认长期记忆": [
+            {
+                "类别": str(item.get("memory_type") or "一般记忆")[:40],
+                "标题": str(item.get("title") or "未命名记忆")[:120],
+                "内容": str(item.get("content_summary") or item.get("content") or "")[:360],
+                "来源": str(item.get("source_type") or "未标注")[:40],
+                "来源章节": item.get("source_chapter_no"),
+            }
+            for item in long_term_memories[:6]
+            if isinstance(item, dict) and (item.get("title") or item.get("content_summary") or item.get("content"))
         ],
     }
 
@@ -190,7 +202,7 @@ def propose_chapter_edit_stream(**kwargs: Any):
     messages, scope, selection_start, selection_end = _prepare_chapter_edit_messages(**kwargs)
     fragments: list[str] = []
     usage = None
-    yield {"type": "stage", "stage": "正在分析正文与选中的相关设定"}
+    yield {"type": "stage", "stage": "正在整理正文、卷纲/章纲、前情摘要、相关记忆与本会话历史"}
     model_stream = iter(chat_completion_stream_with_usage(messages, temperature=0.65, max_tokens=12000))
     try:
         for event in model_stream:
