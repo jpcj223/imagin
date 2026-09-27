@@ -1,7 +1,9 @@
 """章节分析正文来源和变化提案审核的回归测试。"""
 from __future__ import annotations
 
+import json
 import unittest
+from contextlib import contextmanager
 from unittest.mock import patch
 
 from sqlalchemy import create_engine
@@ -9,7 +11,7 @@ from sqlalchemy.orm import Session
 
 from app.agents.context import build_context_preview
 from app.db.session import Base
-from app.models.business import Chapter, ChapterChangeProposal, Project
+from app.models.business import Chapter, ChapterChangeProposal, MemoryItem, Project
 from app.services.chapter_change_proposals.drafts import list_proposals
 from app.services.chapter_change_proposals.review import review_proposal
 from app.services.chapter_content import content_fingerprint, content_has_changed
@@ -33,6 +35,7 @@ class ChapterAnalysisFreshnessTests(unittest.TestCase):
             operation="create",
             target_label="测试记忆",
             proposed_value="{}",
+            version_id="version-source-1",
             source_content_hash=content_fingerprint(self.chapter.content),
             status="pending",
         )
@@ -64,6 +67,83 @@ class ChapterAnalysisFreshnessTests(unittest.TestCase):
         self.assertTrue(list_proposals(self.db, 1, self.chapter.id)[0]["is_stale"])
         with self.assertRaisesRegex(ValueError, "没有正文来源记录"):
             review_proposal(self.db, 1, self.chapter.id, "proposal-1", "approve")
+
+    def test_approved_memory_is_traceable_listable_and_idempotent(self):
+        self.proposal.proposed_value = json.dumps({
+            "memory_type": "world_rule",
+            "title": "潮痕回声限制",
+            "content": "潮痕设备只能读取短时回声。",
+            "content_summary": "潮痕设备读取回声有时间限制。",
+            "importance": 80,
+            "metadata_json": {"source": "analysis"},
+        }, ensure_ascii=False)
+        self.db.commit()
+
+        result = review_proposal(self.db, 1, self.chapter.id, "proposal-1", "approve")
+        self.db.commit()
+        self.assertFalse(result["idempotent"])
+
+        memory = self.db.query(MemoryItem).filter_by(id=self.proposal.applied_entity_id).one()
+        self.assertEqual(memory.project_id, 1)
+        self.assertEqual(memory.memory_type, "world_rule")
+        self.assertEqual(memory.title, "潮痕回声限制")
+        self.assertEqual(memory.content, "潮痕设备只能读取短时回声。")
+        self.assertEqual(memory.source_type, "chapter_analysis")
+        self.assertEqual(memory.source_ref, f"chapter:{self.chapter.id}:proposal:proposal-1")
+        provenance = json.loads(memory.metadata_json)["analysis_provenance"]
+        self.assertEqual(provenance, {
+            "chapter_id": self.chapter.id,
+            "chapter_no": 1,
+            "version_id": "version-source-1",
+            "source_content_hash": content_fingerprint(self.chapter.content),
+            "proposal_id": "proposal-1",
+        })
+
+        repeated = review_proposal(self.db, 1, self.chapter.id, "proposal-1", "approve")
+        self.assertTrue(repeated["idempotent"])
+        self.assertEqual(self.db.query(MemoryItem).filter_by(project_id=1).count(), 1)
+
+        @contextmanager
+        def test_db():
+            yield self.db
+
+        with patch("app.db.session.get_business_db", test_db):
+            from app.api.agents_v3 import list_memory_items
+
+            listed = list_memory_items(project_id=1, keyword="proposal-1")
+        self.assertEqual(listed["total"], 1)
+        self.assertEqual(listed["all_total"], 1)
+        self.assertEqual(listed["items"][0]["source_ref"], memory.source_ref)
+        self.assertEqual(listed["items"][0]["memory_type"], "world_rule")
+
+    def test_rejected_memory_proposal_does_not_write_long_term_memory(self):
+        self.proposal.proposed_value = json.dumps({
+            "memory_type": "world_rule",
+            "title": "不应写入",
+            "content": "只有审核确认后才写入。",
+        }, ensure_ascii=False)
+        self.db.commit()
+
+        result = review_proposal(self.db, 1, self.chapter.id, "proposal-1", "reject")
+        self.db.commit()
+
+        self.assertEqual(result["proposal"]["status"], "rejected")
+        self.assertEqual(self.db.query(MemoryItem).filter_by(project_id=1).count(), 0)
+
+    def test_memory_metadata_requires_object_shape(self):
+        self.proposal.proposed_value = json.dumps({
+            "memory_type": "world_rule",
+            "title": "不合法元数据",
+            "content": "元数据只能是对象。",
+            "metadata_json": ["错误结构"],
+        }, ensure_ascii=False)
+        self.db.commit()
+
+        with self.assertRaisesRegex(ValueError, "metadata_json 必须是 JSON 对象"):
+            review_proposal(self.db, 1, self.chapter.id, "proposal-1", "approve")
+        self.db.rollback()
+        self.assertEqual(self.proposal.status, "pending")
+        self.assertEqual(self.db.query(MemoryItem).filter_by(project_id=1).count(), 0)
 
     def test_context_preview_labels_required_manual_recommended_and_system_sources(self):
         fixture = {

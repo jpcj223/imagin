@@ -63,7 +63,23 @@ def _create_entity(
         return entity
 
     if proposal.entity_type == "memory":
-        values = {**values, "metadata_json": values.get("metadata_json", {})}
+        # 把分析来源写入受控元数据，长期记忆列表无需依赖提案表才能追溯正文版本。
+        metadata = values.get("metadata_json", {})
+        chapter = db.query(Chapter).filter(
+            Chapter.id == chapter_id,
+            Chapter.project_id == project_id,
+        ).first()
+        metadata = {
+            **metadata,
+            "analysis_provenance": {
+                "chapter_id": chapter_id,
+                "chapter_no": chapter.chapter_no if chapter else None,
+                "version_id": proposal.version_id,
+                "source_content_hash": proposal.source_content_hash,
+                "proposal_id": proposal.proposal_id,
+            },
+        }
+        values = {**values, "metadata_json": metadata}
         values["source_type"] = "chapter_analysis"
         values["source_ref"] = f"chapter:{chapter_id}:proposal:{proposal.proposal_id}"
         values["memory_id"] = str(uuid.uuid4())

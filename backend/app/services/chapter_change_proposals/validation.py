@@ -96,6 +96,8 @@ def _validate_value(entity_type: str, operation: str, target_id: int | None, val
         if field_name in JSON_FIELDS.get(entity_type, set()):
             if not isinstance(field_value, (list, dict)):
                 raise ValueError(f"字段 {field_name} 必须是 JSON 列表或对象")
+            if entity_type == "memory" and field_name == "metadata_json" and not isinstance(field_value, dict):
+                raise ValueError("字段 metadata_json 必须是 JSON 对象")
             continue
         column_type = model.__table__.columns[field_name].type
         if field_value is None:
