@@ -81,6 +81,7 @@
         :selected-foreshadowing-ids="selectedForeshadowingIds"
         @select-outline="selectOutline"
         @select-chapter="selectChapter"
+        @select-chapter-outline="selectChapterOutline"
         @toggle-character="toggleCharacter"
         @toggle-organization="toggleOrganization"
         @toggle-world="toggleWorld"
@@ -1734,11 +1735,12 @@ async function runGenerateMode(mode: 'generate' | 'generateAndAnalyze') {
 }
 
 function findOutlineForChapter(item: ChapterItem) {
-  return (
-    outlines.value.find((outline) => outline.id === item.outline_id) ??
-    outlines.value.find((outline) => outline.chapter_no === item.chapter_no) ??
-    null
-  )
+  const chapterOutlines = outlines.value.filter((outline) => outline.node_type === 'chapter')
+  const linked = chapterOutlines.find((outline) => outline.id === item.outline_id)
+  if (linked) return linked
+
+  const matches = chapterOutlines.filter((outline) => outline.chapter_no === item.chapter_no)
+  return matches.length === 1 ? matches[0] : null
 }
 
 function hydrateInstructionFromSelection() {
@@ -1793,6 +1795,66 @@ function selectOutline(item: OutlineItem) {
   nextTick(() => {
     autoRecommendContext()
   })
+}
+
+/** 选择单章细纲：恢复关联正文，或准备该章的空白写作目标。 */
+async function selectChapterOutline(item: OutlineItem) {
+  if (item.node_type !== 'chapter') return
+
+  const chapterNo = Math.max(1, item.chapter_no ?? item.sort_index)
+  const chapterOutlines = outlines.value.filter((outline) => outline.node_type === 'chapter')
+  const linked = chapters.value
+    .filter((chapter) => chapter.outline_id === item.id)
+    .sort((left, right) => right.id - left.id)
+  const uniqueNumber = chapterOutlines.filter((outline) => outline.chapter_no === item.chapter_no).length === 1
+  const legacy = uniqueNumber
+    ? chapters.value
+        .filter((chapter) => chapter.outline_id === null && chapter.chapter_no === chapterNo)
+        .sort((left, right) => right.id - left.id)
+    : []
+  const relatedChapter = linked.find((chapter) => Boolean(chapter.content?.trim()))
+    ?? linked[0]
+    ?? legacy.find((chapter) => Boolean(chapter.content?.trim()))
+    ?? legacy[0]
+
+  if (form.outline_id === item.id && (relatedChapter?.id ?? null) === chapterId.value) return
+
+  // 先保存编辑区当前草稿，避免切到另一条细纲时丢失尚未落库的内容。
+  const hasCurrentDraft = chapterId.value !== null || chapterTitle.value.trim() || draft.value.trim()
+  if (hasCurrentDraft && draftFingerprint() !== persistedDraftFingerprint.value) {
+    if (draftAutosaveTimer) clearTimeout(draftAutosaveTimer)
+    if (!await persistChapterDraft(true)) {
+      message.error('当前章节草稿未能保存，先解决保存问题再切换细纲')
+      return
+    }
+  }
+
+  if (relatedChapter) {
+    await selectChapter(relatedChapter)
+    return
+  }
+
+  // 新章没有正文记录时只切换生成上下文，不预建空章节。
+  setActiveChapterId(null)
+  form.chapter_id = null
+  form.outline_id = item.id
+  form.chapter_no = chapterNo
+  form.instruction = item.description || item.title
+  chapterTitle.value = `第${chapterNo}章`
+  draft.value = ''
+  analysis.value = ''
+  clearAnalysisSections()
+  analysisStatus.value = ''
+  analysisContentSnapshot.value = null
+  analysisPersistedStale.value = null
+  polishOriginal.value = ''
+  consistencyResult.value = null
+  markDraftPersisted()
+  addEvent('选择章节细纲', `第 ${chapterNo} 章·${item.title || '未命名章节'} 已设为写作目标`)
+  void refreshContextPreview({ silent: true })
+  void refreshChapterVersions()
+  if (activeTab.value === 'logs') void refreshTrace()
+  nextTick(() => autoRecommendContext())
 }
 
 function chapterSelectionStorageKey(projectId: number) {

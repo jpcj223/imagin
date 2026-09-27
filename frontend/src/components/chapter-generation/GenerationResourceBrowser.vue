@@ -116,27 +116,52 @@
 
             <!-- 章节 Tab -->
             <div v-if="leftActiveTab === 'chapter'" class="tab-list">
-              <div v-if="filteredChapters.length === 0" class="list-empty">
-                <template v-if="keyword.trim()">🔍 未找到匹配「{{ keyword }}」的章节</template>
-                <template v-else>暂无章节草稿</template>
+              <div v-if="filteredChapterOutlines.length === 0 && filteredOrphanChapters.length === 0" class="list-empty">
+                <template v-if="keyword.trim()">🔍 未找到匹配「{{ keyword }}」的单章细纲</template>
+                <template v-else>暂无单章细纲，请先在大纲规划中创建章节</template>
+              </div>
+              <div v-if="filteredChapterOutlines.length" class="chapter-list-hint">
+                按章序排列 · 选择细纲后编辑正文，生成时仍按顺序推进
               </div>
               <div
-                v-for="item in filteredChapters"
-                :key="item.id"
-                class="resource-item"
-                :class="{ active: chapterId === item.id }"
-                :ref="chapterId === item.id ? setActiveChapterElement : undefined"
-                @click="selectChapter(item)"
+                v-for="entry in filteredChapterOutlines"
+                :key="entry.outline.id"
+                class="resource-item chapter-outline-item"
+                :class="{ active: outlineId === entry.outline.id }"
+                :ref="outlineId === entry.outline.id ? setActiveChapterElement : undefined"
+                @click="selectChapterOutline(entry.outline)"
               >
                 <div class="item-main">
                   <div class="item-title-row">
-                    <span class="item-title" v-html="safeHighlight(item.title)"></span>
-                    <n-tag size="tiny" :type="statusTagType(item.status)">
-                      {{ statusLabel(item.status) }}
+                    <span class="chapter-outline-number">第{{ entry.outline.chapter_no ?? entry.outline.sort_index }}章</span>
+                    <span class="item-title chapter-outline-title" v-html="safeHighlight(entry.outline.title)"></span>
+                    <n-tag size="tiny" :type="entry.chapter?.content?.trim() ? statusTagType(entry.chapter.status) : 'info'">
+                      {{ entry.chapter?.content?.trim() ? statusLabel(entry.chapter.status) : '待生成' }}
                     </n-tag>
                   </div>
-                  <div class="item-meta">
-                    第 {{ item.chapter_no }} 章 · {{ formatChars(item.content) }} 字
+                  <div v-if="entry.outline.description" class="chapter-outline-description" v-html="safeHighlight(entry.outline.description)"></div>
+                  <div class="item-meta chapter-outline-meta">
+                    <span v-if="entry.chapter?.content?.trim()">正文 {{ formatChars(entry.chapter.content) }} 字</span>
+                    <span v-else>选择后按本章细纲生成正文</span>
+                  </div>
+                </div>
+              </div>
+
+              <div v-if="filteredOrphanChapters.length" class="orphan-chapters-section">
+                <div class="orphan-chapters-title">未关联细纲的正文</div>
+                <div
+                  v-for="item in filteredOrphanChapters"
+                  :key="`orphan-${item.id}`"
+                  class="resource-item"
+                  :class="{ active: chapterId === item.id }"
+                  @click="selectChapter(item)"
+                >
+                  <div class="item-main">
+                    <div class="item-title-row">
+                      <span class="item-title" v-html="safeHighlight(item.title)"></span>
+                      <n-tag size="tiny" :type="statusTagType(item.status)">{{ statusLabel(item.status) }}</n-tag>
+                    </div>
+                    <div class="item-meta">第 {{ item.chapter_no }} 章 · {{ formatChars(item.content) }} 字</div>
                   </div>
                 </div>
               </div>
@@ -317,6 +342,7 @@ import type {
 
 type TabKey = 'outline' | 'chapter' | 'character' | 'organization' | 'world' | 'foreshadowing'
 type ResourceTab = { key: TabKey; label: string; icon: string; count: number; selectedCount: number; matchCount: number; badgeText?: string }
+type ChapterOutlineEntry = { outline: OutlineItem; chapter: ChapterItem | null }
 
 type ResourceProps = {
   memoryLevels: MemoryLevel[]
@@ -341,6 +367,7 @@ const props = defineProps<ResourceProps>()
 const emit = defineEmits<{
   (event: 'select-outline', item: OutlineItem): void
   (event: 'select-chapter', item: ChapterItem): void
+  (event: 'select-chapter-outline', item: OutlineItem): void
   (event: 'toggle-character', id: number): void
   (event: 'toggle-organization', id: number): void
   (event: 'toggle-world', id: number): void
@@ -372,11 +399,30 @@ const filteredOutlines = computed(() => {
 })
 const filteredOverview = computed(() => filteredOutlines.value.find((item) => item.node_type === 'overview' || item.title === '大纲总览') ?? null)
 const filteredVolumes = computed(() => filteredOutlines.value.filter((item) => item.node_type === 'volume'))
-const filteredChapters = computed(() => {
+const sortedChapterOutlines = computed(() => outlines.value
+  .filter((item) => item.node_type === 'chapter')
+  .sort((left, right) => (left.chapter_no ?? left.sort_index) - (right.chapter_no ?? right.sort_index) || left.id - right.id))
+const chapterOutlineEntries = computed<ChapterOutlineEntry[]>(() => sortedChapterOutlines.value.map((outline) => ({
+  outline,
+  chapter: findChapterForOutline(outline),
+})))
+const filteredChapterOutlines = computed(() => {
   const text = keyword.value.trim().toLocaleLowerCase('zh-CN')
-  const ordered = [...chapters.value].sort((left, right) => left.chapter_no - right.chapter_no || left.id - right.id)
-  if (!text) return ordered
-  return ordered.filter((item) => [item.title, item.content].join(' ').toLocaleLowerCase('zh-CN').includes(text))
+  if (!text) return chapterOutlineEntries.value
+  return chapterOutlineEntries.value.filter(({ outline, chapter }) =>
+    [outline.title, outline.description, chapter?.title, chapter?.content]
+      .join(' ').toLocaleLowerCase('zh-CN').includes(text),
+  )
+})
+const representedChapterIds = computed(() => new Set(
+  chapterOutlineEntries.value.flatMap((entry) => entry.chapter ? [entry.chapter.id] : []),
+))
+const filteredOrphanChapters = computed(() => {
+  const text = keyword.value.trim().toLocaleLowerCase('zh-CN')
+  return [...chapters.value]
+    .filter((item) => !representedChapterIds.value.has(item.id))
+    .sort((left, right) => left.chapter_no - right.chapter_no || left.id - right.id)
+    .filter((item) => !text || [item.title, item.content].join(' ').toLocaleLowerCase('zh-CN').includes(text))
 })
 const filteredCharacters = computed(() => {
   const text = keyword.value.trim().toLocaleLowerCase('zh-CN')
@@ -400,14 +446,14 @@ const filteredForeshadowings = computed(() => {
 })
 const resourceTabs = computed<ResourceTab[]>(() => [
   { key: 'outline', label: '大纲', icon: '📋', count: filteredOutlines.value.length, selectedCount: 0, matchCount: filteredOutlines.value.length, badgeText: '自动' },
-  { key: 'chapter', label: '章节', icon: '📝', count: chapters.value.length, selectedCount: chapterId.value ? 1 : 0, matchCount: filteredChapters.value.length },
+  { key: 'chapter', label: '章节', icon: '📝', count: sortedChapterOutlines.value.length, selectedCount: sortedChapterOutlines.value.some((item) => item.id === outlineId.value) ? 1 : 0, matchCount: filteredChapterOutlines.value.length },
   { key: 'character', label: '人物', icon: '👤', count: characters.value.length, selectedCount: selectedCharacterIds.value.length, matchCount: filteredCharacters.value.length },
   { key: 'organization', label: '组织', icon: '🏛️', count: organizations.value.length, selectedCount: selectedOrganizationIds.value.length, matchCount: filteredOrganizations.value.length },
   { key: 'world', label: '世界观', icon: '🌍', count: worlds.value.length, selectedCount: selectedWorldIds.value.length, matchCount: filteredWorlds.value.length },
   { key: 'foreshadowing', label: '伏笔', icon: '🎭', count: foreshadowings.value.length, selectedCount: selectedForeshadowingIds.value.length, matchCount: filteredForeshadowings.value.length },
 ])
 const searchPlaceholder = computed(() => ({
-  outline: '搜索大纲...', chapter: '搜索章节...', character: '搜索角色...',
+  outline: '搜索大纲...', chapter: '搜索单章细纲...', character: '搜索角色...',
   organization: '搜索组织...', world: '搜索世界观...', foreshadowing: '搜索伏笔...',
 }[leftActiveTab.value] || '搜索...'))
 const totalSelectedCount = computed(() => selectedCharacterIds.value.length + selectedOrganizationIds.value.length + selectedWorldIds.value.length + selectedForeshadowingIds.value.length)
@@ -415,6 +461,22 @@ const form = computed(() => ({ outline_id: outlineId.value, chapter_no: chapterN
 
 // 步骤 3：保持列表显示辅助逻辑与生成工作台状态相互隔离。
 function selectChapter(item: ChapterItem) { emit('select-chapter', item) }
+function selectChapterOutline(item: OutlineItem) { emit('select-chapter-outline', item) }
+function findChapterForOutline(outline: OutlineItem): ChapterItem | null {
+  const linked = chapters.value
+    .filter((item) => item.outline_id === outline.id)
+    .sort((left, right) => right.id - left.id)
+  if (linked.length) return linked.find((item) => Boolean(item.content?.trim())) ?? linked[0]
+
+  const chapterNo = outline.chapter_no
+  if (chapterNo === null || chapterNo === undefined) return null
+  const hasUniqueNumber = sortedChapterOutlines.value.filter((item) => item.chapter_no === chapterNo).length === 1
+  if (!hasUniqueNumber) return null
+  const legacy = chapters.value
+    .filter((item) => item.outline_id === null && item.chapter_no === chapterNo)
+    .sort((left, right) => right.id - left.id)
+  return legacy.find((item) => Boolean(item.content?.trim())) ?? legacy[0] ?? null
+}
 function toggleOutline(key: string) {
   expandedOutlineKey.value = expandedOutlineKey.value === key ? null : key
 }
@@ -450,7 +512,7 @@ function volumeCharacterNames(item: OutlineItem): string[] {
 function setActiveChapterElement(element: Element | ComponentPublicInstance | null) {
   activeChapterElement.value = element instanceof HTMLElement ? element : null
 }
-watch([chapterId, leftActiveTab], async ([, tab]) => {
+watch([outlineId, leftActiveTab], async ([, tab]) => {
   if (tab !== 'chapter') return
   await nextTick()
   activeChapterElement.value?.scrollIntoView({ block: 'nearest' })
@@ -850,6 +912,68 @@ function formatChars(content: string): string {
 .resource-item.active {
   background: rgba(99, 102, 241, 0.12);
   border-color: rgba(99, 102, 241, 0.35);
+}
+
+.chapter-list-hint {
+  margin: 0 2px 8px;
+  color: var(--text-muted);
+  font-size: 10px;
+  line-height: 1.5;
+}
+
+.chapter-outline-item {
+  margin-bottom: 6px;
+  padding: 9px 10px;
+}
+
+.chapter-outline-item .item-title-row {
+  justify-content: flex-start;
+}
+
+.chapter-outline-number {
+  flex: 0 0 auto;
+  color: #a5b4fc;
+  font-size: 11px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.chapter-outline-title {
+  min-width: 0;
+  flex: 1;
+}
+
+.chapter-outline-item :deep(.n-tag) {
+  flex: 0 0 auto;
+  margin-left: auto;
+}
+
+.chapter-outline-description {
+  display: -webkit-box;
+  margin-top: 5px;
+  overflow: hidden;
+  color: var(--text-secondary);
+  font-size: 10px;
+  line-height: 1.45;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.chapter-outline-meta {
+  margin-top: 5px;
+}
+
+.orphan-chapters-section {
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid rgba(148, 163, 184, 0.12);
+}
+
+.orphan-chapters-title {
+  margin: 0 2px 7px;
+  color: var(--text-muted);
+  font-size: 10px;
+  font-weight: 600;
 }
 
 .item-main {
