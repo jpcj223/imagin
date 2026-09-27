@@ -29,6 +29,16 @@ const props = defineProps<{
   activeLevel?: string
 }>()
 
+const collapsedStorageKey = 'chapter-generation-memory-collapsed'
+const isCollapsed = ref(false)
+
+// 折叠只影响展示；记住用户的选择，避免每次打开章节页都要重新收起。
+try {
+  isCollapsed.value = window.localStorage.getItem(collapsedStorageKey) === 'true'
+} catch {
+  // 浏览器禁用本地存储时，仍可在当前页面正常折叠。
+}
+
 const emit = defineEmits<{
   (e: 'level-click', level: string): void
   (e: 'item-click', level: string, itemId: string): void
@@ -65,120 +75,138 @@ function closeDetail() {
   selectedItemId.value = null
   selectedLevel.value = null
 }
+
+function toggleCollapsed() {
+  isCollapsed.value = !isCollapsed.value
+  try {
+    window.localStorage.setItem(collapsedStorageKey, String(isCollapsed.value))
+  } catch {
+    // 本地存储不可用时，仅保留当前页面状态。
+  }
+}
 </script>
 
 <template>
-  <div class="memory-layer">
-    <div class="memory-header">
+  <div class="memory-layer" :class="{ 'is-collapsed': isCollapsed }">
+    <button
+      class="memory-header"
+      type="button"
+      :aria-expanded="!isCollapsed"
+      :aria-label="isCollapsed ? '展开四级记忆系统' : '折叠四级记忆系统'"
+      @click="toggleCollapsed"
+    >
       <span class="memory-icon">🧠</span>
       <span class="memory-title">四级记忆系统</span>
       <span class="memory-badge">{{ levels.reduce((s, l) => s + l.items.length, 0) }} 条记忆</span>
-    </div>
+      <span class="memory-collapse-indicator" aria-hidden="true">⌄</span>
+    </button>
 
-    <!-- 记忆金字塔 -->
-    <div class="memory-pyramid">
-      <div
-        v-for="(level, idx) in levels"
-        :key="level.level"
-        class="memory-tier"
-        :class="{ 'is-active': activeLevel === level.level }"
-        :style="{
-          '--tier-color': level.color,
-          '--tier-width': `${100 - idx * 12}%`,
-        }"
-        @click="handleLevelClick(level.level)"
-      >
-        <!-- 层级主体 -->
-        <div class="tier-body">
-          <div class="tier-icon">{{ level.icon }}</div>
-          <div class="tier-info">
-            <div class="tier-name">
-              <span class="tier-level">L{{ 4 - idx }}</span>
-              {{ level.name }}
-            </div>
-            <div class="tier-subtitle">{{ level.subtitle }}</div>
-          </div>
-          <div class="tier-stats">
-            <span class="stat-count">{{ level.items.length }}</span>
-            <span class="stat-label">条</span>
-          </div>
-        </div>
-
-        <!-- 记忆条目（展开时显示） -->
+    <div v-show="!isCollapsed" class="memory-content">
+      <!-- 记忆金字塔 -->
+      <div class="memory-pyramid">
         <div
-          v-if="level.expanded && level.items.length > 0"
-          class="tier-items"
+          v-for="(level, idx) in levels"
+          :key="level.level"
+          class="memory-tier"
+          :class="{ 'is-active': activeLevel === level.level }"
+          :style="{
+            '--tier-color': level.color,
+            '--tier-width': `${100 - idx * 12}%`,
+          }"
+          @click="handleLevelClick(level.level)"
         >
+          <!-- 层级主体 -->
+          <div class="tier-body">
+            <div class="tier-icon">{{ level.icon }}</div>
+            <div class="tier-info">
+              <div class="tier-name">
+                <span class="tier-level">L{{ 4 - idx }}</span>
+                {{ level.name }}
+              </div>
+              <div class="tier-subtitle">{{ level.subtitle }}</div>
+            </div>
+            <div class="tier-stats">
+              <span class="stat-count">{{ level.items.length }}</span>
+              <span class="stat-label">条</span>
+            </div>
+          </div>
+
+          <!-- 记忆条目（展开时显示） -->
           <div
-            v-for="item in level.items.slice(0, 5)"
-            :key="item.id"
-            class="memory-item"
-            :class="{ selected: selectedItemId === item.id && selectedLevel === level.level }"
-            @click.stop="handleItemClick(level.level, item.id)"
+            v-if="level.expanded && level.items.length > 0"
+            class="tier-items"
           >
-            <span class="item-type">{{ item.type }}</span>
-            <span class="item-title">{{ item.title }}</span>
-            <span class="item-arrow">›</span>
             <div
-              v-if="item.importance"
-              class="item-importance"
-              :style="{ width: item.importance + '%' }"
-            ></div>
-          </div>
-          <div v-if="level.items.length > 5" class="item-more">
-            +{{ level.items.length - 5 }} 更多
-          </div>
-        </div>
-
-        <!-- 元信息 -->
-        <div class="tier-meta">
-          <span class="meta-item">
-            <span class="meta-icon">📦</span>
-            {{ level.capacity }}
-          </span>
-          <span class="meta-item">
-            <span class="meta-icon">⏱️</span>
-            {{ level.retention }}
-          </span>
-        </div>
-      </div>
-    </div>
-
-    <!-- 沉淀方向指示 -->
-    <div class="memory-flow-indicator">
-      <div class="flow-arrow">↓</div>
-      <span class="flow-text">记忆沉淀方向</span>
-      <div class="flow-arrow">↓</div>
-    </div>
-
-    <!-- 记忆条目详情卡片 -->
-    <transition name="detail-slide">
-      <div v-if="selectedItem" class="memory-detail-card">
-        <div class="detail-card-header">
-          <span class="detail-card-type">{{ selectedItem.type }}</span>
-          <button class="detail-card-close" @click="closeDetail">✕</button>
-        </div>
-        <div class="detail-card-title">{{ selectedItem.title }}</div>
-        <div v-if="selectedItem.description" class="detail-card-desc">
-          {{ selectedItem.description }}
-        </div>
-        <div v-if="selectedItem.tags && selectedItem.tags.length > 0" class="detail-card-tags">
-          <span v-for="tag in selectedItem.tags" :key="tag" class="detail-tag">{{ tag }}</span>
-        </div>
-        <div class="detail-card-footer">
-          <div class="importance-bar">
-            <span class="importance-label">重要程度</span>
-            <div class="importance-track">
+              v-for="item in level.items.slice(0, 5)"
+              :key="item.id"
+              class="memory-item"
+              :class="{ selected: selectedItemId === item.id && selectedLevel === level.level }"
+              @click.stop="handleItemClick(level.level, item.id)"
+            >
+              <span class="item-type">{{ item.type }}</span>
+              <span class="item-title">{{ item.title }}</span>
+              <span class="item-arrow">›</span>
               <div
-                class="importance-fill"
-                :style="{ width: (selectedItem.importance ?? 50) + '%' }"
+                v-if="item.importance"
+                class="item-importance"
+                :style="{ width: item.importance + '%' }"
               ></div>
             </div>
-            <span class="importance-value">{{ selectedItem.importance ?? 50 }}%</span>
+            <div v-if="level.items.length > 5" class="item-more">
+              +{{ level.items.length - 5 }} 更多
+            </div>
+          </div>
+
+          <!-- 元信息 -->
+          <div class="tier-meta">
+            <span class="meta-item">
+              <span class="meta-icon">📦</span>
+              {{ level.capacity }}
+            </span>
+            <span class="meta-item">
+              <span class="meta-icon">⏱️</span>
+              {{ level.retention }}
+            </span>
           </div>
         </div>
       </div>
-    </transition>
+
+      <!-- 沉淀方向指示 -->
+      <div class="memory-flow-indicator">
+        <div class="flow-arrow">↓</div>
+        <span class="flow-text">记忆沉淀方向</span>
+        <div class="flow-arrow">↓</div>
+      </div>
+
+      <!-- 记忆条目详情卡片 -->
+      <transition name="detail-slide">
+        <div v-if="selectedItem" class="memory-detail-card">
+          <div class="detail-card-header">
+            <span class="detail-card-type">{{ selectedItem.type }}</span>
+            <button class="detail-card-close" @click="closeDetail">✕</button>
+          </div>
+          <div class="detail-card-title">{{ selectedItem.title }}</div>
+          <div v-if="selectedItem.description" class="detail-card-desc">
+            {{ selectedItem.description }}
+          </div>
+          <div v-if="selectedItem.tags && selectedItem.tags.length > 0" class="detail-card-tags">
+            <span v-for="tag in selectedItem.tags" :key="tag" class="detail-tag">{{ tag }}</span>
+          </div>
+          <div class="detail-card-footer">
+            <div class="importance-bar">
+              <span class="importance-label">重要程度</span>
+              <div class="importance-track">
+                <div
+                  class="importance-fill"
+                  :style="{ width: (selectedItem.importance ?? 50) + '%' }"
+                ></div>
+              </div>
+              <span class="importance-value">{{ selectedItem.importance ?? 50 }}%</span>
+            </div>
+          </div>
+        </div>
+      </transition>
+    </div>
   </div>
 </template>
 
@@ -191,11 +219,45 @@ function closeDetail() {
   position: relative;
 }
 
+.memory-layer.is-collapsed {
+  padding: 10px 12px;
+}
+
 .memory-header {
   display: flex;
   align-items: center;
   gap: 8px;
+  width: 100%;
   margin-bottom: 14px;
+  padding: 0;
+  border: 0;
+  color: inherit;
+  background: transparent;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.memory-header:focus-visible {
+  outline: 2px solid rgba(129, 140, 248, 0.8);
+  outline-offset: 4px;
+  border-radius: 4px;
+}
+
+.memory-collapse-indicator {
+  flex: 0 0 auto;
+  margin-left: 2px;
+  color: #94a3b8;
+  font-size: 13px;
+  transition: transform 0.2s ease;
+}
+
+.memory-layer.is-collapsed .memory-header {
+  margin-bottom: 0;
+}
+
+.memory-layer.is-collapsed .memory-collapse-indicator {
+  transform: rotate(-90deg);
 }
 
 .memory-icon {
@@ -203,12 +265,17 @@ function closeDetail() {
 }
 
 .memory-title {
+  min-width: 0;
+  overflow: hidden;
   font-size: 13px;
   font-weight: 600;
   color: #e2e8f0;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .memory-badge {
+  flex: 0 0 auto;
   margin-left: auto;
   font-size: 10px;
   padding: 2px 8px;
@@ -216,6 +283,7 @@ function closeDetail() {
   color: #c4b5fd;
   border-radius: 10px;
   border: 1px solid rgba(139, 92, 246, 0.3);
+  white-space: nowrap;
 }
 
 /* 记忆金字塔 */
