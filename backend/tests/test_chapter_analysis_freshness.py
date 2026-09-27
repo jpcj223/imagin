@@ -67,6 +67,15 @@ class ChapterAnalysisFreshnessTests(unittest.TestCase):
 
     def test_context_preview_labels_required_manual_recommended_and_system_sources(self):
         fixture = {
+            "volume_outline": {
+                "id": 8,
+                "title": "潮汐之下",
+                "volume_no": 1,
+                "description": "第一卷描述",
+                "core_events": "整顿船队",
+                "locations": "雾港",
+                "climax": "发现旧航线",
+            },
             "world": {"title": "世界总览", "rules": "潮汐规律"},
             "outline": {"title": "出航", "description": "整顿船队"},
             "world_settings": [
@@ -85,7 +94,11 @@ class ChapterAnalysisFreshnessTests(unittest.TestCase):
         with patch("app.agents.context.build_chapter_context", return_value=fixture):
             preview = build_context_preview(1, 2, 9, "", selection, manual_selection)
 
-        self.assertEqual([item["label"] for item in preview["required_context"]], ["本章大纲", "项目世界观"])
+        self.assertEqual([item["label"] for item in preview["required_context"]], [
+            "本卷大纲", "本章大纲", "项目世界观",
+        ])
+        self.assertIn("发现旧航线", preview["required_context"][0]["content"])
+        self.assertEqual(preview["volume_outline"]["id"], 8)
         self.assertEqual([item["selection_source"] for item in preview["world_settings"]], [
             "manual", "recommended", "automatic",
         ])

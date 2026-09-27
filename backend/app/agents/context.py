@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from app.memory.retriever import MemoryRetriever
+from app.memory.retriever import MemoryRetriever, format_volume_outline
 
 
 def build_chapter_context(
@@ -44,6 +44,7 @@ def build_context_preview(
     # 步骤 1：使用与 Agent 相同的检索器、章节边界和用户补充要求。
     context = build_chapter_context(project_id, chapter_no, outline_id, query, selection)
     world = context["world"]
+    volume_outline = context.get("volume_outline") or {}
     outline = context["outline"]
     selection = selection or {}
     manual_selection = manual_selection or {}
@@ -60,9 +61,23 @@ def build_context_preview(
     return {
         "chapter_no": chapter_no,
         "required_context": [
+            {
+                "label": "本卷大纲",
+                "title": volume_outline.get("title", ""),
+                "content": format_volume_outline(volume_outline),
+            },
             {"label": "本章大纲", "title": outline.get("title", ""), "content": outline.get("description", "")},
             {"label": "项目世界观", "title": world.get("title") or world.get("era", ""), "content": world.get("rules", "")},
         ],
+        "volume_outline": {
+            "id": volume_outline.get("id"),
+            "title": volume_outline.get("title", ""),
+            "volume_no": volume_outline.get("volume_no"),
+            "description": volume_outline.get("description", ""),
+            "core_events": volume_outline.get("core_events", ""),
+            "locations": volume_outline.get("locations", ""),
+            "climax": volume_outline.get("climax", ""),
+        },
         "outline": {
             "title": outline.get("title", ""),
             "description": outline.get("description", ""),

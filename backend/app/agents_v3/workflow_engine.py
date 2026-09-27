@@ -12,7 +12,7 @@ from datetime import datetime
 from enum import Enum
 from typing import Any
 
-from app.memory.retriever import MemoryRetriever
+from app.memory.retriever import MemoryRetriever, format_volume_outline
 from .persistence import WorkflowPersistence
 from .generation_options import (
     build_skill_guidance,
@@ -444,6 +444,8 @@ class WorkflowEngine:
         # 补充常用字段
         context["chapter_no"] = chapter_no
         context["outline_id"] = outline_id
+        context["volume_outline_text"] = format_volume_outline(base_context.get("volume_outline"))
+        context["volume_title"] = base_context.get("volume_outline", {}).get("title", "")
         context["outline_title"] = base_context.get("outline", {}).get("title", "")
         context["outline_desc"] = base_context.get("outline", {}).get("description", "")
 
@@ -504,6 +506,7 @@ class WorkflowEngine:
 
         # 步骤 2：使用显式字段名，供前端运行记录展示与未来统计复用。
         return {
+            "volume_title": str(context.get("volume_title") or ""),
             "outline_title": str(context.get("outline_title") or ""),
             "characters": labels("characters", "name"),
             "organizations": labels("organizations", "name"),

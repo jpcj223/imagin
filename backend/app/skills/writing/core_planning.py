@@ -6,6 +6,7 @@ from __future__ import annotations
 
 from app.skills.base import BaseSkill, SkillMeta
 from app.skills.registry import SkillRegistry
+from app.memory.retriever import format_volume_outline
 
 
 @SkillRegistry.register("core_planning")
@@ -35,6 +36,7 @@ class CorePlanningSkill(BaseSkill):
     def pre_process(self, context, params):
         """构建规划上下文文本。"""
         outline = context.get("outline", {})
+        context["volume_outline_text"] = format_volume_outline(context.get("volume_outline"))
         characters = context.get("characters", [])
         foreshadowings = context.get("foreshadowings", [])
         recent_summaries = context.get("recent_summaries", [])

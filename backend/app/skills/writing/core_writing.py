@@ -8,6 +8,7 @@ import json
 
 from app.skills.base import BaseSkill, SkillMeta
 from app.skills.registry import SkillRegistry
+from app.memory.retriever import format_volume_outline
 
 
 @SkillRegistry.register("core_writing")
@@ -44,6 +45,7 @@ class CoreWritingSkill(BaseSkill):
         # 步骤 1：把结构化上下文压缩成写作资料包。
         project = context.get("project", {})
         world = context.get("world", {})
+        volume_outline = context.get("volume_outline") or {}
         outline = context.get("outline", {})
         characters = context.get("characters", [])
         world_settings = context.get("world_settings", [])
@@ -59,6 +61,7 @@ class CoreWritingSkill(BaseSkill):
         context_text = f"""
 项目：{project.get("name", "")}
 世界观：{_format_world(world, world_settings)}
+当前卷纲：{format_volume_outline(volume_outline)}
 本章大纲：{_format_outline(outline)}
 角色：{_format_characters(characters)}
 组织：{_format_organizations(organizations)}

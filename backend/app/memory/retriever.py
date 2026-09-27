@@ -25,6 +25,28 @@ from app.models.business import (
 )
 
 
+def format_volume_outline(volume_outline: dict[str, Any] | None) -> str:
+    """把卷纲整理成生成提示和上下文预览共用的可读文本。"""
+    if not volume_outline:
+        return "（本章尚未关联卷纲）"
+
+    lines: list[str] = []
+    if volume_outline.get("volume_no") is not None:
+        lines.append(f"卷号：第{volume_outline['volume_no']}卷")
+    if volume_outline.get("title"):
+        lines.append(f"卷名：{volume_outline['title']}")
+    for key, label in (
+        ("description", "卷纲"),
+        ("core_events", "核心事件"),
+        ("locations", "主要场景"),
+        ("climax", "卷末高潮"),
+    ):
+        value = str(volume_outline.get(key) or "").strip()
+        if value:
+            lines.append(f"{label}：{value}")
+    return "\n".join(lines) or "（本卷暂无详细规划）"
+
+
 class MemoryRetriever:
     """记忆检索器。
 
@@ -54,10 +76,18 @@ class MemoryRetriever:
         Returns:
             结构化的记忆包，可直接用于构建上下文
         """
-        # 步骤 1：先读取本章大纲，再与用户要求合并为统一相关性文本。
+        # 步骤 1：先读取本章大纲及其所属卷纲，再与用户要求合并为统一相关性文本。
         outline = self._get_outline(outline_id, chapter_no)
+        volume_outline = self._get_volume_outline(outline.get("volume_id"))
         relevance_text = "\n".join(
-            part for part in (query, outline.get("title", ""), outline.get("description", "")) if part
+            part for part in (
+                query,
+                volume_outline.get("title", ""),
+                volume_outline.get("description", ""),
+                volume_outline.get("core_events", ""),
+                outline.get("title", ""),
+                outline.get("description", ""),
+            ) if part
         )
 
         # 步骤 2：读取作者选择的实体 ID；未提供类别时保留自动推荐策略。
@@ -105,6 +135,7 @@ class MemoryRetriever:
             "project": self._get_project_info(),
             "world": world_settings[0] if world_settings else {},
             "world_settings": world_settings,
+            "volume_outline": volume_outline,
             "outline": outline,
             "characters": characters,
             "organizations": organizations,
@@ -263,8 +294,44 @@ class MemoryRetriever:
                     "description": row.description,
                     "chapter_no": row.chapter_no or chapter_no,
                     "status": row.status,
+                    "volume_id": row.volume_id,
                 }
             return {}
+
+    def _get_volume_outline(self, volume_id: int | None) -> dict:
+        """读取目标章节所属卷纲；忽略不存在、跨项目或非卷节点的关联。"""
+        if volume_id is None:
+            return {}
+
+        from app.models.business import Outline
+
+        with get_business_db() as db:
+            row = db.query(Outline).filter(
+                Outline.id == volume_id,
+                Outline.project_id == self.project_id,
+                Outline.node_type == "volume",
+            ).first()
+            if not row:
+                return {}
+
+            extra: dict[str, Any] = {}
+            try:
+                decoded = json.loads(row.extra or "{}")
+                if isinstance(decoded, dict):
+                    extra = decoded
+            except (TypeError, json.JSONDecodeError):
+                # 旧数据中的扩展字段可能为空或格式异常；卷名和简介仍可正常使用。
+                extra = {}
+
+            return {
+                "id": row.id,
+                "title": row.title or "",
+                "volume_no": row.volume_no,
+                "description": row.description or "",
+                "core_events": str(extra.get("core_events") or ""),
+                "locations": str(extra.get("locations") or ""),
+                "climax": str(extra.get("climax") or ""),
+            }
 
     @staticmethod
     def _normalize_text(value: Any) -> str:
@@ -630,6 +697,7 @@ class MemoryRetriever:
         """
         project = memory_bundle.get("project", {})
         world = memory_bundle.get("world", {})
+        volume_outline = memory_bundle.get("volume_outline", {})
         outline = memory_bundle.get("outline", {})
         characters = memory_bundle.get("characters", [])
         organizations = memory_bundle.get("organizations", [])
@@ -654,7 +722,11 @@ class MemoryRetriever:
             lines.append("（暂无详细设定）")
         lines.append("")
 
-        lines.append("=== 本章大纲 ===")
+        lines.append("=== 当前卷纲（必读） ===")
+        lines.append(format_volume_outline(volume_outline))
+        lines.append("")
+
+        lines.append("=== 本章大纲（必读） ===")
         if outline.get("title"):
             lines.append(f"标题：{outline['title']}")
         if outline.get("description"):

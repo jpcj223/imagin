@@ -96,6 +96,7 @@ def create_planner_agent(variant: str = "default", **extra_params) -> BaseAgent:
         )
         .with_user_prompt_template(
             "请根据本章大纲，制定详细的写作计划。\n\n"
+            "当前卷纲（必读）：{volume_outline_text}\n\n"
             "本章大纲：{outline_title}\n"
             "大纲描述：{outline_desc}\n\n"
             "请输出：\n"

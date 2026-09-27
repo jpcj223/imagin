@@ -299,6 +299,19 @@
 
         <transition name="panel-expand">
           <div v-if="expanded.outline" class="panel-body">
+            <div v-if="volumeOutline" class="outline-card volume-outline-card">
+              <div class="outline-title">
+                {{ volumeOutline.volume_no ? `第 ${volumeOutline.volume_no} 卷 · ` : '' }}{{ volumeOutline.title }}
+              </div>
+              <div class="outline-desc">{{ volumeOutline.description || '本卷暂无补充简介' }}</div>
+              <div class="outline-info-badge">
+                <span>📌</span>
+                <span>卷纲默认纳入生成上下文</span>
+              </div>
+            </div>
+            <div v-else-if="outline" class="empty-tip volume-outline-missing">
+              当前章节未关联卷纲；如需使用卷级规划，请先在大纲中设置所属卷。
+            </div>
             <div v-if="outline" class="outline-card">
               <div class="outline-title">{{ outline.title }}</div>
               <div class="outline-meta">
@@ -386,6 +399,7 @@ interface Props {
   organizations: OrganizationItem[]
   worldSettings: WorldSetting[]
   foreshadowings: ForeshadowingItem[]
+  volumeOutline: OutlineItem | null
   outline: OutlineItem | null
   summaries: ChapterSummary[]
   selectedCharacterIds: number[]
@@ -400,6 +414,7 @@ const props = withDefaults(defineProps<Props>(), {
   organizations: () => [],
   worldSettings: () => [],
   foreshadowings: () => [],
+  volumeOutline: null,
   outline: null,
   summaries: () => [],
   selectedCharacterIds: () => [],

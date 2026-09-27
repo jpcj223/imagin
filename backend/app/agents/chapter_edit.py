@@ -6,14 +6,17 @@ import re
 from typing import Any
 
 from app.agents.context import build_chapter_context
+from app.memory.retriever import format_volume_outline
 from app.core.llm import LLMError, chat_completion_stream_with_usage, chat_completion_with_usage
 
 
 def _compact_context(context: dict[str, Any]) -> dict[str, Any]:
     """只把本章相关的少量设定放入改稿提示，避免无关资料淹没正文。"""
     outline = context.get("outline") or {}
+    volume_outline = context.get("volume_outline") or {}
     world = context.get("world") or {}
     return {
+        "本卷大纲": format_volume_outline(volume_outline),
         "本章大纲": {
             "标题": outline.get("title", ""),
             "内容": str(outline.get("description", ""))[:1200],

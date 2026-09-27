@@ -134,8 +134,18 @@ export interface ConsistencyCheckResult {
 export interface ContextPreview {
   /** 本次预览的章节号。 */
   chapter_no: number
-  /** 每次生成都会读取的本章大纲与项目基础世界观。 */
+  /** 每次生成都会读取的卷纲、章节大纲与项目基础世界观。 */
   required_context: Array<{ label: string; title: string; content: string }>
+  /** 目标章节所属的卷纲；无所属卷时保留空对象供界面解释。 */
+  volume_outline: {
+    id: number | null
+    title: string
+    volume_no: number | null
+    description: string
+    core_events: string
+    locations: string
+    climax: string
+  }
   /** 实际选中的大纲摘要。 */
   outline: { title: string; description: string }
   /** 实际选中的世界观摘要。 */

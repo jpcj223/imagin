@@ -6,6 +6,7 @@ from collections.abc import Iterator
 from app.agents.context import build_chapter_context
 from app.core.llm import LLMError, chat_completion, chat_completion_stream
 from app.db.session import get_business_db
+from app.memory.retriever import format_volume_outline
 from app.models.business import (
     Chapter,
     ChapterSummary,
@@ -30,6 +31,7 @@ def _format_context(context: dict) -> str:
 项目：{context.get("project", {})}
 世界观：{context.get("world", {})}
 选中世界观条目：{context.get("world_settings", [])}
+当前卷纲：{format_volume_outline(context.get("volume_outline"))}
 本章大纲：{context.get("outline", {})}
 角色：{context.get("characters", [])}
 组织：{context.get("organizations", [])}

@@ -388,6 +388,7 @@
                 :organizations="organizations"
                 :world-settings="worlds"
                 :foreshadowings="foreshadowings"
+                :volume-outline="selectedVolumeOutline"
                 :outline="selectedOutline"
                 :summaries="summaries"
                 v-model:selected-character-ids="selectedCharacterIds"
@@ -1230,6 +1231,11 @@ const project = computed(() => projectStore.currentProject)
 const selectedOutline = computed(
   () => outlines.value.find((item) => item.id === form.outline_id) ?? null
 )
+const selectedVolumeOutline = computed(() => {
+  const volumeId = selectedOutline.value?.volume_id
+  if (volumeId === null || volumeId === undefined) return null
+  return outlines.value.find((item) => item.id === volumeId && item.node_type === 'volume') ?? null
+})
 const selectedChapter = computed(
   () => chapters.value.find((item) => item.id === chapterId.value) ?? null
 )
