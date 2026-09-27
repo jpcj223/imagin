@@ -324,8 +324,7 @@ function captureSelection() {
 .editor-container {
   flex: 1;
   min-height: 0;
-  margin-right: 26px;
-  padding: 16px 0 16px 16px;
+  padding: 16px;
   overflow-x: hidden;
   overflow-y: auto;
   scrollbar-width: thin;
@@ -365,11 +364,26 @@ function captureSelection() {
   color: var(--text-primary) !important;
   background: transparent !important;
   overflow-y: hidden !important;
-  scrollbar-width: none;
+  scrollbar-width: none !important;
+  -ms-overflow-style: none;
 }
 
 .chapter-textarea :deep(textarea)::-webkit-scrollbar {
-  display: none;
+  display: none !important;
+  width: 0;
+  height: 0;
+}
+
+.chapter-textarea :deep(.n-input__textarea-el) {
+  overflow-y: hidden !important;
+  scrollbar-width: none !important;
+  -ms-overflow-style: none;
+}
+
+.chapter-textarea :deep(.n-input__textarea-el)::-webkit-scrollbar {
+  display: none !important;
+  width: 0;
+  height: 0;
 }
 
 /* 精修对比面板 */
