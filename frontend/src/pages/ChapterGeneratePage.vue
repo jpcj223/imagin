@@ -215,24 +215,30 @@
                         multiple
                         filterable
                         clearable
-                        :max-tag-count="1"
+                        :max-tag-count="0"
                         :options="foreshadowingOptions"
                         class="foreshadow-select"
                         placeholder="搜索并选择本章要处理的伏笔"
                       />
                       <div v-if="selectedForeshadowings.length" class="selected-foreshadowings" aria-label="已选重点伏笔">
-                        <button
-                          v-for="item in selectedForeshadowings"
-                          :key="item.id"
-                          type="button"
-                          class="selected-foreshadowing-chip"
-                          :title="`${item.keyword} · 点击移除`"
-                          :aria-label="`移除重点伏笔：${item.keyword}`"
-                          @click="removeSelectedForeshadowing(item.id)"
-                        >
-                          <span>{{ item.keyword }}</span>
-                          <span class="chip-remove" aria-hidden="true">×</span>
-                        </button>
+                        <div class="selected-foreshadowings-header">
+                          <span>已选 {{ selectedForeshadowings.length }} 条</span>
+                          <span>点击标签移除</span>
+                        </div>
+                        <div class="selected-foreshadowing-list">
+                          <button
+                            v-for="item in selectedForeshadowings"
+                            :key="item.id"
+                            type="button"
+                            class="selected-foreshadowing-chip"
+                            :title="`${item.keyword} · 点击移除`"
+                            :aria-label="`移除重点伏笔：${item.keyword}`"
+                            @click="removeSelectedForeshadowing(item.id)"
+                          >
+                            <span>{{ item.keyword }}</span>
+                            <span class="chip-remove" aria-hidden="true">×</span>
+                          </button>
+                        </div>
                       </div>
                       <div class="field-hint">
                         系统会按章节大纲推荐相关伏笔；手动选中的伏笔会优先进入本次生成上下文。
@@ -4363,14 +4369,71 @@ watch(
 .generation-controls-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 12px;
+  gap: 14px;
+}
+
+.generation-controls {
+  padding: 12px;
+  border: 1px solid rgba(148, 163, 184, 0.14);
+  border-radius: 10px;
+  background: linear-gradient(135deg, rgba(99, 102, 241, 0.055), rgba(255, 255, 255, 0.018));
+}
+
+.generation-controls-grid :deep(.n-form-item) {
+  min-width: 0;
+  margin-bottom: 0;
+}
+
+.generation-controls-grid :deep(.n-form-item-blank) {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 5px;
+  min-width: 0;
+}
+
+.generation-controls-grid :deep(.n-slider),
+.generation-controls-grid :deep(.n-input-number) {
+  width: 100%;
 }
 
 .generation-controls-grid small {
   display: block;
-  margin-top: 5px;
+  margin: 0;
   color: var(--n-text-color-3, #7b8494);
   font-size: 11px;
+  line-height: 1.45;
+}
+
+.selected-foreshadowings {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  padding: 8px;
+  border: 1px solid rgba(99, 102, 241, 0.16);
+  border-radius: 8px;
+  background: rgba(15, 22, 41, 0.38);
+}
+
+.selected-foreshadowings-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  color: var(--text-secondary);
+  font-size: 10px;
+}
+
+.selected-foreshadowings-header > span:first-child {
+  color: #c7d2fe;
+  font-weight: 600;
+}
+
+.selected-foreshadowing-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-width: 0;
 }
 
 /* ===== 响应式 ===== */
