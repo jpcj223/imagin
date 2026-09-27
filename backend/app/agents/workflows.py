@@ -27,10 +27,13 @@ def _format_context(context: dict) -> str:
         if item.get("title") or item.get("content_summary") or item.get("content")
     ]
     memory_text = "\n".join(memory_lines) if memory_lines else "暂无"
+    generation_outline_context = context.get("generation_outline_context_text") or "暂无相邻卷章规划"
     return f"""
 项目：{context.get("project", {})}
 世界观：{context.get("world", {})}
 选中世界观条目：{context.get("world_settings", [])}
+连续性大纲资料：
+{generation_outline_context}
 当前卷纲：{format_volume_outline(context.get("volume_outline"))}
 本章大纲：{context.get("outline", {})}
 角色：{context.get("characters", [])}
@@ -59,6 +62,7 @@ def _build_draft_messages(
         outline_id,
         query=instruction,
         selection=selection,
+        include_generation_outline_context=True,
     )
     context_text = _format_context(context)
 

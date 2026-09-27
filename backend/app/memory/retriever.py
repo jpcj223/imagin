@@ -21,8 +21,18 @@ from app.models.business import (
     MemoryItem,
     Organization,
     OrganizationRelation,
+    Outline,
     WorldSetting,
 )
+
+
+def _decode_outline_extra(value: Any) -> dict[str, Any]:
+    """安全解析卷章扩展设定；旧数据或异常 JSON 不应阻断章节生成。"""
+    try:
+        decoded = json.loads(value or "{}")
+    except (TypeError, json.JSONDecodeError):
+        return {}
+    return decoded if isinstance(decoded, dict) else {}
 
 
 def format_volume_outline(volume_outline: dict[str, Any] | None) -> str:
@@ -35,16 +45,115 @@ def format_volume_outline(volume_outline: dict[str, Any] | None) -> str:
         lines.append(f"卷号：第{volume_outline['volume_no']}卷")
     if volume_outline.get("title"):
         lines.append(f"卷名：{volume_outline['title']}")
+    if volume_outline.get("target_chapters"):
+        lines.append(f"预计章节数：{volume_outline['target_chapters']}章")
     for key, label in (
         ("description", "卷纲"),
         ("core_events", "核心事件"),
         ("locations", "主要场景"),
         ("climax", "卷末高潮"),
+        ("ai_summary", "卷定位摘要"),
+        ("chapter_suggestions", "章节建议"),
     ):
         value = str(volume_outline.get(key) or "").strip()
         if value:
             lines.append(f"{label}：{value}")
+    character_ids = volume_outline.get("characters") or []
+    if character_ids:
+        if isinstance(character_ids, (list, tuple, set)):
+            character_text = ", ".join(str(item) for item in character_ids)
+        else:
+            character_text = str(character_ids)
+        lines.append(f"本卷指定人物 ID：{character_text}")
     return "\n".join(lines) or "（本卷暂无详细规划）"
+
+
+def format_overview_outline(overview_outline: dict[str, Any] | None) -> str:
+    """把全书总览整理为章节创作方向。"""
+    if not overview_outline:
+        return "（尚未建立大纲总览）"
+    extra = overview_outline.get("extra") or {}
+    lines = [f"全书主线：{overview_outline.get('description') or '暂无'}"]
+    for key, label, suffix in (
+        ("target_words", "预计总字数", "字"),
+        ("target_volumes", "预计卷数", "卷"),
+        ("target_chapters", "预计章节数", "章"),
+    ):
+        value = extra.get(key)
+        if value:
+            lines.append(f"{label}：{value}{suffix}")
+    pace = extra.get("pace")
+    if pace:
+        pace_labels = {"1": "慢热", "2": "偏慢", "3": "适中", "4": "偏快", "5": "高燃"}
+        lines.append(f"整体节奏：{pace_labels.get(str(pace), pace)}")
+    for key, label in (("core_conflict", "核心冲突"), ("ending", "结局方向")):
+        value = str(extra.get(key) or "").strip()
+        if value:
+            lines.append(f"{label}：{value}")
+    return "\n".join(lines)
+
+
+def format_chapter_outline(outline: dict[str, Any] | None) -> str:
+    """格式化单章细纲，包括场景、冲突、转折和人物收获等扩展设定。"""
+    if not outline:
+        return "（暂无章节细纲）"
+    extra = outline.get("extra") or {}
+    lines = []
+    chapter_no = outline.get("chapter_no")
+    if chapter_no is not None:
+        lines.append(f"章节：第{chapter_no}章")
+    if outline.get("title"):
+        lines.append(f"标题：{outline['title']}")
+    if outline.get("description"):
+        lines.append(f"本章概述：{outline['description']}")
+    for key, label in (
+        ("scene", "场景设定"),
+        ("conflict", "核心冲突"),
+        ("twist", "剧情转折"),
+        ("gain", "人物收获"),
+        ("characters", "出场人物 ID"),
+        ("foreshadowings", "关联伏笔 ID"),
+    ):
+        value = extra.get(key)
+        if isinstance(value, list):
+            value = "、".join(str(item) for item in value)
+        value = str(value or "").strip()
+        if value:
+            lines.append(f"{label}：{value}")
+    return "\n".join(lines) or "（暂无章节细纲）"
+
+
+def format_generation_outline_context(context: dict[str, Any]) -> str:
+    """按创作职责组合全书、相邻卷和相邻章纲，明确未来资料只用于铺垫。"""
+    sections = [
+        "【全书大纲总览】\n" + format_overview_outline(context.get("overview_outline")),
+    ]
+    for key, label in (
+        ("previous_volume_outline", "前一卷纲（承接已发生事件与遗留线索）"),
+        ("volume_outline", "当前卷纲（本卷创作边界与阶段目标）"),
+        ("next_volume_outline", "下一卷纲（只用于方向铺垫，不提前展开后续核心事件）"),
+    ):
+        volume = context.get(key)
+        if volume:
+            sections.append(f"【{label}】\n{format_volume_outline(volume)}")
+    sections.append("【当前章细纲（本章必须落实）】\n" + format_chapter_outline(context.get("outline")))
+    next_chapter = context.get("next_chapter_outline")
+    if next_chapter:
+        sections.append(
+            "【下一章细纲（用于承接和预埋，不得提前写完下一章事件）】\n"
+            + format_chapter_outline(next_chapter)
+        )
+    previous_chapter = context.get("previous_chapter") or {}
+    if previous_chapter:
+        previous_text = "\n".join(
+            value for value in (
+                f"章节：第{previous_chapter.get('chapter_no')}章 {previous_chapter.get('title', '')}",
+                f"前情摘要：{previous_chapter.get('summary', '')}" if previous_chapter.get("summary") else "",
+                f"正文结尾：{previous_chapter.get('ending_excerpt', '')}" if previous_chapter.get("ending_excerpt") else "",
+            ) if value
+        )
+        sections.append("【紧邻上一章（直接衔接）】\n" + previous_text)
+    return "\n\n".join(sections)
 
 
 class MemoryRetriever:
@@ -64,6 +173,7 @@ class MemoryRetriever:
         query: str = "",
         top_k: int = 10,
         selection: dict[str, list[int]] | None = None,
+        include_generation_outline_context: bool = False,
     ) -> dict[str, Any]:
         """为章节生成检索相关记忆。
 
@@ -76,17 +186,28 @@ class MemoryRetriever:
         Returns:
             结构化的记忆包，可直接用于构建上下文
         """
-        # 步骤 1：先读取本章大纲及其所属卷纲，再与用户要求合并为统一相关性文本。
+        # 步骤 1：按章节身份读取当前细纲；只有正文生成阶段额外装配相邻卷章规划，避免分析旧章时泄露后文。
         outline = self._get_outline(outline_id, chapter_no)
-        volume_outline = self._get_volume_outline(outline.get("volume_id"))
+        generation_outline_context = (
+            self._get_generation_outline_context(chapter_no, outline)
+            if include_generation_outline_context else {}
+        )
+        volume_outline = generation_outline_context.get("volume_outline") or self._get_volume_outline(outline.get("volume_id"))
+        if include_generation_outline_context and not generation_outline_context.get("volume_outline"):
+            generation_outline_context["volume_outline"] = volume_outline
+        chapter_extra = outline.get("extra") or {}
         relevance_text = "\n".join(
             part for part in (
                 query,
+                format_overview_outline(generation_outline_context.get("overview_outline")),
+                format_volume_outline(generation_outline_context.get("previous_volume_outline")),
                 volume_outline.get("title", ""),
                 volume_outline.get("description", ""),
                 volume_outline.get("core_events", ""),
+                format_volume_outline(generation_outline_context.get("next_volume_outline")),
                 outline.get("title", ""),
                 outline.get("description", ""),
+                format_chapter_outline(generation_outline_context.get("next_chapter_outline")),
             ) if part
         )
 
@@ -98,11 +219,14 @@ class MemoryRetriever:
         selected_foreshadowing_ids = self._selection_ids(selection, "foreshadowing_ids")
 
         # 步骤 3：用同一检索文本排序人物、组织和伏笔，不因关键词不完全匹配而筛空。
+        chapter_character_ids = self._parse_related_ids(chapter_extra.get("characters"))
+        chapter_foreshadowing_ids = self._parse_related_ids(chapter_extra.get("foreshadowings"))
+        volume_character_ids = self._parse_related_ids(volume_outline.get("characters"))
         characters = self._get_characters(
             relevance_text,
             top_k=8,
             chapter_no=chapter_no,
-            selected_ids=selected_character_ids,
+            selected_ids=(selected_character_ids or set()) | chapter_character_ids | volume_character_ids,
         )
         character_ids = {item.get("id") for item in characters if item.get("id") is not None}
         character_org_ids: set[int] = set()
@@ -127,7 +251,7 @@ class MemoryRetriever:
             outline_id=outline_id,
             character_ids=character_ids,
             organization_ids={item.get("id") for item in organizations if item.get("id") is not None},
-            selected_ids=selected_foreshadowing_ids,
+            selected_ids=(selected_foreshadowing_ids or set()) | chapter_foreshadowing_ids,
         )
 
         # 步骤 4：只取本章之前可见的已确认记忆，防止补写旧章时读到未来信息。
@@ -137,6 +261,7 @@ class MemoryRetriever:
             "world_settings": world_settings,
             "volume_outline": volume_outline,
             "outline": outline,
+            **generation_outline_context,
             "characters": characters,
             "organizations": organizations,
             "foreshadowings": foreshadowings,
@@ -145,6 +270,8 @@ class MemoryRetriever:
                 limit=8, chapter_no=chapter_no, query=relevance_text
             ),
         }
+        if include_generation_outline_context:
+            result["generation_outline_context_text"] = format_generation_outline_context(result)
         return result
 
     @staticmethod
@@ -266,37 +393,161 @@ class MemoryRetriever:
         return items[:max(limit, len(selected_ids or set()))]
 
     def _get_outline(self, outline_id: int | None, chapter_no: int) -> dict:
-        """获取本章大纲。"""
-        from app.models.business import Outline
-        from sqlalchemy import or_
+        """获取本章细纲，拒绝把总览或卷节点误当作章节规划。"""
 
         with get_business_db() as db:
+            row = None
             if outline_id:
                 row = (
                     db.query(Outline)
-                    .filter(Outline.id == outline_id, Outline.project_id == self.project_id)
+                    .filter(
+                        Outline.id == outline_id,
+                        Outline.project_id == self.project_id,
+                        Outline.node_type == "chapter",
+                    )
                     .first()
                 )
-            else:
+            if not row:
                 row = (
                     db.query(Outline)
                     .filter(
                         Outline.project_id == self.project_id,
-                        or_(Outline.chapter_no == chapter_no, Outline.sort_index == chapter_no),
+                        Outline.node_type == "chapter",
+                        Outline.chapter_no == chapter_no,
                     )
-                    .order_by(Outline.chapter_no.desc(), Outline.id.desc())
+                    .order_by(Outline.sort_index.asc(), Outline.id.asc())
                     .first()
                 )
             if row:
-                return {
-                    "id": row.id,
-                    "title": row.title,
-                    "description": row.description,
-                    "chapter_no": row.chapter_no or chapter_no,
-                    "status": row.status,
-                    "volume_id": row.volume_id,
-                }
+                result = self._outline_to_dict(row)
+                result["chapter_no"] = row.chapter_no or chapter_no
+                return result
             return {}
+
+    @staticmethod
+    def _outline_to_dict(row: Any) -> dict[str, Any]:
+        """将大纲节点转成包含最新精细设定的上下文记录。"""
+        updated_at = getattr(row, "updated_at", None)
+        return {
+            "id": row.id,
+            "project_id": row.project_id,
+            "node_type": row.node_type,
+            "title": row.title or "",
+            "description": row.description or "",
+            "status": row.status or "",
+            "volume_no": row.volume_no,
+            "chapter_no": row.chapter_no,
+            "sort_index": row.sort_index,
+            "volume_id": row.volume_id,
+            "extra": _decode_outline_extra(row.extra),
+            "updated_at": updated_at.isoformat() if updated_at else None,
+        }
+
+    def _get_generation_outline_context(self, chapter_no: int, outline: dict[str, Any]) -> dict[str, Any]:
+        """读取本次生成需要的总览、前后卷纲和相邻单章细纲最新保存版本。"""
+        with get_business_db() as db:
+            rows = db.query(Outline).filter(Outline.project_id == self.project_id).all()
+
+        overview_row = next(
+            (row for row in rows if row.node_type == "overview" or row.title == "大纲总览"),
+            None,
+        )
+        volume_rows = sorted(
+            (row for row in rows if row.node_type == "volume"),
+            key=lambda row: (row.volume_no if row.volume_no is not None else 2**31, row.id),
+        )
+        chapter_rows = sorted(
+            (row for row in rows if row.node_type == "chapter"),
+            key=lambda row: (
+                row.chapter_no if row.chapter_no is not None else 2**31,
+                row.sort_index or 0,
+                row.id,
+            ),
+        )
+
+        current_volume_index = next(
+            (index for index, row in enumerate(volume_rows) if row.id == outline.get("volume_id")),
+            None,
+        )
+        chapter_index = next(
+            (index for index, row in enumerate(chapter_rows) if row.id == outline.get("id")),
+            None,
+        )
+        if chapter_index is None:
+            chapter_index = next(
+                (index for index, row in enumerate(chapter_rows) if row.chapter_no == chapter_no),
+                None,
+            )
+
+        next_chapter_row = (
+            chapter_rows[chapter_index + 1]
+            if chapter_index is not None and chapter_index + 1 < len(chapter_rows)
+            else None
+        )
+        current_volume = volume_rows[current_volume_index] if current_volume_index is not None else None
+        previous_volume = volume_rows[current_volume_index - 1] if current_volume_index not in (None, 0) else None
+        next_volume = (
+            volume_rows[current_volume_index + 1]
+            if current_volume_index is not None and current_volume_index + 1 < len(volume_rows)
+            else None
+        )
+        previous_chapter = self._get_previous_chapter_continuity(chapter_no)
+
+        return {
+            "overview_outline": self._overview_to_dict(overview_row) if overview_row else {},
+            "previous_volume_outline": self._volume_to_dict(previous_volume) if previous_volume else {},
+            "volume_outline": self._volume_to_dict(current_volume) if current_volume else {},
+            "next_volume_outline": self._volume_to_dict(next_volume) if next_volume else {},
+            "next_chapter_outline": self._outline_to_dict(next_chapter_row) if next_chapter_row else {},
+            "previous_chapter": previous_chapter,
+        }
+
+    @staticmethod
+    def _overview_to_dict(row: Any) -> dict[str, Any]:
+        result = MemoryRetriever._outline_to_dict(row)
+        result["extra"] = _decode_outline_extra(row.extra)
+        return result
+
+    @staticmethod
+    def _volume_to_dict(row: Any) -> dict[str, Any]:
+        result = MemoryRetriever._outline_to_dict(row)
+        extra = _decode_outline_extra(row.extra)
+        result.update({
+            "core_events": str(extra.get("core_events") or ""),
+            "locations": str(extra.get("locations") or ""),
+            "climax": str(extra.get("climax") or ""),
+            "ai_summary": str(extra.get("ai_summary") or ""),
+            "chapter_suggestions": str(extra.get("chapter_suggestions") or ""),
+            "target_chapters": extra.get("target_chapters"),
+            "characters": sorted(MemoryRetriever._parse_related_ids(extra.get("characters"))),
+        })
+        return result
+
+    def _get_previous_chapter_continuity(self, chapter_no: int) -> dict[str, Any]:
+        """读取紧邻上一章的已保存摘要和正文结尾，不引用当前章之后的正文。"""
+        with get_business_db() as db:
+            row = (
+                db.query(Chapter)
+                .filter(Chapter.project_id == self.project_id, Chapter.chapter_no < chapter_no)
+                .order_by(Chapter.chapter_no.desc(), Chapter.id.desc())
+                .first()
+            )
+            if not row:
+                return {}
+            summary = (
+                db.query(ChapterSummary)
+                .filter(ChapterSummary.chapter_id == row.id)
+                .order_by(ChapterSummary.id.desc())
+                .first()
+            )
+            content = re.sub(r"\s+", " ", str(row.content or "")).strip()
+            return {
+                "chapter_id": row.id,
+                "chapter_no": row.chapter_no,
+                "title": row.title or "",
+                "summary": summary.summary if summary else "",
+                "ending_excerpt": content[-1200:],
+            }
 
     def _get_volume_outline(self, volume_id: int | None) -> dict:
         """读取目标章节所属卷纲；忽略不存在、跨项目或非卷节点的关联。"""
@@ -314,24 +565,7 @@ class MemoryRetriever:
             if not row:
                 return {}
 
-            extra: dict[str, Any] = {}
-            try:
-                decoded = json.loads(row.extra or "{}")
-                if isinstance(decoded, dict):
-                    extra = decoded
-            except (TypeError, json.JSONDecodeError):
-                # 旧数据中的扩展字段可能为空或格式异常；卷名和简介仍可正常使用。
-                extra = {}
-
-            return {
-                "id": row.id,
-                "title": row.title or "",
-                "volume_no": row.volume_no,
-                "description": row.description or "",
-                "core_events": str(extra.get("core_events") or ""),
-                "locations": str(extra.get("locations") or ""),
-                "climax": str(extra.get("climax") or ""),
-            }
+            return self._volume_to_dict(row)
 
     @staticmethod
     def _normalize_text(value: Any) -> str:
@@ -733,6 +967,12 @@ class MemoryRetriever:
         if outline.get("description"):
             lines.append(f"内容：{outline['description']}")
         lines.append("")
+
+        generation_outline_context = memory_bundle.get("generation_outline_context_text")
+        if generation_outline_context:
+            lines.append("=== 全书及相邻卷章连续性资料 ===")
+            lines.append(generation_outline_context)
+            lines.append("")
 
         lines.append("=== 出场人物 ===")
         if characters:

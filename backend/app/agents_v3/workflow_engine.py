@@ -430,6 +430,7 @@ class WorkflowEngine:
             query=query,
             top_k=10,
             selection=self.session_context.get("context_selection"),
+            include_generation_outline_context=step.agent_type in {"planner", "writer"},
         )
 
         # 从会话记忆中映射输入（L2 会话记忆）
@@ -445,6 +446,7 @@ class WorkflowEngine:
         context["chapter_no"] = chapter_no
         context["outline_id"] = outline_id
         context["volume_outline_text"] = format_volume_outline(base_context.get("volume_outline"))
+        context["generation_outline_context_text"] = base_context.get("generation_outline_context_text", "")
         context["volume_title"] = base_context.get("volume_outline", {}).get("title", "")
         context["outline_title"] = base_context.get("outline", {}).get("title", "")
         context["outline_desc"] = base_context.get("outline", {}).get("description", "")

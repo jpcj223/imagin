@@ -446,6 +446,7 @@
                       <div class="resolved-context-section-title">每次生成必读</div>
                       <article v-for="item in contextPreview.required_context" :key="item.label" class="resolved-context-required-item">
                         <strong>{{ item.label }} · {{ item.title || '未命名' }}</strong>
+                        <small v-if="item.updated_at" class="resolved-context-updated">设定更新于 {{ formatDateTime(item.updated_at) }}</small>
                         <p>{{ item.content || '暂无补充说明' }}</p>
                       </article>
                     </div>
@@ -1341,6 +1342,11 @@ function formatChars(content: string): string {
   return len.toString()
 }
 
+function formatDateTime(value: string): string {
+  const date = new Date(value)
+  return Number.isNaN(date.getTime()) ? value : date.toLocaleString('zh-CN', { hour12: false })
+}
+
 function splitParagraphs(value: string) {
   return value
     .split(/\n{2,}/)
@@ -1840,7 +1846,7 @@ async function restoreChapterSelection(projectId: number, chapterList: ChapterIt
   clearAnalysisSections()
   polishOriginal.value = ''
 
-  // 步骤 2：优先恢复作者上次打开的章节，其次选择最新创建的章节草稿。
+  // 步骤 2：默认回到最近已有正文的章节；首次打开或尚无正文时再恢复上次选中项。
   let rememberedId: number | null = null
   try {
     const storedId = Number(window.localStorage.getItem(chapterSelectionStorageKey(projectId)))
@@ -1848,7 +1854,13 @@ async function restoreChapterSelection(projectId: number, chapterList: ChapterIt
   } catch {
     // 本地存储不可用时继续按后端列表的最新记录恢复。
   }
-  const chapter = chapterList.find((item) => item.id === rememberedId) ?? chapterList[0]
+  const orderedChapters = [...chapterList].sort((left, right) =>
+    left.chapter_no - right.chapter_no || left.id - right.id,
+  )
+  const generatedChapters = orderedChapters.filter((item) => Boolean(item.content?.trim()))
+  const chapter = generatedChapters[generatedChapters.length - 1]
+    ?? orderedChapters.find((item) => item.id === rememberedId)
+    ?? orderedChapters[0]
   if (chapter) {
     await selectChapter(chapter, { recordEvent: false })
   } else {
@@ -4370,6 +4382,13 @@ watch(
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 14px;
+}
+
+.resolved-context-updated {
+  display: block;
+  margin-top: 2px;
+  color: var(--text-tertiary);
+  font-size: 10px;
 }
 
 .generation-controls {

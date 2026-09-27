@@ -2,7 +2,12 @@ from __future__ import annotations
 
 from typing import Any
 
-from app.memory.retriever import MemoryRetriever, format_volume_outline
+from app.memory.retriever import (
+    MemoryRetriever,
+    format_chapter_outline,
+    format_overview_outline,
+    format_volume_outline,
+)
 
 
 def build_chapter_context(
@@ -11,11 +16,12 @@ def build_chapter_context(
     outline_id: int | None = None,
     query: str = "",
     selection: dict[str, list[int]] | None = None,
+    include_generation_outline_context: bool = False,
 ) -> dict[str, Any]:
     """统一组装章节 Agent 上下文，旧版和 V3 共用同一检索策略。
 
     步骤 1：将章节号、大纲和用户要求传给项目记忆检索器。
-    步骤 2：返回排序后的设定资料、历史摘要和本章可见记忆。
+    步骤 2：按调用场景决定是否附带相邻卷章规划；分析旧章时默认不读取未来规划。
     """
     # 步骤 1：复用生成工作流的记忆检索器，避免预览、旧版与 V3 读取不同资料。
     retriever = MemoryRetriever(project_id)
@@ -25,6 +31,7 @@ def build_chapter_context(
         query=query,
         top_k=10,
         selection=selection,
+        include_generation_outline_context=include_generation_outline_context,
     )
 
 
@@ -42,10 +49,22 @@ def build_context_preview(
     步骤 2：保留前端需要展示的字段，省略正文和长篇设定详情。
     """
     # 步骤 1：使用与 Agent 相同的检索器、章节边界和用户补充要求。
-    context = build_chapter_context(project_id, chapter_no, outline_id, query, selection)
+    context = build_chapter_context(
+        project_id,
+        chapter_no,
+        outline_id,
+        query,
+        selection,
+        include_generation_outline_context=True,
+    )
     world = context["world"]
     volume_outline = context.get("volume_outline") or {}
     outline = context["outline"]
+    overview_outline = context.get("overview_outline") or {}
+    previous_volume_outline = context.get("previous_volume_outline") or {}
+    next_volume_outline = context.get("next_volume_outline") or {}
+    next_chapter_outline = context.get("next_chapter_outline") or {}
+    previous_chapter = context.get("previous_chapter") or {}
     selection = selection or {}
     manual_selection = manual_selection or {}
 
@@ -62,11 +81,59 @@ def build_context_preview(
         "chapter_no": chapter_no,
         "required_context": [
             {
-                "label": "本卷大纲",
+                "label": "大纲总览",
+                "title": overview_outline.get("title", "全书主线"),
+                "content": format_overview_outline(overview_outline),
+                "updated_at": overview_outline.get("updated_at"),
+            },
+            *([
+                {
+                    "label": "前一卷纲",
+                    "title": previous_volume_outline.get("title", ""),
+                    "content": format_volume_outline(previous_volume_outline),
+                    "updated_at": previous_volume_outline.get("updated_at"),
+                }
+            ] if previous_volume_outline else []),
+            {
+                "label": "当前卷纲",
                 "title": volume_outline.get("title", ""),
                 "content": format_volume_outline(volume_outline),
+                "updated_at": volume_outline.get("updated_at"),
             },
-            {"label": "本章大纲", "title": outline.get("title", ""), "content": outline.get("description", "")},
+            *([
+                {
+                    "label": "下一卷纲 · 仅作铺垫",
+                    "title": next_volume_outline.get("title", ""),
+                    "content": format_volume_outline(next_volume_outline),
+                    "updated_at": next_volume_outline.get("updated_at"),
+                }
+            ] if next_volume_outline else []),
+            {
+                "label": "当前章细纲",
+                "title": outline.get("title", ""),
+                "content": format_chapter_outline(outline),
+                "updated_at": outline.get("updated_at"),
+            },
+            *([
+                {
+                    "label": "下一章细纲 · 仅作承接",
+                    "title": next_chapter_outline.get("title", ""),
+                    "content": format_chapter_outline(next_chapter_outline),
+                    "updated_at": next_chapter_outline.get("updated_at"),
+                }
+            ] if next_chapter_outline else []),
+            *([
+                {
+                    "label": "上一章衔接",
+                    "title": f"第{previous_chapter.get('chapter_no', '')}章 {previous_chapter.get('title', '')}".strip(),
+                    "content": "\n".join(
+                        part for part in (
+                            f"前情摘要：{previous_chapter.get('summary')}" if previous_chapter.get("summary") else "",
+                            f"正文结尾：{previous_chapter.get('ending_excerpt')}" if previous_chapter.get("ending_excerpt") else "",
+                        ) if part
+                    ) or "上一章暂无已保存摘要或正文结尾",
+                }
+            ] if previous_chapter else []),
             {"label": "项目世界观", "title": world.get("title") or world.get("era", ""), "content": world.get("rules", "")},
         ],
         "volume_outline": {

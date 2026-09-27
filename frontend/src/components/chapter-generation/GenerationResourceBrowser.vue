@@ -48,38 +48,70 @@
               class="resource-tab-item"
               :class="{ active: leftActiveTab === tab.key, 'has-match': keyword.trim() && tab.matchCount > 0, 'no-match': keyword.trim() && tab.matchCount === 0 }"
               @click="leftActiveTab = tab.key"
-              :title="`${tab.label}：已选 ${tab.selectedCount} / 共 ${tab.count}${keyword.trim() ? ` · 当前匹配 ${tab.matchCount}` : ''}`"
+              :title="`${tab.label}：${tab.badgeText || `已选 ${tab.selectedCount} / 共 ${tab.count}`}${keyword.trim() ? ` · 当前匹配 ${tab.matchCount}` : ''}`"
             >
               <span class="tab-icon">{{ tab.icon }}</span>
               <span class="tab-name">{{ tab.label }}</span>
               <span class="tab-badge" :class="{ 'match-badge': keyword.trim() && tab.matchCount > 0 }">
-                {{ tab.selectedCount }}/{{ tab.count }}
+                {{ tab.badgeText || `${tab.selectedCount}/${tab.count}` }}
               </span>
             </div>
           </div>
 
           <n-scrollbar class="resource-tab-content">
             <!-- 大纲 Tab -->
-            <div v-if="leftActiveTab === 'outline'" class="tab-list">
+            <div v-if="leftActiveTab === 'outline'" class="tab-list outline-list">
               <div v-if="filteredOutlines.length === 0" class="list-empty">
                 <template v-if="keyword.trim()">🔍 未找到匹配「{{ keyword }}」的大纲</template>
                 <template v-else>暂无大纲</template>
               </div>
-              <div
-                v-for="item in filteredOutlines"
-                :key="item.id"
-                class="resource-item"
-                :class="{ active: form.outline_id === item.id }"
-                @click="selectOutline(item)"
-              >
-                <div class="item-main">
-                  <div class="item-title" v-html="safeHighlight(item.title)"></div>
-                  <div class="item-meta">
-                    <span class="chapter-no-badge">#{{ item.chapter_no ?? item.sort_index }}</span>
-                    <span v-html="safeHighlight(item.description)"></span>
+              <template v-if="filteredOverview">
+                <div class="outline-group-label">全书规划</div>
+                <section class="outline-entry" :class="{ expanded: expandedOutlineKey === `overview-${filteredOverview.id}` }">
+                  <button class="outline-entry-header" type="button" @click="toggleOutline(`overview-${filteredOverview.id}`)">
+                    <span class="outline-kind overview-kind">总览</span>
+                    <span class="outline-entry-title">{{ filteredOverview.title || '大纲总览' }}</span>
+                    <span class="outline-chevron" aria-hidden="true">⌄</span>
+                  </button>
+                  <p class="outline-entry-summary">{{ filteredOverview.description || '尚未填写全书主线' }}</p>
+                  <div v-if="expandedOutlineKey === `overview-${filteredOverview.id}`" class="outline-entry-detail">
+                    <div v-if="overviewExtra.target_words || overviewExtra.target_volumes || overviewExtra.target_chapters || overviewExtra.pace">
+                      <strong>全书规模与节奏</strong>
+                      <p>{{ overviewScaleSummary }}</p>
+                    </div>
+                    <div v-if="overviewExtra.core_conflict"><strong>核心冲突</strong><p>{{ overviewExtra.core_conflict }}</p></div>
+                    <div v-if="overviewExtra.ending"><strong>结局方向</strong><p>{{ overviewExtra.ending }}</p></div>
+                    <div class="outline-auto-note">✓ 生成章节时自动纳入</div>
                   </div>
-                </div>
+                </section>
+              </template>
+
+              <div v-if="filteredVolumes.length" class="outline-group-label volume-group-label">
+                分卷大纲 <span>{{ filteredVolumes.length }} 卷</span>
               </div>
+              <section
+                v-for="item in filteredVolumes"
+                :key="item.id"
+                class="outline-entry volume-outline-entry"
+                :class="{ expanded: expandedOutlineKey === `volume-${item.id}` }"
+              >
+                <button class="outline-entry-header" type="button" @click="toggleOutline(`volume-${item.id}`)">
+                  <span class="outline-kind volume-kind">卷{{ item.volume_no ?? '—' }}</span>
+                  <span class="outline-entry-title">{{ item.title || '未命名卷' }}</span>
+                  <span class="outline-entry-count">{{ chaptersInVolume(item.id).length }} 章</span>
+                  <span class="outline-chevron" aria-hidden="true">⌄</span>
+                </button>
+                <p class="outline-entry-summary">{{ item.description || '尚未填写卷纲' }}</p>
+                <div v-if="expandedOutlineKey === `volume-${item.id}`" class="outline-entry-detail">
+                  <div v-if="volumeExtra(item).target_chapters"><strong>预计章节数</strong><p>{{ volumeExtra(item).target_chapters }} 章</p></div>
+                  <div v-if="volumeExtra(item).core_events"><strong>核心事件</strong><p>{{ volumeExtra(item).core_events }}</p></div>
+                  <div v-if="volumeCharacterNames(item).length"><strong>本卷指定人物</strong><p>{{ volumeCharacterNames(item).join('、') }}</p></div>
+                  <div v-if="volumeExtra(item).locations"><strong>主要场景</strong><p>{{ volumeExtra(item).locations }}</p></div>
+                  <div v-if="volumeExtra(item).climax"><strong>卷末高潮</strong><p>{{ volumeExtra(item).climax }}</p></div>
+                  <div v-if="volumeExtra(item).chapter_suggestions"><strong>章节建议</strong><p>{{ volumeExtra(item).chapter_suggestions }}</p></div>
+                  <div class="outline-auto-note">✓ 生成章节时自动纳入</div>
+                </div>
+              </section>
             </div>
 
             <!-- 章节 Tab -->
@@ -93,6 +125,7 @@
                 :key="item.id"
                 class="resource-item"
                 :class="{ active: chapterId === item.id }"
+                :ref="chapterId === item.id ? setActiveChapterElement : undefined"
                 @click="selectChapter(item)"
               >
                 <div class="item-main">
@@ -270,7 +303,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref, toRefs } from 'vue'
+import { computed, nextTick, ref, toRefs, watch, type ComponentPublicInstance } from 'vue'
 import MemoryLayer from '@/components/MemoryLayer.vue'
 import type { MemoryLevel } from '@/components/MemoryLayer.vue'
 import type {
@@ -283,7 +316,7 @@ import type {
 } from '@/types/domain'
 
 type TabKey = 'outline' | 'chapter' | 'character' | 'organization' | 'world' | 'foreshadowing'
-type ResourceTab = { key: TabKey; label: string; icon: string; count: number; selectedCount: number; matchCount: number }
+type ResourceTab = { key: TabKey; label: string; icon: string; count: number; selectedCount: number; matchCount: number; badgeText?: string }
 
 type ResourceProps = {
   memoryLevels: MemoryLevel[]
@@ -323,17 +356,27 @@ const {
 } = toRefs(props)
 const keyword = ref('')
 const leftActiveTab = ref<TabKey>('outline')
+const expandedOutlineKey = ref<string | null>(null)
+const activeChapterElement = ref<HTMLElement | null>(null)
 
 // 步骤 2：按当前搜索词筛选资源，并为各个页签生成数量摘要。
+const overviewOutline = computed(() => outlines.value.find((item) => item.node_type === 'overview' || item.title === '大纲总览') ?? null)
+const volumeOutlines = computed(() => outlines.value
+  .filter((item) => item.node_type === 'volume')
+  .sort((left, right) => (left.volume_no ?? Number.MAX_SAFE_INTEGER) - (right.volume_no ?? Number.MAX_SAFE_INTEGER) || left.id - right.id))
 const filteredOutlines = computed(() => {
   const text = keyword.value.trim().toLocaleLowerCase('zh-CN')
-  if (!text) return outlines.value
-  return outlines.value.filter((item) => [item.title, item.description].join(' ').toLocaleLowerCase('zh-CN').includes(text))
+  const available = [overviewOutline.value, ...volumeOutlines.value].filter((item): item is OutlineItem => Boolean(item))
+  if (!text) return available
+  return available.filter((item) => [item.title, item.description].join(' ').toLocaleLowerCase('zh-CN').includes(text))
 })
+const filteredOverview = computed(() => filteredOutlines.value.find((item) => item.node_type === 'overview' || item.title === '大纲总览') ?? null)
+const filteredVolumes = computed(() => filteredOutlines.value.filter((item) => item.node_type === 'volume'))
 const filteredChapters = computed(() => {
   const text = keyword.value.trim().toLocaleLowerCase('zh-CN')
-  if (!text) return chapters.value
-  return chapters.value.filter((item) => [item.title, item.content].join(' ').toLocaleLowerCase('zh-CN').includes(text))
+  const ordered = [...chapters.value].sort((left, right) => left.chapter_no - right.chapter_no || left.id - right.id)
+  if (!text) return ordered
+  return ordered.filter((item) => [item.title, item.content].join(' ').toLocaleLowerCase('zh-CN').includes(text))
 })
 const filteredCharacters = computed(() => {
   const text = keyword.value.trim().toLocaleLowerCase('zh-CN')
@@ -356,7 +399,7 @@ const filteredForeshadowings = computed(() => {
   return foreshadowings.value.filter((item) => [item.keyword, item.description].join(' ').toLocaleLowerCase('zh-CN').includes(text))
 })
 const resourceTabs = computed<ResourceTab[]>(() => [
-  { key: 'outline', label: '大纲', icon: '📋', count: outlines.value.length, selectedCount: outlineId.value ? 1 : 0, matchCount: filteredOutlines.value.length },
+  { key: 'outline', label: '大纲', icon: '📋', count: filteredOutlines.value.length, selectedCount: 0, matchCount: filteredOutlines.value.length, badgeText: '自动' },
   { key: 'chapter', label: '章节', icon: '📝', count: chapters.value.length, selectedCount: chapterId.value ? 1 : 0, matchCount: filteredChapters.value.length },
   { key: 'character', label: '人物', icon: '👤', count: characters.value.length, selectedCount: selectedCharacterIds.value.length, matchCount: filteredCharacters.value.length },
   { key: 'organization', label: '组织', icon: '🏛️', count: organizations.value.length, selectedCount: selectedOrganizationIds.value.length, matchCount: filteredOrganizations.value.length },
@@ -371,8 +414,47 @@ const totalSelectedCount = computed(() => selectedCharacterIds.value.length + se
 const form = computed(() => ({ outline_id: outlineId.value, chapter_no: chapterNo.value }))
 
 // 步骤 3：保持列表显示辅助逻辑与生成工作台状态相互隔离。
-function selectOutline(item: OutlineItem) { emit('select-outline', item) }
 function selectChapter(item: ChapterItem) { emit('select-chapter', item) }
+function toggleOutline(key: string) {
+  expandedOutlineKey.value = expandedOutlineKey.value === key ? null : key
+}
+function chaptersInVolume(volumeId: number) {
+  return outlines.value.filter((item) => item.node_type === 'chapter' && item.volume_id === volumeId)
+}
+function parseExtra(item: OutlineItem): Record<string, unknown> {
+  try {
+    const value = JSON.parse(item.extra || '{}')
+    return value && typeof value === 'object' && !Array.isArray(value) ? value : {}
+  } catch {
+    return {}
+  }
+}
+const overviewExtra = computed(() => overviewOutline.value ? parseExtra(overviewOutline.value) : {})
+const paceLabels: Record<string, string> = { '1': '慢热', '2': '偏慢', '3': '适中', '4': '偏快', '5': '高燃' }
+const overviewScaleSummary = computed(() => [
+  overviewExtra.value.target_words ? `约 ${overviewExtra.value.target_words} 字` : '',
+  overviewExtra.value.target_volumes ? `${overviewExtra.value.target_volumes} 卷` : '',
+  overviewExtra.value.target_chapters ? `${overviewExtra.value.target_chapters} 章` : '',
+  overviewExtra.value.pace ? `整体节奏 ${paceLabels[String(overviewExtra.value.pace)] || overviewExtra.value.pace}` : '',
+].filter(Boolean).join(' · '))
+function volumeExtra(item: OutlineItem) {
+  return parseExtra(item) as Record<string, string>
+}
+function volumeCharacterNames(item: OutlineItem): string[] {
+  const values = parseExtra(item).characters
+  const ids = (Array.isArray(values) ? values : String(values || '').split(/[,，;；\s]+/))
+    .map((value) => Number(value))
+    .filter((value) => Number.isInteger(value) && value > 0)
+  return ids.map((id) => characters.value.find((character) => character.id === id)?.name || `人物 ${id}`)
+}
+function setActiveChapterElement(element: Element | ComponentPublicInstance | null) {
+  activeChapterElement.value = element instanceof HTMLElement ? element : null
+}
+watch([chapterId, leftActiveTab], async ([, tab]) => {
+  if (tab !== 'chapter') return
+  await nextTick()
+  activeChapterElement.value?.scrollIntoView({ block: 'nearest' })
+})
 function toggleCharacter(id: number) { emit('toggle-character', id) }
 function toggleOrganization(id: number) { emit('toggle-organization', id) }
 function toggleWorld(id: number) { emit('toggle-world', id) }
@@ -604,6 +686,142 @@ function formatChars(content: string): string {
   display: flex;
   flex-direction: column;
   gap: 4px;
+}
+
+.outline-list {
+  gap: 8px;
+}
+
+.outline-group-label {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 4px 2px 0;
+  color: var(--text-muted);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+}
+
+.outline-group-label span {
+  color: var(--text-secondary);
+  font-weight: 400;
+}
+
+.volume-group-label {
+  margin-top: 4px;
+}
+
+.outline-entry {
+  min-width: 0;
+  padding: 9px 10px;
+  border: 1px solid rgba(148, 163, 184, 0.12);
+  border-radius: 9px;
+  background: rgba(255, 255, 255, 0.025);
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+
+.outline-entry:hover,
+.outline-entry.expanded {
+  border-color: rgba(129, 140, 248, 0.32);
+  background: rgba(99, 102, 241, 0.07);
+}
+
+.outline-entry-header {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  color: inherit;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+}
+
+.outline-entry-title {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-primary);
+  font-size: 12px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.outline-kind {
+  flex: 0 0 auto;
+  padding: 2px 6px;
+  border-radius: 5px;
+  font-size: 10px;
+  font-weight: 600;
+}
+
+.overview-kind {
+  color: #c4b5fd;
+  background: rgba(139, 92, 246, 0.17);
+}
+
+.volume-kind {
+  color: #93c5fd;
+  background: rgba(59, 130, 246, 0.16);
+}
+
+.outline-entry-count {
+  flex: 0 0 auto;
+  margin-left: auto;
+  color: var(--text-muted);
+  font-size: 10px;
+}
+
+.outline-chevron {
+  flex: 0 0 auto;
+  color: var(--text-muted);
+  transition: transform 0.15s ease;
+}
+
+.outline-entry.expanded .outline-chevron {
+  transform: rotate(180deg);
+}
+
+.outline-entry-summary {
+  display: -webkit-box;
+  overflow: hidden;
+  margin: 6px 0 0;
+  color: var(--text-secondary);
+  font-size: 11px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.outline-entry-detail {
+  display: grid;
+  gap: 8px;
+  margin-top: 9px;
+  padding-top: 8px;
+  border-top: 1px solid rgba(148, 163, 184, 0.12);
+}
+
+.outline-entry-detail strong {
+  color: #cbd5e1;
+  font-size: 10px;
+}
+
+.outline-entry-detail p {
+  margin: 3px 0 0;
+  color: var(--text-secondary);
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.outline-auto-note {
+  color: #34d399;
+  font-size: 10px;
 }
 
 .list-empty {

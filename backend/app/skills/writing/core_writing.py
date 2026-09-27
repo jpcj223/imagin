@@ -53,6 +53,7 @@ class CoreWritingSkill(BaseSkill):
         foreshadowings = context.get("foreshadowings", [])
         recent_summaries = context.get("recent_summaries", [])
         long_term_memories = context.get("long_term_memories", [])
+        generation_outline_context = context.get("generation_outline_context_text") or "暂无全书及相邻卷章细纲"
 
         # 步骤 2：规划结果为空时说明当前模板直接写作，不展示空白的计划区。
         writing_plan = context.get("writing_plan") or "快速写作模式：没有独立规划步骤，请直接依据本章大纲安排剧情。"
@@ -61,6 +62,8 @@ class CoreWritingSkill(BaseSkill):
         context_text = f"""
 项目：{project.get("name", "")}
 世界观：{_format_world(world, world_settings)}
+全书及相邻卷章连续性资料（总览、前后卷纲、当前与下一章细纲、上一章衔接）：
+{generation_outline_context}
 当前卷纲：{format_volume_outline(volume_outline)}
 本章大纲：{_format_outline(outline)}
 角色：{_format_characters(characters)}

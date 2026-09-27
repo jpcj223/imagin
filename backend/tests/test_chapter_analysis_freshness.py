@@ -175,9 +175,10 @@ class ChapterAnalysisFreshnessTests(unittest.TestCase):
             preview = build_context_preview(1, 2, 9, "", selection, manual_selection)
 
         self.assertEqual([item["label"] for item in preview["required_context"]], [
-            "本卷大纲", "本章大纲", "项目世界观",
+            "大纲总览", "当前卷纲", "当前章细纲", "项目世界观",
         ])
-        self.assertIn("发现旧航线", preview["required_context"][0]["content"])
+        current_volume = next(item for item in preview["required_context"] if item["label"] == "当前卷纲")
+        self.assertIn("发现旧航线", current_volume["content"])
         self.assertEqual(preview["volume_outline"]["id"], 8)
         self.assertEqual([item["selection_source"] for item in preview["world_settings"]], [
             "manual", "recommended", "automatic",

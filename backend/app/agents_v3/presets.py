@@ -96,9 +96,12 @@ def create_planner_agent(variant: str = "default", **extra_params) -> BaseAgent:
         )
         .with_user_prompt_template(
             "请根据本章大纲，制定详细的写作计划。\n\n"
+            "全书及相邻卷章连续性资料（总览、前后卷纲、当前与下一章细纲、上一章衔接）：\n"
+            "{generation_outline_context_text}\n\n"
             "当前卷纲（必读）：{volume_outline_text}\n\n"
             "本章大纲：{outline_title}\n"
             "大纲描述：{outline_desc}\n\n"
+            "下一卷和下一章仅用于承接、伏笔和方向铺垫，不得提前写完其核心事件；当前章必须落实当前章细纲。\n\n"
             "请输出：\n"
             "【出场人物】\n【剧情节拍】\n【场景安排】\n【伏笔安排】\n【注意事项】"
         )

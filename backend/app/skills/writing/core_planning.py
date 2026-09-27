@@ -37,6 +37,7 @@ class CorePlanningSkill(BaseSkill):
         """构建规划上下文文本。"""
         outline = context.get("outline", {})
         context["volume_outline_text"] = format_volume_outline(context.get("volume_outline"))
+        context["generation_outline_context_text"] = context.get("generation_outline_context_text") or "暂无全书及相邻卷章细纲"
         characters = context.get("characters", [])
         foreshadowings = context.get("foreshadowings", [])
         recent_summaries = context.get("recent_summaries", [])
