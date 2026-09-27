@@ -324,15 +324,29 @@ function captureSelection() {
 .editor-container {
   flex: 1;
   min-height: 0;
-  padding: 16px;
+  margin-right: 26px;
+  padding: 16px 0 16px 16px;
   overflow-x: hidden;
   overflow-y: auto;
-  scrollbar-width: none;
-  -ms-overflow-style: none;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.18) transparent;
 }
 
 .editor-container::-webkit-scrollbar {
-  display: none;
+  width: 5px;
+}
+
+.editor-container::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.editor-container::-webkit-scrollbar-thumb {
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.18);
+}
+
+.editor-container::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.3);
 }
 
 .chapter-textarea {
