@@ -382,7 +382,8 @@ const {
   selectedCharacterIds, selectedOrganizationIds, selectedWorldIds, selectedForeshadowingIds,
 } = toRefs(props)
 const keyword = ref('')
-const leftActiveTab = ref<TabKey>('outline')
+// 进入章节生成页时优先展示可直接选择和生成正文的单章细纲。
+const leftActiveTab = ref<TabKey>('chapter')
 const expandedOutlineKey = ref<string | null>(null)
 const activeChapterElement = ref<HTMLElement | null>(null)
 
