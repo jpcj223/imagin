@@ -1,6 +1,7 @@
 """章节生成参数的默认值、校验和 Prompt 描述。"""
 from __future__ import annotations
 
+import math
 from typing import Any
 
 
@@ -56,3 +57,11 @@ def build_skill_guidance(active_skills: list[str]) -> str:
     """把界面选择转换成明确、可审计的写作要求。"""
     lines = [SKILL_GUIDANCE[key] for key in active_skills if key in SKILL_GUIDANCE]
     return "\n".join(f"- {line}" for line in lines) or "按项目资料和本章目标完成连贯正文。"
+
+
+def target_word_range(target_word_count: int, tolerance: float = 0.1) -> tuple[int, int]:
+    """按正文区实际口径（忽略空白字符）计算字数验收范围。"""
+    target = max(1, int(target_word_count))
+    lower = math.ceil(target * (1 - tolerance))
+    upper = math.floor(target * (1 + tolerance))
+    return lower, max(lower, upper)

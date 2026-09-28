@@ -55,8 +55,8 @@ class GenerationPromptRoleTests(unittest.TestCase):
         prompt = "\n".join(message["content"] for message in messages)
 
         self.assertIn("第 8 章", prompt)
-        self.assertIn("按顺序列 4-7 步", prompt)
-        self.assertIn("行动/冲突、结果或新信息", prompt)
+        self.assertIn("按顺序列 4-5 步", prompt)
+        self.assertIn("行动/冲突及其结果或新信息", prompt)
         self.assertIn("下一章事件", prompt)
         self.assertIn("【当前卷】本卷目标", prompt)
         self.assertEqual(prompt.count("【相关人物】\n- 林澄：主角"), 1)

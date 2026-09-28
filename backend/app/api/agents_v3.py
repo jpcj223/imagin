@@ -27,7 +27,7 @@ from app.agents_v3.variants import VariantManager
 from app.agents_v3.workflow_engine import WorkflowEngine, list_templates
 from app.memory.manager import MemoryManager
 from app.services.chapter_content import content_fingerprint
-from app.services.chapter_targets import require_next_chapter_target
+from app.services.chapter_targets import require_chapter_generation_target
 from app.skills.registry import SkillRegistry
 
 
@@ -200,7 +200,7 @@ def get_agents_info() -> list[dict]:
 @router.post("/workflow/generate")
 def workflow_generate(payload: WorkflowGenerateRequest) -> dict:
     """同步执行工作流生成章节。"""
-    target = require_next_chapter_target(
+    target = require_chapter_generation_target(
         payload.project_id,
         payload.outline_id,
         payload.chapter_no,
@@ -243,7 +243,7 @@ def workflow_generate_stream(payload: WorkflowGenerateRequest) -> StreamingRespo
     使用 NDJSON：每行一个事件对象。
     """
 
-    target = require_next_chapter_target(
+    target = require_chapter_generation_target(
         payload.project_id,
         payload.outline_id,
         payload.chapter_no,

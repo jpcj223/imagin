@@ -3,7 +3,11 @@ import unittest
 from unittest.mock import patch
 from fastapi import HTTPException
 
-from app.services.chapter_targets import require_next_chapter_target, resolve_next_chapter_target
+from app.services.chapter_targets import (
+    require_next_chapter_target,
+    resolve_chapter_generation_target,
+    resolve_next_chapter_target,
+)
 
 
 class ResolveNextChapterTargetTests(unittest.TestCase):
@@ -101,6 +105,50 @@ class RequireNextChapterTargetTests(unittest.TestCase):
                 with self.assertRaises(HTTPException) as error:
                     require_next_chapter_target(1, outline_id, chapter_no, chapter_id)
                 self.assertEqual(error.exception.status_code, 409)
+
+
+class ResolveChapterGenerationTargetTests(unittest.TestCase):
+    def setUp(self):
+        self.outlines = [
+            {"id": 9, "node_type": "chapter", "chapter_no": 4, "sort_index": 4, "title": "七分钟回声", "description": "核对旧信号灯"},
+            {"id": 10, "node_type": "chapter", "chapter_no": 5, "sort_index": 5, "title": "错位的撤离声"},
+        ]
+        self.chapters = [
+            {"id": 81, "outline_id": 9, "chapter_no": 4, "title": "七分钟回声", "content": "已有正文"},
+            {"id": 82, "outline_id": 10, "chapter_no": 5, "title": "错位的撤离声", "content": ""},
+        ]
+
+    def test_allows_regenerating_the_selected_existing_chapter(self):
+        target = resolve_chapter_generation_target(self.outlines, self.chapters, 9, 4, 81)
+
+        self.assertEqual(target["chapter_id"], 81)
+        self.assertEqual(target["chapter_no"], 4)
+        self.assertEqual(target["outline_title"], "七分钟回声")
+
+    def test_allows_creating_selected_later_chapter_without_switching_to_first_blank(self):
+        target = resolve_chapter_generation_target(self.outlines, self.chapters, 10, 5, 82)
+
+        self.assertEqual(target["chapter_id"], 82)
+        self.assertEqual(target["chapter_no"], 5)
+
+    def test_rejects_missing_chapter_id_when_selected_outline_already_has_content(self):
+        with self.assertRaises(HTTPException) as error:
+            resolve_chapter_generation_target(self.outlines, self.chapters, 9, 4)
+
+        self.assertEqual(error.exception.status_code, 409)
+        self.assertIn("已有正文", error.exception.detail)
+
+    def test_rejects_chapter_id_from_another_outline(self):
+        with self.assertRaises(HTTPException) as error:
+            resolve_chapter_generation_target(self.outlines, self.chapters, 9, 4, 82)
+
+        self.assertEqual(error.exception.status_code, 409)
+
+    def test_rejects_outdated_chapter_number_after_outline_reordering(self):
+        with self.assertRaises(HTTPException) as error:
+            resolve_chapter_generation_target(self.outlines, self.chapters, 9, 3, 81)
+
+        self.assertEqual(error.exception.status_code, 409)
 
 
 if __name__ == "__main__":

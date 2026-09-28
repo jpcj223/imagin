@@ -35,7 +35,8 @@ def create_writer_agent(variant: str = "default", **extra_params) -> BaseAgent:
         .with_user_prompt_template(
             "请生成第 {chapter_no} 章正文。\n\n"
             "节奏等级：{rhythm_level}\n"
-            "目标字数：约 {target_word_count} 字（允许根据剧情完整度合理浮动）\n"
+            "字数目标：{target_word_count} 字；验收范围 {target_word_min}-{target_word_max} 字（正文去除空白后的字符数）。"
+            "请按目标范围控制篇幅，到达范围上限附近时自然收束，不得以重复环境、心理或信息来补字，也不要明显超出上限。\n"
             "本次写作重点：\n{writing_skill_guidance}\n\n"
             "用户补充要求：{instruction}\n\n"
             "本章规划：{writing_plan}\n\n"
@@ -112,10 +113,10 @@ def create_planner_agent(variant: str = "default", **extra_params) -> BaseAgent:
             "{generation_outline_context_text}\n\n"
             "{legacy_volume_outline_prompt}\n\n"
             "与本章直接相关的角色、伏笔及近期剧情：\n{_planning_context}\n\n"
-            "请按以下结构简洁输出（约 5-7 个剧情节拍，避免泛泛口号）：\n"
+            "请按以下结构精炼输出（4-5 个剧情节拍，避免泛泛口号或复述资料）：\n"
             "【本章目标】一句话说明本章要完成的剧情变化。\n"
             "【出场人物】只列本章实际需要的人物及其行动目的。\n"
-            "【剧情节拍】按顺序列 4-7 步；每步写清行动/冲突、结果或新信息，保证因果递进。\n"
+            "【剧情节拍】按顺序列 4-5 步；每步简洁写清行动/冲突及其结果或新信息，保证因果递进。\n"
             "【场景与节奏】说明场景转换和节奏变化，避免重复铺垫。\n"
             "【伏笔处理】仅写本章适合埋设、推进或回收的已有伏笔；没有就写无。\n"
             "【章末衔接】给出本章落点，并说明如何自然接向下一章；不得提前完成下一章事件。\n\n"
@@ -123,7 +124,7 @@ def create_planner_agent(variant: str = "default", **extra_params) -> BaseAgent:
             "不新增与设定冲突的事实，不把计划写成正文。"
         )
         # 规划需要给写手足够具体的因果节拍，同时限制冗长解释，避免拖慢流水线。
-        .with_param("max_tokens", 1600)
+        .with_param("max_tokens", 900)
     )
 
     VariantManager.apply_to_builder(builder, variant, "planner")

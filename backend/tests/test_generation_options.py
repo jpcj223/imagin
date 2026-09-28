@@ -9,6 +9,7 @@ from unittest.mock import patch
 from app.agents_v3.generation_options import (
     DEFAULT_GENERATION_OPTIONS,
     normalize_generation_options,
+    target_word_range,
 )
 from app.agents_v3.workflow_engine import (
     StepStatus,
@@ -52,7 +53,9 @@ class GenerationOptionsTests(unittest.TestCase):
         self.assertEqual(variant, "shuangwen")
         self.assertEqual(params["temperature"], 1.1)
         self.assertEqual(params["target_word_count"], 4200)
-        self.assertEqual(params["max_tokens"], 8400)
+        self.assertEqual(params["target_word_min"], 3780)
+        self.assertEqual(params["target_word_max"], 4620)
+        self.assertEqual(params["max_tokens"], 7392)
         self.assertIn("人物", params["writing_skill_guidance"])
         self.assertIn("伏笔", params["writing_skill_guidance"])
         self.assertNotIn("世界观", params["writing_skill_guidance"])
@@ -65,15 +68,22 @@ class GenerationOptionsTests(unittest.TestCase):
             {
                 "rhythm_level": "fast",
                 "target_word_count": 2400,
+                "target_word_min": 2160,
+                "target_word_max": 2640,
                 "writing_skill_guidance": "- 按本章大纲推进。\n- 适度回收伏笔。",
                 "instruction": "保持克制",
             },
         )
         prompt = "\n".join(message["content"] for message in messages)
-        self.assertIn("目标字数：约 2400 字", prompt)
+        self.assertIn("字数目标：2400 字；验收范围 2160-2640 字", prompt)
+        self.assertIn("正文去除空白后的字符数", prompt)
         self.assertIn("适度回收伏笔", prompt)
         self.assertIn("保持克制", prompt)
         self.assertIn("当前设定", prompt)
+
+    def test_word_range_uses_ten_percent_and_rounds_inward(self):
+        self.assertEqual(target_word_range(3000), (2700, 3300))
+        self.assertEqual(target_word_range(2401), (2161, 2641))
 
     def test_paused_step_restores_as_pending_with_saved_options(self):
         engine = WorkflowEngine.__new__(WorkflowEngine)

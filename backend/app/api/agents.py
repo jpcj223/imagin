@@ -14,7 +14,10 @@ from app.agents.chapter_edit import LLMError, propose_chapter_edit, propose_chap
 from app.agents.context import build_context_preview
 from app.agents.workflows import analyze_chapter, check_consistency, draft_chapter, draft_chapter_stream, polish_chapter, analyze_volume
 from app.agents_v3.persistence import WorkflowPersistence
-from app.services.chapter_targets import get_project_next_chapter_target, require_next_chapter_target
+from app.services.chapter_targets import (
+    get_project_next_chapter_target,
+    require_chapter_generation_target,
+)
 from app.db.repository import rows_to_dicts
 from app.db.session import get_business_db
 from app.models.business import Chapter, ChapterSummary, GenerationLog, GenerationVersion
@@ -253,7 +256,7 @@ def chapter_draft(payload: ChapterDraftRequest) -> dict:
 
     支持指定大纲，也支持覆盖已有章节草稿。
     """
-    target = require_next_chapter_target(
+    target = require_chapter_generation_target(
         payload.project_id,
         payload.outline_id,
         payload.chapter_no,
@@ -277,7 +280,7 @@ def chapter_draft_stream(payload: ChapterDraftRequest) -> StreamingResponse:
     使用 NDJSON：每行一个事件对象，前端可以边读边追加到正文编辑区。
     """
 
-    target = require_next_chapter_target(
+    target = require_chapter_generation_target(
         payload.project_id,
         payload.outline_id,
         payload.chapter_no,

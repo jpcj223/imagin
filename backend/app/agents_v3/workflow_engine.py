@@ -17,6 +17,7 @@ from .persistence import WorkflowPersistence
 from .generation_options import (
     build_skill_guidance,
     normalize_generation_options,
+    target_word_range,
 )
 
 
@@ -524,13 +525,16 @@ class WorkflowEngine:
             **step.params,
         }
         if step.agent_type == "writer":
+            target_min, target_max = target_word_range(self.generation_options["target_word_count"])
             params.update({
                 "temperature": self.generation_options["temperature"],
                 "target_word_count": self.generation_options["target_word_count"],
-                # 章节目标按中文字符估算 Token 上限，避免 3000 字目标被 2048 Token 默认值提前截断。
+                "target_word_min": target_min,
+                "target_word_max": target_max,
+                # 中文正文的 Token/字符比不固定，保留余量避免硬截断；篇幅由 Prompt 明确约束。
                 "max_tokens": min(
                     20000,
-                    max(1024, self.generation_options["target_word_count"] * 2),
+                    max(1024, int(target_max * 1.6)),
                 ),
                 "writing_skill_guidance": build_skill_guidance(
                     self.generation_options["active_skills"]

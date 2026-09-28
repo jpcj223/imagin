@@ -127,3 +127,104 @@ def require_next_chapter_target(
             detail="大纲顺序或下一章目标已变化，请刷新资料后重新生成。",
         )
     return target
+
+
+def resolve_chapter_generation_target(
+    outlines: Iterable[Any],
+    chapters: Iterable[Any],
+    outline_id: int | None,
+    chapter_no: int,
+    chapter_id: int | None = None,
+) -> dict[str, Any]:
+    """验证作者当前选中的章节生成目标，允许空章初稿和已有章节重生成。"""
+    chapter_outlines = [
+        item for item in outlines
+        if _field(item, "node_type", "chapter") == "chapter"
+    ]
+    chapter_outlines.sort(key=lambda item: (
+        _field(item, "chapter_no") is None,
+        _field(item, "chapter_no") if _field(item, "chapter_no") is not None else 0,
+        _field(item, "sort_index", 0) or 0,
+        _field(item, "id", 0) or 0,
+    ))
+    if outline_id is None:
+        raise HTTPException(status_code=422, detail="请先选择单章细纲再生成正文。")
+
+    outline = next((item for item in chapter_outlines if _field(item, "id") == outline_id), None)
+    if outline is None:
+        raise HTTPException(status_code=409, detail="当前章节细纲已不存在或已调整，请刷新后重新选择。")
+
+    position = chapter_outlines.index(outline) + 1
+    outline_no = _field(outline, "chapter_no")
+    canonical_no = int(outline_no) if outline_no is not None else position
+    if int(chapter_no) != canonical_no:
+        raise HTTPException(status_code=409, detail="章节顺序已调整，请刷新资料后重新生成。")
+
+    chapter_rows = list(chapters)
+    same_number_outlines = [
+        item for item in chapter_outlines
+        if _field(item, "chapter_no") == outline_no
+    ]
+    linked = [row for row in chapter_rows if _field(row, "outline_id") == outline_id]
+    if not linked and len(same_number_outlines) == 1:
+        linked = [
+            row for row in chapter_rows
+            if _field(row, "outline_id") is None
+            and _field(row, "chapter_no") == canonical_no
+        ]
+
+    selected_chapter = None
+    if chapter_id is not None:
+        selected_chapter = next(
+            (row for row in chapter_rows if _field(row, "id") == chapter_id),
+            None,
+        )
+        if selected_chapter is None:
+            raise HTTPException(status_code=404, detail="当前章节不存在或不属于此项目，请刷新后重试。")
+        if selected_chapter not in linked:
+            raise HTTPException(status_code=409, detail="所选章节与当前细纲不匹配，请刷新后重新选择。")
+    else:
+        if any(str(_field(row, "content", "") or "").strip() for row in linked):
+            raise HTTPException(
+                status_code=409,
+                detail="本章已有正文，请刷新资料并选择当前章节后再重新生成。",
+            )
+        blank_rows = sorted(linked, key=lambda row: _field(row, "id", 0) or 0, reverse=True)
+        selected_chapter = blank_rows[0] if blank_rows else None
+
+    return {
+        "available": True,
+        "outline_id": outline_id,
+        "chapter_no": canonical_no,
+        "outline_title": str(_field(outline, "title", "") or ""),
+        "instruction": str(_field(outline, "description", "") or ""),
+        "chapter_id": _field(selected_chapter, "id") if selected_chapter else None,
+        "chapter_title": str(_field(selected_chapter, "title", "") or "") if selected_chapter else "",
+        "position": position,
+        "total_outlines": len(chapter_outlines),
+    }
+
+
+def require_chapter_generation_target(
+    project_id: int,
+    outline_id: int | None,
+    chapter_no: int,
+    chapter_id: int | None = None,
+) -> dict[str, Any]:
+    """从项目资料核验当前章节目标；生成初稿与重生成使用同一规则。"""
+    from app.db.session import get_business_db
+    from app.models.business import Chapter, Outline
+
+    with get_business_db() as db:
+        outlines = db.query(Outline).filter(
+            Outline.project_id == project_id,
+            Outline.node_type == "chapter",
+        ).all()
+        chapters = db.query(Chapter).filter(Chapter.project_id == project_id).all()
+        return resolve_chapter_generation_target(
+            outlines,
+            chapters,
+            outline_id,
+            chapter_no,
+            chapter_id,
+        )

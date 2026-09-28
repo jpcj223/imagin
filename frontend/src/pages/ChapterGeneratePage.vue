@@ -148,7 +148,9 @@
                   </n-form-item>
                   <n-form-item label="目标字数">
                     <n-input-number v-model:value="generationControls.targetWordCount" :min="500" :max="10000" :step="500" style="width: 100%" />
-                    <small>项目默认 {{ userPrefs.default_target_word_count }} 字</small>
+                    <small>
+                      目标 {{ generationControls.targetWordCount }} 字，允许 ±10%（{{ targetWordRange.min }}–{{ targetWordRange.max }} 字）；按正文去除空白后的字符数统计。
+                    </small>
                   </n-form-item>
                 </div>
               </div>
@@ -191,16 +193,15 @@
                 <n-form label-placement="top" :show-label="true">
                   <div class="form-row chapter-target-row">
                     <n-form-item label="本次生成目标" class="generation-target-field">
-                      <div class="generation-target-card" :class="{ unavailable: !nextChapterTarget?.available }">
-                        <strong v-if="nextChapterTargetLoading">正在读取大纲顺序…</strong>
-                        <strong v-else-if="nextChapterTarget?.available">
-                          第 {{ nextChapterTarget.chapter_no }} 章 · {{ nextChapterTarget.outline_title || '未命名章节' }}
+                      <div class="generation-target-card" :class="{ unavailable: !currentGenerationOutline }">
+                        <strong v-if="currentGenerationOutline">
+                          第 {{ currentGenerationChapterNo }} 章 · {{ currentGenerationOutline.title || '未命名章节' }}
                         </strong>
-                        <strong v-else>暂无可生成章节</strong>
-                        <small v-if="nextChapterTarget?.available">
-                          按已保存的大纲顺序生成第 {{ nextChapterTarget.position }} / {{ nextChapterTarget.total_outlines }} 章
+                        <strong v-else>请先选择单章细纲</strong>
+                        <small v-if="currentGenerationOutline">
+                          生成或重生成当前选中的章节；已有版本会保留在版本记录中。
                         </small>
-                        <small v-else>{{ nextChapterTarget?.reason || '刷新资料后重试' }}</small>
+                        <small v-else>从左侧章节列表选择要生成的章节细纲。</small>
                       </div>
                     </n-form-item>
                     <n-form-item label="节奏等级" class="rhythm-field">
@@ -313,26 +314,47 @@
                     <template #icon>📊</template>
                     查看生成进度 / 重跑步骤
                   </n-button>
+                  <n-popconfirm
+                    v-if="draft.trim()"
+                    positive-text="生成新版本"
+                    negative-text="取消"
+                    @positive-click="requestGenerate('generate')"
+                  >
+                    <template #trigger>
+                      <n-button
+                        type="primary"
+                        block
+                        size="large"
+                        :loading="workflowAction === 'generate' || (loading && !workflowAction && !useV3Workflow)"
+                        :disabled="loading || !canGenerateCurrentChapter"
+                      >
+                        <template #icon>🔄</template>
+                        重新生成正文
+                      </n-button>
+                    </template>
+                    将按当前章节细纲生成新版本，现有正文会保留在版本记录中。
+                  </n-popconfirm>
                   <n-button
+                    v-else
                     type="primary"
                     block
                     size="large"
                     :loading="workflowAction === 'generate' || (loading && !workflowAction && !useV3Workflow)"
-                    :disabled="loading || !nextChapterTarget?.available"
+                    :disabled="loading || !canGenerateCurrentChapter"
                     @click="requestGenerate('generate')"
                   >
                     <template #icon>✨</template>
-                    生成下一章
+                    生成正文
                   </n-button>
                   <n-button
                     v-if="!useV3Workflow"
                     block
                     :loading="loading && !workflowAction"
-                    :disabled="loading || !nextChapterTarget?.available"
+                    :disabled="loading || !canGenerateCurrentChapter"
                     @click="requestGenerate('generateAndAnalyze')"
                   >
                     <template #icon>🔄</template>
-                    生成下一章 + 分析沉淀
+                    生成正文并分析
                   </n-button>
                 </div>
               </div>
@@ -771,7 +793,6 @@ const localEvents = ref<
 >([])
 const contextPreview = ref<ContextPreview | null>(null)
 const nextChapterTarget = ref<NextChapterTarget | null>(null)
-const nextChapterTargetLoading = ref(false)
 const previewLoading = ref(false)
 let contextPreviewRequestId = 0
 
@@ -1399,6 +1420,28 @@ const editorVolumeOutline = computed(() =>
 const selectedChapter = computed(
   () => chapters.value.find((item) => item.id === chapterId.value) ?? null
 )
+const currentGenerationOutline = computed(() => {
+  if (selectedChapter.value) return findOutlineForChapter(selectedChapter.value)
+  if (selectedOutline.value?.node_type === 'chapter') return selectedOutline.value
+  if (selectedOutline.value?.node_type === 'volume') {
+    const inVolume = outlines.value
+      .filter((item) => item.node_type === 'chapter' && item.volume_id === selectedOutline.value?.id)
+      .sort((left, right) => (left.chapter_no ?? left.sort_index) - (right.chapter_no ?? right.sort_index))
+    return inVolume.find((item) => item.chapter_no === form.chapter_no) ?? inVolume[0] ?? null
+  }
+  if (nextChapterTarget.value?.available) {
+    return outlines.value.find((item) => item.id === nextChapterTarget.value?.outline_id) ?? null
+  }
+  return null
+})
+const currentGenerationChapterNo = computed(() =>
+  currentGenerationOutline.value?.chapter_no ?? currentGenerationOutline.value?.sort_index ?? form.chapter_no
+)
+const canGenerateCurrentChapter = computed(() => Boolean(currentGenerationOutline.value))
+const targetWordRange = computed(() => {
+  const target = Math.max(500, Math.min(10000, Number(generationControls.targetWordCount) || 3000))
+  return { min: Math.ceil(target * 0.9), max: Math.floor(target * 1.1) }
+})
 const editorChapterNo = computed(() => {
   const titleNumber = Number(chapterTitle.value.match(/^第\s*(\d+)\s*章$/)?.[1])
   const candidates = [
@@ -1756,80 +1799,43 @@ async function refreshContextPreview(options: { silent?: boolean } = {}) {
 async function requestGenerate(mode: 'generate' | 'generateAndAnalyze') {
   if (isInterrupted.value && interruptedRunId.value) {
     message.warning(canResumeInterruptedRun.value
-      ? '当前章节生成尚未完成，请先继续或重跑这次任务，再生成下一章'
-      : `第 ${interruptedGenerationTarget.value?.chapterNo} 章仍有暂停的生成任务，请返回该章继续后再生成新章`)
+      ? '当前章节生成尚未完成，请先继续或重跑这次任务'
+      : `第 ${interruptedGenerationTarget.value?.chapterNo} 章仍有暂停的生成任务，请先返回该章继续`)
     return
   }
-  if (loading.value || !await prepareNextGenerationTarget()) return
+  if (loading.value || !await prepareCurrentGenerationTarget()) return
   if (!hasGenerationGoal()) {
-    message.warning('当前没有可用的章节大纲，请先补充章节大纲')
-    addEvent('生成拦截', '没有可生成的下一章大纲', 'error')
+    message.warning('请先选择单章细纲或填写本章目标')
+    addEvent('生成拦截', '当前章节缺少可用的写作目标', 'error')
     return
   }
   await runGenerateMode(mode)
 }
 
-/** 保存当前编辑，再把正文区明确切换到后端解析出的下一章目标。 */
-async function prepareNextGenerationTarget() {
+/** 保存当前编辑，并把本次生成绑定到作者选中的章节细纲。 */
+async function prepareCurrentGenerationTarget() {
   const projectId = await ensureProject()
   if (!projectId) return false
 
-  // 步骤 1：切换生成目标前先保存旧章，避免新章输出覆盖旧章编辑区。
-  if (!await saveDraftBeforeNavigation('生成下一章')) return false
+  // 先按当前编辑区的身份保存；切换目标会另走章节选择流程。
+  if (!await saveDraftBeforeNavigation('开始生成')) return false
 
-  nextChapterTargetLoading.value = true
-  try {
-    // 步骤 2：点击生成时重新向服务端取目标，避免拖动大纲后使用页面缓存。
-    const target = await getNextChapterTarget(projectId)
-    nextChapterTarget.value = target
-    if (!target.available || target.outline_id === null || target.chapter_no === null) {
-      message.warning(target.reason || '当前没有可生成的下一章')
-      addEvent('生成拦截', target.reason || '当前没有可生成的下一章', 'error')
-      return false
-    }
-
-    const blankChapter = target.chapter_id === null
-      ? null
-      : chapters.value.find((item) => item.id === target.chapter_id) ?? {
-          id: target.chapter_id,
-          project_id: projectId,
-          outline_id: target.outline_id,
-          chapter_no: target.chapter_no,
-          title: target.chapter_title || target.outline_title || `第${target.chapter_no}章`,
-          content: '',
-          status: 'draft',
-        }
-
-    if (blankChapter) {
-      if (!chapters.value.some((item) => item.id === blankChapter.id)) chapters.value.unshift(blankChapter)
-      await selectChapter(blankChapter, { recordEvent: false })
-    } else {
-      // 步骤 3：新大纲尚无草稿记录时解除旧章绑定，只在当前编辑区准备新目标。
-      setActiveChapterId(null)
-      chapterTitle.value = ''
-      draft.value = ''
-      form.chapter_id = null
-      analysis.value = ''
-      analysisStatus.value = ''
-      clearAnalysisSections()
-      consistencyResult.value = null
-      polishOriginal.value = ''
-    }
-
-    form.outline_id = target.outline_id
-    form.chapter_no = target.chapter_no
-    form.chapter_id = target.chapter_id
-    form.instruction = target.instruction || target.outline_title
-    markDraftPersisted()
-    addEvent('生成目标', `按当前大纲顺序准备第 ${target.chapter_no} 章：${target.outline_title || '未命名章节'}`)
-    await refreshContextPreview({ silent: true })
-    return true
-  } catch (error) {
-    message.error(`读取下一章目标失败：${errorMessage(error)}`)
+  const outline = currentGenerationOutline.value
+  if (!outline) {
+    message.warning('请先从左侧选择要生成的单章细纲')
     return false
-  } finally {
-    nextChapterTargetLoading.value = false
   }
+
+  form.outline_id = outline.id
+  form.chapter_no = Math.max(1, outline.chapter_no ?? outline.sort_index)
+  if (!form.instruction.trim() || form.instruction === selectedChapter.value?.title) {
+    form.instruction = outline.description || outline.title
+  }
+  form.chapter_id = chapterId.value
+  markDraftPersisted()
+  addEvent('生成目标', `对当前第 ${form.chapter_no} 章执行正文生成`)
+  await refreshContextPreview({ silent: true })
+  return true
 }
 
 async function runGenerateMode(mode: 'generate' | 'generateAndAnalyze') {
@@ -1862,6 +1868,7 @@ function hydrateInstructionFromSelection() {
   const relatedOutline = findOutlineForChapter(currentChapter)
   if (relatedOutline) {
     form.outline_id = relatedOutline.id
+    form.chapter_no = relatedOutline.chapter_no ?? relatedOutline.sort_index ?? currentChapter.chapter_no
     if (!form.instruction.trim() || form.instruction === currentChapter.title) {
       form.instruction = relatedOutline.description
     }
@@ -2475,6 +2482,8 @@ async function generateV3(options: { showToast?: boolean } = {}) {
   const { showToast = true } = options
   if (loading.value) return false
 
+  const requestedTargetWordCount = generationControls.targetWordCount
+
   const projectId = await ensureProject()
   if (!projectId) return false
 
@@ -2602,7 +2611,22 @@ async function generateV3(options: { showToast?: boolean } = {}) {
     await refreshChapterVersions()  // 刷新版本列表
     await loadChapterChangeProposals()
     addEvent('生成完成', 'v3 工作流已完成', 'success')
-    if (showToast) message.success('章节已生成')
+    const actualWordCount = draft.value.replace(/\s/g, '').length
+    const minimumWordCount = Math.ceil(requestedTargetWordCount * 0.9)
+    const maximumWordCount = Math.floor(requestedTargetWordCount * 1.1)
+    const wordCountInRange = actualWordCount >= minimumWordCount && actualWordCount <= maximumWordCount
+    addEvent(
+      '字数核对',
+      `目标 ${requestedTargetWordCount} 字，允许 ${minimumWordCount}-${maximumWordCount} 字，实际 ${actualWordCount} 字`,
+      wordCountInRange ? 'success' : 'error',
+    )
+    if (showToast) {
+      if (wordCountInRange) {
+        message.success(`章节已生成，${actualWordCount} 字符合目标范围`)
+      } else {
+        message.warning(`正文已生成并保存，但实际 ${actualWordCount} 字，超出目标范围 ${minimumWordCount}-${maximumWordCount} 字`)
+      }
+    }
 
     // 生成完成后自动切到分析 Tab
     if (analysis.value) {
