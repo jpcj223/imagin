@@ -51,6 +51,7 @@
           <span v-if="currentRunId" class="pipeline-summary-usage">
             {{ formatTokenCount(workflowUsage.totalTokens) }} Token · {{ workflowUsage.llmCalls }} 次请求
           </span>
+          <span v-if="generationPhaseLabel" class="pipeline-phase">{{ generationPhaseLabel }}</span>
           <span class="pipeline-summary-toggle">{{ pipelineExpanded ? '收起流程' : '查看流程详情' }}⌄</span>
         </button>
         <button
@@ -69,6 +70,13 @@
         @step-click="handlePipelineStepClick"
         @restart="handleRestartFromStep"
       />
+      <section v-if="writingPlanText" class="integrated-plan-panel">
+        <div class="integrated-plan-heading">
+          <strong>本章剧情节拍</strong>
+          <span>与正文同次请求生成</span>
+        </div>
+        <pre>{{ writingPlanText }}</pre>
+      </section>
     </div>
 
     <!-- 三栏主体 -->
@@ -170,6 +178,9 @@
                   :overall-progress="workflowProgress"
                   @restart="handleRestartFromStep"
                 />
+                <div v-if="backgroundAnalysisStatus && backgroundAnalysisChapterId === chapterId" class="background-analysis-status" :class="backgroundAnalysisStatus">
+                  <span>{{ backgroundAnalysisStatus === 'running' ? '分析沉淀正在后台进行；正文已保存，可以继续编辑或生成下一章。' : backgroundAnalysisStatus === 'completed' ? '分析沉淀已完成。' : '分析沉淀未完成；正文已保存，可稍后手动重试。' }}</span>
+                </div>
                 <div v-if="currentRunId || workflowRunDetail" class="workflow-run-metrics">
                   <div class="workflow-metrics-heading">
                     <strong>本次生成消耗</strong>
@@ -990,8 +1001,21 @@ const rhythmOptions = [
 // ---- v3 工作流相关 ----
 const useV3Workflow = ref(true)  // 默认使用 v3 工作流
 const workflowTemplates = ref<WorkflowTemplate[]>([])
-const selectedWorkflow = ref('quick_write')  // 默认采用单次模型请求，减少串行等待
+const selectedWorkflow = ref('quick_write')
 const workflowSteps = ref<StepInfo[]>([])
+const writingPlanText = ref('')
+const backgroundAnalysisStatus = ref<'running' | 'completed' | 'failed' | ''>('')
+const backgroundAnalysisChapterId = ref<number | null>(null)
+const generationPhase = ref('')
+const generationPhaseLabel = computed(() => ({
+  planning: '剧情规划中',
+  writing: '正文写作中',
+  repairing: '字数纠偏中',
+  analysis: '分析沉淀中',
+  saved: '正文已保存',
+  complete: '流程完成',
+  analysis_failed: '分析待重试',
+}[generationPhase.value] || ''))
 const currentWorkflowStep = ref<string | null>(null)
 const workflowProgress = ref(0)
 const currentRunId = ref<string | null>(null)
@@ -1014,6 +1038,7 @@ const canResumeInterruptedRun = computed(() => {
   )
 })
 let replacePartialOnNextWriterDelta = false
+let replacePartialOnNextWriterPlan = false
 const workflowClock = ref(Date.now())
 let workflowClockTimer: ReturnType<typeof setInterval> | undefined
 
@@ -1076,7 +1101,9 @@ const workflowUsage = computed(() => {
     typeof pricing.input_price_per_million === 'number'
       && typeof pricing.output_price_per_million === 'number',
   )
-  const isRunning = loading.value || workflowRunDetail.value?.run.status === 'running'
+  const isRunning = loading.value
+    || workflowRunDetail.value?.run.status === 'running'
+    || attempts.some(attempt => attempt.status === 'running')
   const costLabel = pricedAttempts
     ? `${formatWorkflowCurrency(estimatedCost)}${pricedAttempts < measuredAttempts ? ' *' : ''}`
     : !hasPriceSnapshot
@@ -1339,7 +1366,7 @@ const autoSyncOptions = [
 function buildWorkflowSteps(templateName: string): StepInfo[] {
   const templates: Record<string, StepInfo[]> = {
     quick_write: [
-      { id: 'writer', label: '按细纲写作', icon: '✍️', status: 'pending' },
+      { id: 'writer', label: '规划并写正文', icon: '✨', status: 'pending' },
     ],
     smart_mode: [
       { id: 'planner', label: '情节规划', icon: '📋', status: 'pending' },
@@ -1954,6 +1981,9 @@ async function selectChapterOutline(item: OutlineItem) {
   chapterTitle.value = `第${chapterNo}章`
   draft.value = ''
   analysis.value = ''
+  writingPlanText.value = ''
+  backgroundAnalysisStatus.value = ''
+  generationPhase.value = ''
   clearAnalysisSections()
   analysisStatus.value = ''
   analysisContentSnapshot.value = null
@@ -2183,6 +2213,10 @@ async function selectChapter(item: ChapterItem, options: { recordEvent?: boolean
   chapterTitle.value = item.title
   markDraftPersisted(storedContent)
   analysis.value = ''
+  writingPlanText.value = ''
+  backgroundAnalysisStatus.value = ''
+  generationPhase.value = ''
+  backgroundAnalysisChapterId.value = null
   clearAnalysisSections()
   const savedAnalysis = summaries.value.find((summary) => summary.chapter_id === item.id)
   if (savedAnalysis) {
@@ -2326,8 +2360,10 @@ function applyWorkflowCompletion(
 
   // 步骤 2：完成后使用后端确认的最终稿，避免精修稿或恢复后的正文留在旧状态。
   if (status === 'completed') {
+    generationPhase.value = 'saved'
     const finalContent = sessionContext.final_content || sessionContext.draft_content
     if (typeof finalContent === 'string' && finalContent.trim()) draft.value = indentChapterParagraphs(finalContent)
+    if (typeof sessionContext.writing_plan === 'string') writingPlanText.value = sessionContext.writing_plan
   }
 
   // 步骤 3：从持久化结果回填分析和章节关联，覆盖刷新后没有收到步骤事件的情况。
@@ -2383,6 +2419,22 @@ async function refreshWorkflowRunDetail(runId: string) {
       const output = record.output_snapshot ?? {}
       if (step.id === 'planner' && typeof output.content === 'string') step.outputContent = output.content
       if (step.id === 'analyzer' && typeof output.summary === 'string') step.outputSummary = output.summary
+      if (step.id === 'writer') {
+        const actualCount = Number(output.actual_character_count)
+        const minimum = Number(output.target_word_min)
+        const maximum = Number(output.target_word_max)
+        if (Number.isFinite(actualCount) && Number.isFinite(minimum) && Number.isFinite(maximum)) {
+          const inRange = output.word_count_valid === true
+          const repairNote = String(output.length_repair_warning || output.length_repair_error || '')
+          step.outputSummary = `目标范围 ${minimum}-${maximum} 字，实际 ${actualCount} 字（${inRange ? '符合' : '未符合'}）${repairNote ? `；${repairNote}` : ''}`
+        }
+        const plan = typeof output.writing_plan === 'string' ? output.writing_plan : output.partial_plan
+        if (typeof plan === 'string' && plan) writingPlanText.value = plan
+        const partialContent = output.partial_content
+        if (typeof partialContent === 'string' && partialContent && !draft.value.trim()) {
+          draft.value = indentChapterParagraphs(partialContent)
+        }
+      }
     }
   } catch (error) {
     // 步骤 3：统计详情不可用不改变章节正文或生成状态，只在事件记录中提示。
@@ -2399,6 +2451,9 @@ function applyWorkflowStepStart(stepId: string) {
   step.errorMessage = undefined
   step.tokenUsage = null
   step.llmCalls = 0
+  if (stepId === 'planner') generationPhase.value = 'planning'
+  else if (stepId === 'writer') generationPhase.value = selectedWorkflow.value === 'quick_write' && !writingPlanText.value ? 'planning' : 'writing'
+  else if (stepId === 'analyzer') generationPhase.value = 'analysis'
 }
 
 function applyWorkflowStepContext(
@@ -2426,11 +2481,28 @@ function applyWorkflowStepDone(stepId: string, result: Record<string, unknown>) 
   step.llmCalls = typeof result.llm_calls === 'number' ? result.llm_calls : 0
 
   const content = typeof result.content === 'string' ? result.content : ''
+  if (stepId === 'writer' && typeof result.writing_plan === 'string') writingPlanText.value = result.writing_plan
+  if (stepId === 'writer') generationPhase.value = 'writing'
+  if (stepId === 'analyzer') generationPhase.value = 'complete'
   if (stepId === 'planner') step.outputContent = content
   if (stepId === 'analyzer') {
     step.outputSummary = String(result.summary || result.analysis_message || '')
   } else if (stepId === 'writer' || stepId === 'polisher') {
-    step.outputSummary = content ? `正文已生成，${formatTokenCount(content.length)} 字。` : '步骤已完成。'
+    const actualCount = content.replace(/\s/g, '').length
+    const minimum = Number(result.target_word_min)
+    const maximum = Number(result.target_word_max)
+    const targetSummary = Number.isFinite(minimum) && Number.isFinite(maximum)
+      ? `目标范围 ${minimum}-${maximum} 字；`
+      : ''
+    const lengthStatus = typeof result.word_count_valid === 'boolean'
+      ? (result.word_count_valid ? '符合目标' : '未达到目标')
+      : '已完成'
+    const repairNote = String(result.length_repair_warning || result.length_repair_error || '')
+    step.outputSummary = content
+      ? `${targetSummary}实际 ${formatTokenCount(actualCount)} 字，${lengthStatus}${repairNote ? `；${repairNote}` : ''}`
+      : '步骤已完成。'
+    if (typeof result.length_repair_warning === 'string') addEvent('字数纠偏', result.length_repair_warning, 'error')
+    if (typeof result.length_repair_error === 'string') addEvent('字数纠偏未完成', result.length_repair_error, 'error')
   } else {
     step.outputSummary = content.slice(0, 500)
   }
@@ -2510,6 +2582,10 @@ async function generateV3(options: { showToast?: boolean } = {}) {
   const previousAnalysis = analysis.value
   draft.value = ''
   analysis.value = ''
+  writingPlanText.value = ''
+  backgroundAnalysisStatus.value = ''
+  generationPhase.value = ''
+  backgroundAnalysisChapterId.value = null
   polishOriginal.value = ''
   consistencyResult.value = null
   clearAnalysisSections()
@@ -2564,7 +2640,23 @@ async function generateV3(options: { showToast?: boolean } = {}) {
         onStepContext: applyWorkflowStepContext,
         onDelta: (stepId, content) => {
           // 只有写作步骤的 delta 写入正文
-        if (stepId === 'writer') draft.value = appendIndentedChapterText(draft.value, content)
+          if (stepId === 'writer') {
+            generationPhase.value = 'writing'
+            draft.value = appendIndentedChapterText(draft.value, content)
+          }
+        },
+        onPlanDelta: (stepId, content) => {
+          if (stepId === 'writer') {
+            generationPhase.value = 'planning'
+            writingPlanText.value += content
+          }
+        },
+        onContentReset: (stepId) => {
+          if (stepId === 'writer') draft.value = ''
+        },
+        onStepNotice: (_stepId, notice) => {
+          generationPhase.value = 'repairing'
+          addEvent('字数纠偏', notice, 'info')
         },
         onStepDone: (stepId, result) => {
           applyWorkflowStepDone(stepId, result)
@@ -2625,6 +2717,17 @@ async function generateV3(options: { showToast?: boolean } = {}) {
         message.success(`章节已生成，${actualWordCount} 字符合目标范围`)
       } else {
         message.warning(`正文已生成并保存，但实际 ${actualWordCount} 字，超出目标范围 ${minimumWordCount}-${maximumWordCount} 字`)
+      }
+    }
+
+    const savedChapterId = result.chapter_id ?? chapterId.value
+    if (savedChapterId) {
+      setActiveChapterId(savedChapterId, projectId)
+      if (selectedWorkflow.value === 'quick_write') {
+        const savedContent = String(result.session_context.final_content ?? result.session_context.draft_content ?? draft.value)
+        startPostGenerationAnalysis(projectId, savedChapterId, savedContent, result.run_id)
+      } else {
+        generationPhase.value = 'complete'
       }
     }
 
@@ -2693,6 +2796,7 @@ async function resumeGenerateV3() {
     workflowStreamActive.value = true
     stopRequested.value = false
     replacePartialOnNextWriterDelta = Boolean(draft.value.trim())
+    replacePartialOnNextWriterPlan = Boolean(writingPlanText.value.trim())
     const result = await workflowResumeStream(
       {
         run_id: interruptedRunId.value,
@@ -2710,12 +2814,28 @@ async function resumeGenerateV3() {
         onStepContext: applyWorkflowStepContext,
         onDelta: (stepId, content) => {
           if (stepId === 'writer') {
+            generationPhase.value = 'writing'
             if (replacePartialOnNextWriterDelta) {
               draft.value = ''
               replacePartialOnNextWriterDelta = false
             }
             draft.value = appendIndentedChapterText(draft.value, content)
           }
+        },
+        onPlanDelta: (stepId, content) => {
+          if (stepId === 'writer') {
+            generationPhase.value = 'planning'
+            if (replacePartialOnNextWriterPlan) {
+              writingPlanText.value = ''
+              replacePartialOnNextWriterPlan = false
+            }
+            writingPlanText.value += content
+          }
+        },
+        onContentReset: (stepId) => { if (stepId === 'writer') draft.value = '' },
+        onStepNotice: (_stepId, notice) => {
+          generationPhase.value = 'repairing'
+          addEvent('字数纠偏', notice, 'info')
         },
         onStepDone: (stepId, stepResult) => {
           applyWorkflowStepDone(stepId, stepResult)
@@ -2763,6 +2883,14 @@ async function resumeGenerateV3() {
     addEvent('续传成功', '工作流已从中断处完成', 'success')
     message.success('续传完成')
 
+    const resumedChapterId = result.chapter_id ?? chapterId.value
+    const resumedContent = String(result.session_context.final_content ?? result.session_context.draft_content ?? draft.value)
+    const resumedTemplate = workflowRunDetail.value?.run.template_name ?? selectedWorkflow.value
+    if (resumedChapterId && resumedTemplate === 'quick_write') {
+      setActiveChapterId(resumedChapterId, projectId)
+      startPostGenerationAnalysis(projectId, resumedChapterId, resumedContent, result.run_id)
+    }
+
     if (analysis.value) {
       activeTab.value = 'analysis'
     }
@@ -2789,6 +2917,7 @@ async function resumeGenerateV3() {
     workflowStreamActive.value = false
     stopRequested.value = false
     replacePartialOnNextWriterDelta = false
+    replacePartialOnNextWriterPlan = false
   }
 }
 
@@ -2848,12 +2977,29 @@ async function handleRestartFromStep(stepId: string) {
         onStepStart: (sid, label, resumedRunId) => {
           if (resumedRunId) currentRunId.value = resumedRunId
           currentWorkflowStep.value = sid
-          if (sid === 'writer') draft.value = ''
+          if (sid === 'writer') {
+            draft.value = ''
+            writingPlanText.value = ''
+          }
           applyWorkflowStepStart(sid)
         },
         onStepContext: applyWorkflowStepContext,
         onDelta: (sid, content) => {
-          if (sid === 'writer') draft.value = appendIndentedChapterText(draft.value, content)
+          if (sid === 'writer') {
+            generationPhase.value = 'writing'
+            draft.value = appendIndentedChapterText(draft.value, content)
+          }
+        },
+        onPlanDelta: (sid, content) => {
+          if (sid === 'writer') {
+            generationPhase.value = 'planning'
+            writingPlanText.value += content
+          }
+        },
+        onContentReset: (sid) => { if (sid === 'writer') draft.value = '' },
+        onStepNotice: (_sid, notice) => {
+          generationPhase.value = 'repairing'
+          addEvent('字数纠偏', notice, 'info')
         },
         onStepDone: (sid, stepResult) => {
           applyWorkflowStepDone(sid, stepResult)
@@ -2888,6 +3034,14 @@ async function handleRestartFromStep(stepId: string) {
     await loadResources()
     await refreshChapterVersions()
     await loadChapterChangeProposals()
+    const restartedChapterId = result.chapter_id ?? chapterId.value
+    const restartedContent = String(result.session_context.final_content ?? result.session_context.draft_content ?? draft.value)
+    const restartedTemplate = workflowRunDetail.value?.run.template_name ?? selectedWorkflow.value
+    const restartProjectId = projectStore.currentProject?.id
+    if (restartProjectId && restartedChapterId && restartedTemplate === 'quick_write') {
+      setActiveChapterId(restartedChapterId, restartProjectId)
+      startPostGenerationAnalysis(restartProjectId, restartedChapterId, restartedContent, result.run_id)
+    }
     message.success('重跑完成')
     showWorkflowPanel.value = false
   } catch (error) {
@@ -2930,9 +3084,10 @@ function clearInterruptedState() {
 async function loadWorkflowTemplates() {
   try {
     workflowTemplates.value = await getWorkflowTemplates()
-    // 初始化时优先使用项目偏好；没有可用偏好时采用单次请求的高效创作。
+    // 初始化时优先使用项目偏好；没有可用偏好时采用质量均衡流程。
     if (workflowTemplates.value.length > 0) {
-      const defaultTemplate = workflowTemplates.value.find(t => t.name === userPrefs.default_template)
+      const preferredTemplate = userPrefs.default_template === 'smart_mode' ? 'quick_write' : userPrefs.default_template
+      const defaultTemplate = workflowTemplates.value.find(t => t.name === preferredTemplate)
         ?? workflowTemplates.value.find(t => t.name === 'quick_write')
         ?? workflowTemplates.value[0]
       selectedWorkflow.value = defaultTemplate.name
@@ -2943,8 +3098,8 @@ async function loadWorkflowTemplates() {
     console.warn('加载工作流模板失败，使用内置默认值', error)
     // 使用内置默认模板
     workflowTemplates.value = [
-      { name: 'quick_write', label: '高效创作', description: '单次模型请求；沿用总纲、卷纲、单章细纲及连续性资料，正文完成后可单独分析沉淀', icon: '⚡', category: 'writing', step_count: 1 },
-      { name: 'smart_mode', label: '智能模式', description: '规划、正文、分析依次调用模型；自动生成剧情蓝图并分析沉淀，耗时较长', icon: '🎯', category: 'writing', step_count: 3 },
+      { name: 'quick_write', label: '质量均衡', description: '同一请求先整理可查看的剧情节拍，再写正文；正文保存后独立进行分析沉淀', icon: '✨', category: 'writing', step_count: 1 },
+      { name: 'smart_mode', label: '完整流程', description: '规划、正文、分析依次独立调用模型；步骤更明确，但串行等待更久', icon: '🎯', category: 'writing', step_count: 3 },
       { name: 'deep_creation', label: '深度创作', description: '规划、写作、精修、分析依次调用模型，耗时最长', icon: '🎨', category: 'writing', step_count: 4 },
     ]
     workflowSteps.value = buildWorkflowSteps(selectedWorkflow.value)
@@ -2973,7 +3128,9 @@ async function loadPreferences() {
       ? storedVariant
       : 'default'
     // 如果偏好中有默认模板，同步到选中状态
-    const defaultTpl = projectPrefs.default_template as string | undefined
+    const storedTemplate = projectPrefs.default_template as string | undefined
+    const defaultTpl = storedTemplate === 'smart_mode' ? 'quick_write' : storedTemplate
+    if (storedTemplate === 'smart_mode') userPrefs.default_template = 'quick_write'
     if (defaultTpl && workflowTemplates.value.some(t => t.name === defaultTpl)) {
       selectedWorkflow.value = defaultTpl
     }
@@ -3564,6 +3721,10 @@ async function applyChapterDialogueCandidate() {
 // ---- 分析章节 ----
 async function analyze(options: { showToast?: boolean } = {}) {
   const { showToast = true } = options
+  if (backgroundAnalysisStatus.value === 'running' && backgroundAnalysisChapterId.value === chapterId.value) {
+    message.info('本章分析沉淀正在后台进行')
+    return false
+  }
   if (!chapterId.value || !projectStore.currentProject) {
     message.warning('请先生成或保存章节后再分析')
     return false
@@ -3608,6 +3769,64 @@ async function analyze(options: { showToast?: boolean } = {}) {
     message.error(errorMessage(error) || '章节分析失败')
     return false
   }
+}
+
+/** 正文保存后单独启动分析；不等待分析结果就结束正文生成流程。 */
+function startPostGenerationAnalysis(
+  projectId: number,
+  savedChapterId: number,
+  content: string,
+  runId: string,
+) {
+  if (!content.trim()) return
+  backgroundAnalysisChapterId.value = savedChapterId
+  backgroundAnalysisStatus.value = 'running'
+  generationPhase.value = 'analysis'
+  addEvent('后台分析启动', '正文已保存；摘要、设定变化与伏笔沉淀将在后台执行', 'running')
+
+  void (async () => {
+    try {
+      const result = await analyzeChapter({
+        project_id: projectId,
+        chapter_id: savedChapterId,
+        content,
+        run_id: runId,
+      })
+      if (currentRunId.value === runId) await refreshWorkflowRunDetail(runId)
+      const isCurrentChapter = chapterId.value === savedChapterId
+      if (isCurrentChapter) {
+        analysis.value = result.analysis
+        analysisStatus.value = String(result.analysis_status || 'completed')
+        setAnalysisSections(result)
+        if (result.analysis_status !== 'unavailable') {
+          analysisContentSnapshot.value = content
+          analysisPersistedStale.value = draft.value === content ? false : true
+        } else {
+          analysisContentSnapshot.value = null
+          analysisPersistedStale.value = null
+        }
+        await Promise.all([refreshChapterVersions(), loadChapterChangeProposals()])
+      }
+      await loadAgentLogs()
+      const currentRun = currentRunId.value === runId
+      if (currentRun) {
+        backgroundAnalysisStatus.value = result.analysis_status === 'unavailable' ? 'failed' : 'completed'
+        generationPhase.value = result.analysis_status === 'unavailable' ? 'analysis_failed' : 'complete'
+        addEvent(
+          result.analysis_status === 'unavailable' ? '后台分析不可用' : '后台分析完成',
+          result.analysis_status === 'unavailable' ? result.analysis : '章节摘要和可审核变化已沉淀',
+          result.analysis_status === 'unavailable' ? 'error' : 'success',
+        )
+      }
+      if (isCurrentChapter) await loadResources()
+    } catch (error) {
+      if (currentRunId.value === runId) {
+        backgroundAnalysisStatus.value = 'failed'
+        generationPhase.value = 'analysis_failed'
+        addEvent('后台分析失败', errorMessage(error), 'error')
+      }
+    }
+  })()
 }
 
 // ---- 一致性检查 ----
@@ -3963,9 +4182,23 @@ watch(
 .pipeline-summary-step.completed i { background: #34d399; }
 .pipeline-summary-step.failed i { background: #f87171; }
 .pipeline-summary-usage { color: #8f83ff; font-size: 11px; white-space: nowrap; }
+.pipeline-phase { padding: 3px 8px; border-radius: 999px; color: var(--n-primary-color, #a8a0ff); background: color-mix(in srgb, var(--n-primary-color, #7c72ff) 12%, transparent); font-size: 11px; white-space: nowrap; }
 .pipeline-summary-toggle { margin-left: auto; color: #91a0b6; font-size: 11px; white-space: nowrap; }
 .pipeline-summary-details { flex-shrink: 0; padding: 5px 9px; border: 1px solid rgba(113, 104, 245, .35); border-radius: 7px; color: #b8b0ff; background: rgba(113, 104, 245, .1); font-size: 11px; cursor: pointer; }
 .pipeline-summary-details:hover { background: rgba(113, 104, 245, .2); }
+.integrated-plan-panel {
+  margin-top: 8px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--n-primary-color, #7c72ff);
+  border-radius: 9px;
+  background: var(--bg-secondary);
+  color: var(--text-secondary);
+}
+.integrated-plan-heading { display: flex; justify-content: space-between; gap: 12px; margin-bottom: 7px; }
+.integrated-plan-heading strong { color: var(--text-primary); font-size: 12px; }
+.integrated-plan-heading span { color: var(--text-muted); font-size: 11px; }
+.integrated-plan-panel pre { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; font-size: 12px; line-height: 1.65; }
 
 .workbench {
   flex: 1;
@@ -4791,6 +5024,17 @@ watch(
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 14px;
 }
+.background-analysis-status {
+  margin-top: 12px;
+  padding: 9px 11px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+.background-analysis-status.running { border-color: rgba(56, 189, 248, .35); color: var(--n-info-color, #38bdf8); }
+.background-analysis-status.completed { border-color: rgba(52, 211, 153, .35); color: var(--n-success-color, #34d399); }
+.background-analysis-status.failed { border-color: rgba(248, 113, 113, .35); color: var(--n-error-color, #f87171); }
 
 .resolved-context-updated {
   display: block;

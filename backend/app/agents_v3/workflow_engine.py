@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import json
+import re
 import threading
 from collections.abc import Iterator
 from dataclasses import dataclass, field
@@ -95,25 +96,29 @@ class WorkflowTemplate:
 BUILTIN_TEMPLATES: dict[str, WorkflowTemplate] = {
     "quick_write": WorkflowTemplate(
         name="quick_write",
-        label="高效创作",
-        description="单次模型请求。直接依据大纲、卷纲、单章细纲和连续性资料写正文；完成后可单独分析沉淀。",
-        icon="🚀",
+        label="质量均衡",
+        description="同一请求先整理可查看的剧情节拍，再写正文；正文保存后独立进行分析沉淀。",
+        icon="✨",
         category="basic",
         steps=[
             WorkflowStep(
                 step_id="writer",
                 agent_type="writer",
                 variant="default",
-                label="按细纲写作",
-                params={},
-                output_mapping={"content": "draft_content", "source": "draft_source"},
+                label="规划并写正文",
+                params={"integrated_plan": True},
+                output_mapping={
+                    "content": "draft_content",
+                    "writing_plan": "writing_plan",
+                    "source": "draft_source",
+                },
             ),
         ],
     ),
     "smart_mode": WorkflowTemplate(
         name="smart_mode",
-        label="智能模式",
-        description="规划、正文、分析依次调用模型；适合需要自动生成剧情蓝图与章后沉淀，耗时较长。",
+        label="完整流程",
+        description="规划、正文、分析依次独立调用模型；步骤清晰，适合需要分别查看每步结果，串行等待较久。",
         icon="✨",
         category="basic",
         steps=[
@@ -210,6 +215,57 @@ BUILTIN_TEMPLATES: dict[str, WorkflowTemplate] = {
         ],
     ),
 }
+
+
+def _split_integrated_writer_output(text: str, *, final: bool = False) -> tuple[str, str]:
+    """Parse the visible plan/body envelope without exposing its tags in the chapter."""
+    raw = str(text or "")
+    plan_open = "<PLAN>"
+    plan_close = "</PLAN>"
+    content_open = "<CONTENT>"
+    content_close = "</CONTENT>"
+
+    plan_start = raw.find(plan_open)
+    content_start = raw.find(content_open)
+    if plan_start < 0 and content_start < 0:
+        return "", raw
+
+    plan = ""
+    body = ""
+    if plan_start >= 0:
+        start = plan_start + len(plan_open)
+        end = raw.find(plan_close, start)
+        if end < 0:
+            end = content_start if content_start >= 0 else len(raw)
+        plan = raw[start:end].strip()
+
+    if content_start >= 0:
+        start = content_start + len(content_open)
+        end = raw.find(content_close, start)
+        body = raw[start:end if end >= 0 else len(raw)].strip()
+    elif final and plan_start >= 0:
+        end = raw.find(plan_close, plan_start + len(plan_open))
+        if end >= 0:
+            body = raw[end + len(plan_close):].strip()
+        elif not plan:
+            # Malformed envelope: retain the model output as prose rather than losing it.
+            body = re.sub(r"</?PLAN>", "", raw, flags=re.IGNORECASE).strip()
+
+    return plan, body
+
+
+def _combine_token_usage(first: Any, second: Any) -> dict[str, Any] | None:
+    """Sum two reported request usages; unknown usage stays unknown rather than undercounting."""
+    if not isinstance(first, dict) or not isinstance(second, dict):
+        return None
+    summed = dict(first)
+    for key in ("input_tokens", "output_tokens", "total_tokens", "cached_input_tokens", "cost_cny"):
+        left, right = first.get(key), second.get(key)
+        if isinstance(left, (int, float)) and isinstance(right, (int, float)):
+            summed[key] = left + right
+        elif key in first or key in second:
+            summed.pop(key, None)
+    return summed
 
 
 class WorkflowEngine:
@@ -326,23 +382,30 @@ class WorkflowEngine:
             self._persist_new_run()
         self._cancel_event = self._event_for_execution(self.run_id)
 
-    def _pause_active_step(self, step: WorkflowStep, partial_content: str = "") -> None:
+    def _pause_active_step(
+        self,
+        step: WorkflowStep,
+        partial_content: str = "",
+        partial_plan: str = "",
+    ) -> None:
         """保存当前步骤的中断状态和已有正文片段。"""
         self.step_statuses[step.step_id] = StepStatus.PAUSED
         self.status = WorkflowStatus.PAUSED
         if partial_content:
             self.session_context["interrupted_partial_content"] = partial_content
+        if partial_plan:
+            self.session_context["interrupted_partial_plan"] = partial_plan
         WorkflowPersistence.update_step_record(
             run_id=self.run_id,
             step_id=step.step_id,
             status="paused",
-            output_snapshot={"partial_content": partial_content},
+            output_snapshot={"partial_content": partial_content, "partial_plan": partial_plan},
             error_message="用户中断，等待继续生成",
         )
         WorkflowPersistence.update_run_status(
             run_id=self.run_id,
             status="paused",
-            word_count=len(partial_content),
+            word_count=len(re.sub(r"\s", "", partial_content)),
             output_preview=partial_content,
         )
 
@@ -526,11 +589,21 @@ class WorkflowEngine:
         }
         if step.agent_type == "writer":
             target_min, target_max = target_word_range(self.generation_options["target_word_count"])
+            integrated_plan = bool(params.get("integrated_plan"))
             params.update({
                 "temperature": self.generation_options["temperature"],
                 "target_word_count": self.generation_options["target_word_count"],
                 "target_word_min": target_min,
                 "target_word_max": target_max,
+                "integrated_plan": integrated_plan,
+                "generation_output_instruction": (
+                    "先输出 <PLAN>...</PLAN>，其中写 4-6 个精炼且因果递进的剧情节拍；"
+                    "再输出 <CONTENT>...</CONTENT>，其中只放完整小说正文。不要输出标签以外的解释。"
+                    if integrated_plan
+                    else "只输出完整中文小说正文，不输出标题、规划、分析或写作说明。"
+                ),
+                "length_repair_instruction": "",
+                "length_repair_content": "",
                 # 中文正文的 Token/字符比不固定，保留余量避免硬截断；篇幅由 Prompt 明确约束。
                 "max_tokens": min(
                     20000,
@@ -541,6 +614,94 @@ class WorkflowEngine:
                 ),
             })
         return variant, params
+
+    def _normalize_writer_result(self, result: dict[str, Any], params: dict[str, Any]) -> dict[str, Any]:
+        """Remove the integrated planning envelope and record the actual body length."""
+        normalized = dict(result)
+        raw_content = str(normalized.get("content") or "")
+        if params.get("integrated_plan"):
+            plan, content = _split_integrated_writer_output(raw_content, final=True)
+            normalized["writing_plan"] = plan
+            normalized["content"] = content
+        else:
+            normalized["content"] = raw_content.strip()
+
+        content = normalized["content"]
+        actual_count = len(re.sub(r"\s", "", content))
+        minimum = int(params.get("target_word_min") or 0)
+        maximum = int(params.get("target_word_max") or 0)
+        normalized["actual_character_count"] = actual_count
+        normalized["target_word_min"] = minimum
+        normalized["target_word_max"] = maximum
+        normalized["word_count_valid"] = not minimum or minimum <= actual_count <= maximum
+        return normalized
+
+    def _length_repair_inputs(
+        self,
+        content: str,
+        params: dict[str, Any],
+        writing_plan: str = "",
+        context: dict[str, Any] | None = None,
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        """Build a narrowly scoped repair request that retains the first draft and plan."""
+        actual_count = len(re.sub(r"\s", "", content))
+        minimum = int(params.get("target_word_min") or 0)
+        maximum = int(params.get("target_word_max") or 0)
+        repair_context = {
+            **(context or {}),
+            "original_draft": content,
+            "writing_plan": writing_plan or self.session_context.get("writing_plan", ""),
+        }
+        repair_params = {
+            **params,
+            "integrated_plan": False,
+            "generation_output_instruction": "只输出修订后的完整中文小说正文，不输出规划、标签、解释或分析。",
+            "length_repair_instruction": (
+                f"上次正文去除空白后为 {actual_count} 字，目标范围为 {minimum}-{maximum} 字。"
+                "请保留既定剧情因果、人物行为和设定事实；若超长，压缩重复描写与重复对白；若不足，"
+                "补足必要行动、反应、冲突结果。只做必要幅度的调整，输出修订后的完整正文。"
+            ),
+            "length_repair_content": content,
+        }
+        return repair_context, repair_params
+
+    def _finish_writer_length_repair(
+        self,
+        agent: Any,
+        context: dict[str, Any],
+        params: dict[str, Any],
+        result: dict[str, Any],
+    ) -> dict[str, Any]:
+        """For the synchronous endpoint, attempt one bounded repair and preserve the draft on error."""
+        normalized = self._normalize_writer_result(result, params)
+        if (
+            normalized.get("word_count_valid")
+            or not normalized.get("content")
+            or normalized.get("source") != "llm"
+        ):
+            return normalized
+        original = str(normalized["content"])
+        repair_context, repair_params = self._length_repair_inputs(
+            original, params, str(normalized.get("writing_plan") or ""), context
+        )
+        try:
+            repaired = agent.run(repair_context, {**repair_params, "_cancel_event": self._cancel_event})
+            repaired = self._normalize_writer_result(repaired, repair_params)
+            if not str(repaired.get("content") or "").strip():
+                raise RuntimeError("字数纠偏未返回正文，已保留原稿。")
+            repaired["writing_plan"] = normalized.get("writing_plan", "")
+            repaired["llm_calls"] = int(normalized.get("llm_calls") or 1) + int(repaired.get("llm_calls") or 1)
+            repaired["token_usage"] = _combine_token_usage(
+                normalized.get("token_usage"), repaired.get("token_usage")
+            )
+            if not repaired.get("word_count_valid"):
+                repaired["length_repair_warning"] = "一次字数纠偏后仍超出目标范围，已保留修订稿供人工调整。"
+            return repaired
+        except Exception as exc:  # noqa: BLE001
+            normalized["llm_calls"] = int(normalized.get("llm_calls") or 1) + 1
+            normalized["token_usage"] = None
+            normalized["length_repair_error"] = str(exc)
+            return normalized
 
     def _summarize_step_context(self, context: dict[str, Any]) -> dict[str, Any]:
         """提取实际装入步骤上下文的资料清单，不持久化完整设定正文。"""
@@ -702,6 +863,9 @@ class WorkflowEngine:
         }
         if step.agent_type == "writer":
             settings["target_word_count"] = effective_params.get("target_word_count")
+            settings["target_word_min"] = effective_params.get("target_word_min")
+            settings["target_word_max"] = effective_params.get("target_word_max")
+            settings["integrated_plan"] = bool(effective_params.get("integrated_plan"))
             settings["generation_skills"] = self.generation_options.get("active_skills", [])
         if model_called:
             from app.core.llm import get_effective_llm_settings
@@ -811,7 +975,7 @@ class WorkflowEngine:
         word_count = 0
         content = self.session_context.get("draft_content", "")
         if content:
-            word_count = len(content)
+            word_count = len(re.sub(r"\s", "", content))
 
         # 输出预览
         output_preview = content[:200] if content else ""
@@ -951,6 +1115,8 @@ class WorkflowEngine:
                             context,
                             {**params, "_cancel_event": self._cancel_event},
                         )
+                        if step.agent_type == "writer":
+                            result = self._finish_writer_length_repair(agent, context, params, result)
 
                     if self._cancel_event.is_set():
                         partial_content = str(
@@ -1134,6 +1300,13 @@ class WorkflowEngine:
                     "run_id": self.run_id,
                 }
 
+                partial_chunks: list[str] = []
+                partial_content = ""
+                partial_plan = ""
+                emitted_content_chars = 0
+                emitted_plan_chars = 0
+                last_partial_checkpoint = 0
+                integrated_plan = step.agent_type == "writer" and bool(params.get("integrated_plan"))
                 try:
                     context = self._build_step_context(step, chapter_no, outline_id)
                     # 步骤 1：流式和同步路径使用同一套分析实体目录与 ID 解析输入。
@@ -1180,8 +1353,6 @@ class WorkflowEngine:
                         # 步骤 3：保留明确的不可用结果并完成工作流，不调用分析模型。
                         final_result = {"type": "done", **fallback_result}
                     elif hasattr(agent, "run_stream") and agent.meta.supports_streaming:
-                        partial_chunks: list[str] = []
-                        last_partial_checkpoint = 0
                         agent_stream = iter(agent.run_stream(
                             context,
                             {**params, "_cancel_event": self._cancel_event},
@@ -1192,21 +1363,45 @@ class WorkflowEngine:
                             if event.get("type") == "delta":
                                 if step.agent_type in {"writer", "polisher"}:
                                     partial_chunks.append(event.get("content", ""))
-                                    partial_content = "".join(partial_chunks)
+                                    raw_partial = "".join(partial_chunks)
+                                    if integrated_plan:
+                                        if "<PLAN>" in raw_partial or "<CONTENT>" in raw_partial:
+                                            partial_plan, partial_content = _split_integrated_writer_output(raw_partial)
+                                            plan_delta = partial_plan[emitted_plan_chars:]
+                                            body_delta = partial_content[emitted_content_chars:]
+                                            if plan_delta:
+                                                emitted_plan_chars = len(partial_plan)
+                                                yield {"type": "plan_delta", "step_id": step.step_id, "content": plan_delta}
+                                            if body_delta:
+                                                emitted_content_chars = len(partial_content)
+                                                yield {"type": "delta", "step_id": step.step_id, "content": body_delta}
+                                        else:
+                                            partial_content = ""
+                                    else:
+                                        partial_content = raw_partial
+                                        body_delta = partial_content[emitted_content_chars:]
+                                        if body_delta:
+                                            emitted_content_chars = len(partial_content)
+                                            yield {"type": "delta", "step_id": step.step_id, "content": body_delta}
                                     # 定期保存未完成正文，刷新或断连时仍能恢复。
-                                    if len(partial_content) - last_partial_checkpoint >= 500:
+                                    checkpoint_size = len(partial_content) + len(partial_plan)
+                                    if checkpoint_size - last_partial_checkpoint >= 500:
                                         WorkflowPersistence.update_step_record(
                                             run_id=self.run_id,
                                             step_id=step.step_id,
                                             status="running",
-                                            output_snapshot={"partial_content": partial_content},
+                                            output_snapshot={
+                                                "partial_content": partial_content,
+                                                "partial_plan": partial_plan,
+                                            },
                                         )
-                                        last_partial_checkpoint = len(partial_content)
-                                yield {
-                                    "type": "delta",
-                                    "step_id": step.step_id,
-                                    "content": event.get("content", ""),
-                                }
+                                        last_partial_checkpoint = checkpoint_size
+                                else:
+                                    yield {
+                                        "type": "delta",
+                                        "step_id": step.step_id,
+                                        "content": event.get("content", ""),
+                                    }
                             elif event.get("type") == "done":
                                 final_result = event
                             elif event.get("type") == "error":
@@ -1215,8 +1410,13 @@ class WorkflowEngine:
                             close_stream = getattr(agent_stream, "close", None)
                             if close_stream:
                                 close_stream()
-                            partial_content = "".join(partial_chunks)
-                            self._pause_active_step(step, partial_content)
+                            if integrated_plan:
+                                partial_plan, partial_content = _split_integrated_writer_output(
+                                    "".join(partial_chunks)
+                                )
+                            else:
+                                partial_content = "".join(partial_chunks)
+                            self._pause_active_step(step, partial_content, partial_plan)
                             break
                     else:
                         # 不支持流式，同步执行
@@ -1232,6 +1432,108 @@ class WorkflowEngine:
                     if final_result is None:
                         final_result = {"type": "done", "content": ""}
 
+                    if step.agent_type == "writer":
+                        raw_content = str(final_result.get("content") or "")
+                        final_result = self._normalize_writer_result(final_result, params)
+                        final_plan = str(final_result.get("writing_plan") or "")
+                        final_content = str(final_result.get("content") or "")
+                        plan_delta = final_plan[emitted_plan_chars:]
+                        body_delta = final_content[emitted_content_chars:]
+                        if plan_delta:
+                            yield {"type": "plan_delta", "step_id": step.step_id, "content": plan_delta}
+                        if body_delta:
+                            yield {"type": "delta", "step_id": step.step_id, "content": body_delta}
+                        partial_plan, partial_content = final_plan, final_content
+                        self.session_context["writing_plan"] = final_plan
+
+                        # 仅对实际字符数越界的正文做一次定向纠偏；失败时仍保留第一稿。
+                        if (
+                            not final_result.get("word_count_valid")
+                            and final_content.strip()
+                            and final_result.get("source") == "llm"
+                        ):
+                            yield {
+                                "type": "step_notice",
+                                "step_id": step.step_id,
+                                "message": (
+                                    f"当前正文 {final_result['actual_character_count']} 字，"
+                                    f"超出目标范围 {final_result['target_word_min']}-{final_result['target_word_max']} 字；"
+                                    "正在按原规划做一次定向调整。"
+                                ),
+                            }
+                            repair_context, repair_params = self._length_repair_inputs(
+                                final_content, params, final_plan, context
+                            )
+                            first_result = final_result
+                            repair_chunks: list[str] = []
+                            repair_usage = None
+                            repair_stream = None
+                            try:
+                                yield {"type": "content_reset", "step_id": step.step_id}
+                                repair_stream = iter(agent.run_stream(
+                                    repair_context,
+                                    {**repair_params, "_cancel_event": self._cancel_event},
+                                ))
+                                for repair_event in repair_stream:
+                                    if self._cancel_event.is_set():
+                                        break
+                                    if repair_event.get("type") == "delta":
+                                        chunk = str(repair_event.get("content") or "")
+                                        repair_chunks.append(chunk)
+                                        partial_content = "".join(repair_chunks)
+                                        yield {"type": "delta", "step_id": step.step_id, "content": chunk}
+                                        if len(partial_content) - last_partial_checkpoint >= 500:
+                                            WorkflowPersistence.update_step_record(
+                                                run_id=self.run_id,
+                                                step_id=step.step_id,
+                                                status="running",
+                                                output_snapshot={
+                                                    "partial_content": partial_content,
+                                                    "partial_plan": final_plan,
+                                                },
+                                                llm_calls=2,
+                                            )
+                                            last_partial_checkpoint = len(partial_content)
+                                    elif repair_event.get("type") == "usage":
+                                        repair_usage = repair_event.get("usage")
+                                    elif repair_event.get("type") == "done":
+                                        repair_usage = repair_event.get("token_usage") or repair_usage
+                                    elif repair_event.get("type") == "error":
+                                        raise RuntimeError(repair_event.get("message", "字数纠偏失败"))
+                                if self._cancel_event.is_set():
+                                    close_repair = getattr(repair_stream, "close", None)
+                                    if close_repair:
+                                        close_repair()
+                                    self._pause_active_step(step, partial_content, final_plan)
+                                    break
+                                repaired_raw = "".join(repair_chunks)
+                                repaired_result = self._normalize_writer_result(
+                                    {"content": repaired_raw, "token_usage": repair_usage, "llm_calls": 1},
+                                    repair_params,
+                                )
+                                if not str(repaired_result.get("content") or "").strip():
+                                    raise RuntimeError("字数纠偏未返回正文。")
+                                repaired_result["writing_plan"] = final_plan
+                                repaired_result["llm_calls"] = int(first_result.get("llm_calls") or 1) + 1
+                                repaired_result["token_usage"] = _combine_token_usage(
+                                    first_result.get("token_usage"), repair_usage
+                                )
+                                if not repaired_result.get("word_count_valid"):
+                                    repaired_result["length_repair_warning"] = "一次字数纠偏后仍超出目标范围，已保留修订稿供人工调整。"
+                                final_result = {**first_result, **repaired_result}
+                                partial_content = str(final_result.get("content") or "")
+                            except Exception as repair_exc:  # noqa: BLE001
+                                # 把已显示的半截纠偏内容替换回完整初稿，确保失败时仍有可用正文。
+                                yield {"type": "content_reset", "step_id": step.step_id}
+                                yield {"type": "delta", "step_id": step.step_id, "content": final_content}
+                                final_result = {
+                                    **first_result,
+                                    "llm_calls": int(first_result.get("llm_calls") or 1) + 1,
+                                    "token_usage": None,
+                                    "length_repair_error": str(repair_exc),
+                                }
+                                partial_content = final_content
+
                     # 保存结果
                     self._save_step_output(step, final_result)
                     self.step_statuses[step.step_id] = StepStatus.COMPLETED
@@ -1245,10 +1547,11 @@ class WorkflowEngine:
 
                 except Exception as exc:
                     if self._cancel_event.is_set():
-                        partial_content = str(
-                            self.session_context.get("interrupted_partial_content") or ""
-                        )
-                        self._pause_active_step(step, partial_content)
+                        if not partial_content:
+                            partial_content = str(
+                                self.session_context.get("interrupted_partial_content") or ""
+                            )
+                        self._pause_active_step(step, partial_content, partial_plan)
                         break
                     self.step_statuses[step.step_id] = StepStatus.FAILED
                     self.status = WorkflowStatus.FAILED
@@ -1257,6 +1560,7 @@ class WorkflowEngine:
                         run_id=self.run_id,
                         step_id=step.step_id,
                         status="failed",
+                        output_snapshot={"partial_content": partial_content, "partial_plan": partial_plan},
                         error_message=str(exc),
                     )
                     WorkflowPersistence.update_run_status(

@@ -333,6 +333,9 @@ def analyze_chapter(project_id: int, chapter_id: int, content: str) -> dict:
     analysis_context = build_chapter_context(project_id, chapter_no, outline_id, query=content)
     analysis_context.update({"content": content, "chapter_no": chapter_no})
 
+    # 保存精简的资料目录，便于在生成记录中核对分析阶段实际读取了哪些类型的资料。
+    context_summary = _summarize_analysis_context(analysis_context)
+
     # 步骤 3：识别旧版和 V3 的开发兜底正文，避免用户手动点分析时把样例当成小说事实。
     if "【开发模式草稿】" in content or (
         "开发模式草稿" in content and "配置 API 后" in content
@@ -357,6 +360,9 @@ def analyze_chapter(project_id: int, chapter_id: int, content: str) -> dict:
             "timeline_events": "",
             "pending_change_count": 0,
             "analysis_status": "unavailable",
+            "token_usage": None,
+            "llm_calls": 0,
+            "context_summary": context_summary,
         }
 
     # 步骤 4：旧版手动分析入口复用 V3 Agent 和结构化输出契约。
@@ -375,8 +381,11 @@ def analyze_chapter(project_id: int, chapter_id: int, content: str) -> dict:
             "timeline_events": "暂无。",
             "structured_analysis": {},
             "analysis_status": "unavailable",
+            "token_usage": None,
+            "llm_calls": 1,
+            "context_summary": context_summary,
         }
-    if str(result.get("source", "")).startswith("fallback:"):
+    if str(result.get("source", "")).startswith(("fallback:", "timeout:")):
         # 步骤 5：DynamicAgent 会吞掉模型异常并返回兜底文本，旧入口也必须阻止假沉淀。
         unavailable_message = "模型服务不可用，本次未保存章节分析；配置模型后可重新分析。"
         result.update({
@@ -416,6 +425,9 @@ def analyze_chapter(project_id: int, chapter_id: int, content: str) -> dict:
             **sections,
             "pending_change_count": 0,
             "analysis_status": "unavailable",
+            "token_usage": result.get("token_usage"),
+            "llm_calls": result.get("llm_calls", 1),
+            "context_summary": context_summary,
         }
 
     # 步骤 6：只将唯一匹配到的实体变化转成提案；模糊名称不自动改写设定。
@@ -467,6 +479,84 @@ def analyze_chapter(project_id: int, chapter_id: int, content: str) -> dict:
         "analysis": analysis,
         **sections,
         "pending_change_count": sum(1 for item in proposals if item["status"] == "pending"),
+        "analysis_status": "completed",
+        "token_usage": result.get("token_usage"),
+        "llm_calls": result.get("llm_calls", 1),
+        "context_summary": context_summary,
+    }
+
+
+def _summarize_analysis_context(context: dict) -> dict:
+    """Return a compact directory of the sources actually passed to the analyzer."""
+    outline_segments = []
+    for key, label in (
+        ("overview_outline", "大纲总览"),
+        ("previous_volume_outline", "前一卷纲"),
+        ("volume_outline", "当前卷纲"),
+        ("next_volume_outline", "下一卷纲"),
+        ("outline", "当前单章细纲"),
+        ("next_chapter_outline", "下一章单章细纲"),
+    ):
+        item = context.get(key)
+        if isinstance(item, dict) and item:
+            details = "\n".join(
+                str(item.get(field)).strip()
+                for field in ("description", "core_events", "climax")
+                if item.get(field)
+            )
+            outline_segments.append({
+                "label": label,
+                "title": str(item.get("title") or label),
+                "chapter_no": item.get("chapter_no"),
+                "summary": details[:260],
+            })
+
+    sources = []
+    for key, label, name_field, detail_fields in (
+        ("characters", "人物", "name", ("identity", "personality", "background", "motivation")),
+        ("organizations", "组织", "name", ("description", "goal", "location")),
+        ("world_settings", "世界观", "title", ("rules", "geography", "atmosphere")),
+        ("foreshadowings", "伏笔", "keyword", ("description", "notes")),
+        ("long_term_memories", "长期记忆", "title", ("content_summary", "content")),
+    ):
+        items = context.get(key)
+        if not isinstance(items, list):
+            continue
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            detail = "\n".join(
+                str(item.get(field)).strip()
+                for field in detail_fields
+                if item.get(field)
+            )
+            sources.append({
+                "category": label,
+                "name": str(item.get(name_field) or "未命名资料"),
+                "source": "章节分析上下文",
+                "summary": detail[:220],
+            })
+    recent_summaries = context.get("recent_summaries")
+    recent_summaries = recent_summaries[:8] if isinstance(recent_summaries, list) else []
+    for item in recent_summaries:
+        if isinstance(item, dict):
+            sources.append({
+                "category": "前情摘要",
+                "name": f"第{item.get('chapter_no', '')}章",
+                "source": "最近章节",
+                "summary": str(item.get("summary") or "")[:220],
+            })
+
+    project = context.get("project") or {}
+    return {
+        "project_name": str(project.get("name") or ""),
+        "project_settings": {
+            key: project.get(key)
+            for key in ("novel_type", "writing_style", "view_point", "pace_level")
+            if project.get(key) not in (None, "")
+        },
+        "outline_segments": outline_segments,
+        "sources": sources,
     }
 
 

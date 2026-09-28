@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import json
+import re
 import traceback
 from collections.abc import Iterator
 from typing import Literal
@@ -53,7 +54,7 @@ class WorkflowGenerateRequest(BaseModel):
     project_id: int
     chapter_no: int
     outline_id: int | None = None
-    template_name: str = "smart_mode"
+    template_name: str = "quick_write"
     instruction: str = ""
     rhythm_level: str = "medium"
     chapter_id: int | None = None
@@ -513,7 +514,7 @@ def get_workflow_run_detail(run_id: str) -> dict | None:
     # 详情页只需要恢复中断片段和本次设置，避免把完整章节正文再次塞进响应。
     session_context = {
         key: restored_context[key]
-        for key in ("interrupted_partial_content", "generation_options")
+        for key in ("interrupted_partial_content", "interrupted_partial_plan", "generation_options")
         if key in restored_context
     }
     return {
@@ -809,7 +810,7 @@ def _create_generation_version(
     if not chapter_id:
         return None
 
-    word_count = len(content)
+    word_count = len(re.sub(r"\s", "", content))
     return WorkflowPersistence.create_version(
         chapter_id=chapter_id,
         run_id=run_id,
@@ -941,7 +942,7 @@ def _auto_update_memory(
         # 即使分析失败，成功生成的正文仍计入使用统计，但不会伪造分析数据。
         content = session_context.get("final_content") or session_context.get("draft_content", "")
         if content:
-            mm.record_generation(len(content))
+            mm.record_generation(len(re.sub(r"\s", "", content)))
         return 0
 
     # 步骤 2：从结构化分析解析可审核提案；旧版文本结果不会直接更改资料卡。
@@ -1005,5 +1006,5 @@ def _auto_update_memory(
     # 步骤 5：将统计与最终正文绑定；精修流程已将正文放在 final_content 中。
     content = session_context.get("final_content") or session_context.get("draft_content", "")
     if content:
-        mm.record_generation(len(content))
+        mm.record_generation(len(re.sub(r"\s", "", content)))
     return pending_count

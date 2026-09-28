@@ -175,7 +175,17 @@ export async function analyzeChapter(payload: Record<string, unknown>) {
     new_foreshadowings: string
     timeline_events: string
     pending_change_count?: number
-    analysis_status?: 'complete' | 'unavailable'
+    analysis_status?: 'completed' | 'complete' | 'unavailable'
+    token_usage?: {
+      input_tokens?: number
+      output_tokens?: number
+      total_tokens?: number
+      cached_input_tokens?: number
+      cost_cny?: number | null
+      pricing_snapshot?: Record<string, unknown>
+    } | null
+    llm_calls?: number
+    context_summary?: Record<string, unknown>
   }>('/agents/chapter-analyze', payload)
   return data
 }

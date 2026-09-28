@@ -67,10 +67,9 @@ class CoreWritingSkill(BaseSkill):
                 outline_parts.append(f"本章大纲：{chapter_outline}")
             legacy_outline_context = "\n".join(outline_parts)
 
-        # 步骤 2：规划结果为空时说明当前模板直接写作，不展示空白的计划区。
+        # 步骤 2：规划结果为空时，仍明确要求写手在本次生成中先组织剧情节拍。
         writing_plan = context.get("writing_plan") or (
-            "高效创作模式：不额外调用规划模型；请依据已传入的总纲、相邻卷章纲和本章细纲，"
-            "在本次正文写作中组织剧情节拍。"
+            "请依据已传入的总纲、相邻卷章纲和本章细纲，先组织因果连贯的剧情节拍，再完成正文。"
         )
 
         # 步骤 3：当前/相邻卷章纲只在连续性资料出现一次，避免重复消耗输入 Token。

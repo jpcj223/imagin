@@ -191,7 +191,7 @@ class WorkflowPersistence:
         agent_type: str = "",
         variant_name: str = "default",
         input_snapshot: dict | None = None,
-    ) -> None:
+    ) -> int:
         """创建步骤执行记录。"""
         with get_business_db() as db:
             record = WorkflowStepRecord(
@@ -206,6 +206,7 @@ class WorkflowPersistence:
             )
             db.add(record)
             db.commit()
+            return record.id
 
     @staticmethod
     def update_step_record(
@@ -220,6 +221,7 @@ class WorkflowPersistence:
         token_usage: dict | None = None,
         llm_calls: int | None = None,
         duration_ms: int | None = None,
+        record_id: int | None = None,
     ) -> None:
         """更新步骤执行记录。
 
@@ -228,15 +230,12 @@ class WorkflowPersistence:
         步骤 3：步骤结束时记录完成时间和真实运行时长。
         """
         with get_business_db() as db:
-            record = (
-                db.query(WorkflowStepRecord)
-                .filter(
-                    WorkflowStepRecord.run_id == run_id,
-                    WorkflowStepRecord.step_id == step_id,
-                )
-                .order_by(WorkflowStepRecord.id.desc())
-                .first()
-            )
+            query = db.query(WorkflowStepRecord).filter(WorkflowStepRecord.run_id == run_id)
+            if record_id is not None:
+                query = query.filter(WorkflowStepRecord.id == record_id)
+            else:
+                query = query.filter(WorkflowStepRecord.step_id == step_id).order_by(WorkflowStepRecord.id.desc())
+            record = query.first()
             if not record:
                 return
 

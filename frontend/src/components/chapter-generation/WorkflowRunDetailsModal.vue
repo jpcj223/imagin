@@ -36,35 +36,59 @@ function hasTokenUsage(usage?: WorkflowStepRecord['token_usage']) {
   return Boolean(usage && [usage.input_tokens, usage.output_tokens, usage.total_tokens].some(value => typeof value === 'number'))
 }
 
-const mergedSteps = computed(() => props.steps.map((liveStep) => {
-  const record = [...(props.runDetail?.steps ?? [])].reverse().find(item => item.step_id === liveStep.id)
-  const input = record?.input_snapshot
-  const output = record?.output_snapshot ?? {}
-  const contextSummary = input?.context_summary ?? liveStep.contextSummary
-  const effectiveSettings = input?.effective_settings ?? liveStep.effectiveSettings
-  const tokenUsage = hasTokenUsage(record?.token_usage) ? record?.token_usage : liveStep.tokenUsage
-  const llmCalls = record?.llm_calls || liveStep.llmCalls || 0
-  const durationMs = record?.duration_ms ?? liveStep.durationMs
-  const outputContent = liveStep.id === 'planner'
-    ? String(output.content ?? liveStep.outputContent ?? '')
-    : ''
-  const outputSummary = liveStep.id === 'analyzer'
-    ? String(output.summary ?? liveStep.outputSummary ?? '')
-    : liveStep.outputSummary
-  return {
-    ...liveStep,
-    status: record?.status ?? liveStep.status,
-    errorMessage: record?.error_message ?? liveStep.errorMessage,
-    contextSummary,
-    effectiveSettings,
-    tokenUsage,
-    llmCalls,
-    durationMs,
-    outputContent,
-    outputSummary,
-    outputSnapshot: output,
-  }
-}))
+const mergedSteps = computed(() => {
+  const liveStepIds = new Set(props.steps.map(step => step.id))
+  const backgroundAnalyzerRecord = [...(props.runDetail?.steps ?? [])]
+    .reverse()
+    .find(record => record.step_id === 'background_analyzer')
+  const backgroundAnalyzerRecords = backgroundAnalyzerRecord && !liveStepIds.has(backgroundAnalyzerRecord.step_id)
+    ? [{
+        id: backgroundAnalyzerRecord.step_id,
+        label: backgroundAnalyzerRecord.step_name || '后台分析沉淀',
+        icon: '🔍',
+        status: backgroundAnalyzerRecord.status,
+        durationMs: backgroundAnalyzerRecord.duration_ms ?? undefined,
+        tokenUsage: backgroundAnalyzerRecord.token_usage,
+        llmCalls: backgroundAnalyzerRecord.llm_calls,
+        outputSummary: String(backgroundAnalyzerRecord.output_snapshot?.summary ?? ''),
+        contextSummary: backgroundAnalyzerRecord.input_snapshot?.context_summary as Record<string, unknown> | undefined,
+        effectiveSettings: backgroundAnalyzerRecord.input_snapshot?.effective_settings as Record<string, unknown> | undefined,
+        errorMessage: backgroundAnalyzerRecord.error_message ?? undefined,
+        outputSnapshot: backgroundAnalyzerRecord.output_snapshot ?? {},
+      }]
+    : []
+  return [...props.steps, ...backgroundAnalyzerRecords].map((liveStep) => {
+    const record = [...(props.runDetail?.steps ?? [])].reverse().find(item => item.step_id === liveStep.id)
+    const input = record?.input_snapshot
+    const output = record?.output_snapshot ?? {}
+    const contextSummary = input?.context_summary ?? liveStep.contextSummary
+    const effectiveSettings = input?.effective_settings ?? liveStep.effectiveSettings
+    const tokenUsage = hasTokenUsage(record?.token_usage) ? record?.token_usage : liveStep.tokenUsage
+    const llmCalls = record?.llm_calls || liveStep.llmCalls || 0
+    const durationMs = record?.duration_ms ?? liveStep.durationMs
+    const outputContent = liveStep.id === 'planner'
+      ? String(output.content ?? liveStep.outputContent ?? '')
+      : liveStep.id === 'writer'
+        ? String(output.writing_plan ?? '')
+        : ''
+    const outputSummary = liveStep.id === 'analyzer' || liveStep.id === 'background_analyzer'
+      ? String(output.summary ?? liveStep.outputSummary ?? '')
+      : liveStep.outputSummary
+    return {
+      ...liveStep,
+      status: record?.status ?? liveStep.status,
+      errorMessage: record?.error_message ?? liveStep.errorMessage,
+      contextSummary,
+      effectiveSettings,
+      tokenUsage,
+      llmCalls,
+      durationMs,
+      outputContent,
+      outputSummary,
+      outputSnapshot: output,
+    }
+  })
+})
 
 watch(mergedSteps, (items) => {
   if (!items.some(item => item.id === selectedStepId.value)) {
@@ -219,7 +243,8 @@ function formatDuration(value?: number | null) {
 
 function contentForStep(step: NonNullable<typeof selectedStep.value>) {
   if (step.id === 'planner') return step.outputContent
-  if (step.id === 'analyzer') {
+  if (step.id === 'writer') return step.outputContent ? `本章剧情节拍（与正文同次请求）\n${step.outputContent}` : ''
+  if (step.id === 'analyzer' || step.id === 'background_analyzer') {
     const output = step.outputSnapshot as Record<string, unknown>
     return String(output.analysis_text ?? step.outputSummary ?? '')
   }
@@ -292,7 +317,7 @@ function variantLabel(value: string) {
             <span class="status-pill" :class="selectedStep.status">{{ statusLabel(selectedStep.status) }}</span>
           </div>
 
-          <section v-if="selectedStep.id === 'planner' || selectedStep.id === 'analyzer'" class="detail-section">
+          <section v-if="selectedStep.id === 'planner' || selectedStep.id === 'analyzer' || selectedStep.id === 'background_analyzer'" class="detail-section">
             <h4>{{ selectedStep.id === 'planner' ? '创作规划与判断摘要' : '章节分析结果' }}</h4>
             <p class="section-hint">这是 Agent 实际生成并传给后续步骤的规划/分析结果，不展示模型内部推理过程。</p>
             <pre v-if="contentForStep(selectedStep)" class="generated-content">{{ contentForStep(selectedStep) }}</pre>

@@ -207,6 +207,9 @@ export type WorkflowStreamEvent =
   | { type: 'step_start'; step_id: string; label: string; run_id?: string }
   | { type: 'step_context'; step_id: string; context_summary: Record<string, unknown>; effective_settings: Record<string, unknown> }
   | { type: 'delta'; step_id: string; content: string }
+  | { type: 'plan_delta'; step_id: string; content: string }
+  | { type: 'content_reset'; step_id: string }
+  | { type: 'step_notice'; step_id: string; message: string }
   | { type: 'step_done'; step_id: string; result: Record<string, unknown> }
   | { type: 'workflow_done'; status: string; run_id: string; chapter_id?: number | null; version_id?: string | null; session_context: Record<string, unknown>; step_statuses: Record<string, string> }
   | { type: 'change_proposals_ready'; chapter_id: number; pending_count: number }
@@ -216,6 +219,9 @@ export interface WorkflowStreamHandlers {
   onStepStart?: (stepId: string, label: string, runId?: string) => void
   onStepContext?: (stepId: string, contextSummary: Record<string, unknown>, effectiveSettings: Record<string, unknown>) => void
   onDelta?: (stepId: string, content: string) => void
+  onPlanDelta?: (stepId: string, content: string) => void
+  onContentReset?: (stepId: string) => void
+  onStepNotice?: (stepId: string, message: string) => void
   onStepDone?: (stepId: string, result: Record<string, unknown>) => void
   onWorkflowDone?: (status: string, runId: string, sessionContext: Record<string, unknown>) => void
   onChangeProposalsReady?: (chapterId: number, pendingCount: number) => void
@@ -260,7 +266,7 @@ export async function workflowGenerate(payload: Record<string, unknown>) {
 export async function workflowGenerateStream(
   payload: Record<string, unknown>,
   handlers: WorkflowStreamHandlers,
-): Promise<{ status: string; run_id: string; session_context: Record<string, unknown> } | null> {
+): Promise<{ status: string; run_id: string; chapter_id?: number | null; session_context: Record<string, unknown> } | null> {
   const controller = new AbortController()
   const timeoutId = window.setTimeout(() => controller.abort(), 600000) // 10 分钟超时
   const response = await fetch('/backend-api/agents/v3/workflow/generate/stream', {
@@ -278,7 +284,7 @@ export async function workflowGenerateStream(
   const reader = response.body.getReader()
   const decoder = new TextDecoder()
   let buffer = ''
-  let finalResult: { status: string; run_id: string; session_context: Record<string, unknown> } | null = null
+  let finalResult: { status: string; run_id: string; chapter_id?: number | null; session_context: Record<string, unknown> } | null = null
 
   function consumeLine(line: string) {
     if (!line.trim()) return
@@ -294,6 +300,15 @@ export async function workflowGenerateStream(
         case 'delta':
           handlers.onDelta?.(event.step_id, event.content)
           break
+        case 'plan_delta':
+          handlers.onPlanDelta?.(event.step_id, event.content)
+          break
+        case 'content_reset':
+          handlers.onContentReset?.(event.step_id)
+          break
+        case 'step_notice':
+          handlers.onStepNotice?.(event.step_id, event.message)
+          break
         case 'step_done':
           handlers.onStepDone?.(event.step_id, event.result)
           break
@@ -301,6 +316,7 @@ export async function workflowGenerateStream(
           finalResult = {
             status: event.status,
             run_id: event.run_id,
+            chapter_id: event.chapter_id,
             session_context: event.session_context,
           }
           handlers.onWorkflowDone?.(event.status, event.run_id, event.session_context)
@@ -364,14 +380,14 @@ export async function workflowResumeStream(
     manual_context_selection?: Record<string, number[]>
   },
   handlers: WorkflowStreamHandlers,
-): Promise<{ status: string; run_id: string; session_context: Record<string, unknown> } | null> {
+): Promise<{ status: string; run_id: string; chapter_id?: number | null; session_context: Record<string, unknown> } | null> {
   const controller = new AbortController()
   const timeoutId = window.setTimeout(() => controller.abort(), 600000)
   let reader: ReadableStreamDefaultReader<Uint8Array> | null = null
   const decoder = new TextDecoder()
   let buffer = ''
   let streamEnded = false
-  let finalResult: { status: string; run_id: string; session_context: Record<string, unknown> } | null = null
+  let finalResult: { status: string; run_id: string; chapter_id?: number | null; session_context: Record<string, unknown> } | null = null
 
   function consumeLine(line: string) {
     if (!line.trim()) return
@@ -387,6 +403,15 @@ export async function workflowResumeStream(
         case 'delta':
           handlers.onDelta?.(event.step_id, event.content)
           break
+        case 'plan_delta':
+          handlers.onPlanDelta?.(event.step_id, event.content)
+          break
+        case 'content_reset':
+          handlers.onContentReset?.(event.step_id)
+          break
+        case 'step_notice':
+          handlers.onStepNotice?.(event.step_id, event.message)
+          break
         case 'step_done':
           handlers.onStepDone?.(event.step_id, event.result)
           break
@@ -394,6 +419,7 @@ export async function workflowResumeStream(
           finalResult = {
             status: event.status,
             run_id: event.run_id,
+            chapter_id: event.chapter_id,
             session_context: event.session_context,
           }
           handlers.onWorkflowDone?.(event.status, event.run_id, event.session_context)

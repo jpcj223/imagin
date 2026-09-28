@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import time
 import traceback
 from collections.abc import Iterator
 from typing import Literal
@@ -446,10 +447,92 @@ def chapter_edit_apply(payload: ChapterEditApplyRequest) -> dict:
 @router.post("/chapter-analyze")
 def chapter_analyze(payload: ChapterAnalyzeRequest) -> dict:
     """分析章节正文并沉淀摘要。"""
+    tracked_run_id = None
+    tracked_record_id = None
+    if payload.run_id:
+        run = WorkflowPersistence.get_run(payload.run_id)
+        if run and int(run.get("project_id") or 0) == payload.project_id:
+            tracked_run_id = payload.run_id
+            try:
+                from app.core.llm import get_effective_llm_settings
+
+                model_settings = get_effective_llm_settings({"temperature": 0.2, "max_tokens": 1400})
+            except Exception:  # noqa: BLE001 - usage tracking must not block chapter analysis
+                model_settings = {"configured": False}
+            tracked_record_id = WorkflowPersistence.create_step_record(
+                run_id=tracked_run_id,
+                step_id="background_analyzer",
+                step_name="后台分析沉淀",
+                agent_type="analyzer",
+                variant_name="default",
+                input_snapshot={
+                    "chapter_id": payload.chapter_id,
+                    "content_characters": len("".join(payload.content.split())),
+                    "effective_settings": {
+                        "agent_type": "analyzer",
+                        "variant": "default",
+                        "model_called": True,
+                        "model": model_settings,
+                    },
+                },
+            )
+    started_at = time.monotonic()
     try:
-        return analyze_chapter(payload.project_id, payload.chapter_id, payload.content)
+        result = analyze_chapter(payload.project_id, payload.chapter_id, payload.content)
+        if tracked_run_id:
+            status = "failed" if result.get("analysis_status") == "unavailable" else "completed"
+            WorkflowPersistence.update_step_record(
+                run_id=tracked_run_id,
+                step_id="background_analyzer",
+                status=status,
+                record_id=tracked_record_id,
+                input_snapshot={
+                    "chapter_id": payload.chapter_id,
+                    "content_characters": len("".join(payload.content.split())),
+                    "context_summary": result.get("context_summary") or {},
+                    "effective_settings": {
+                        "agent_type": "analyzer",
+                        "variant": "default",
+                        "model_called": bool(result.get("llm_calls", 0)),
+                        "model": model_settings,
+                    },
+                },
+                output_snapshot={
+                    "analysis_text": result.get("analysis", ""),
+                    "summary": result.get("summary", ""),
+                    "pending_change_count": result.get("pending_change_count", 0),
+                },
+                token_usage=result.get("token_usage"),
+                llm_calls=int(result.get("llm_calls") or 0),
+                duration_ms=int((time.monotonic() - started_at) * 1000),
+                error_message=(
+                    str(result.get("analysis") or "分析不可用")
+                    if status == "failed" else None
+                ),
+            )
+        return result
     except LookupError as exc:
+        if tracked_run_id:
+            WorkflowPersistence.update_step_record(
+                run_id=tracked_run_id,
+                step_id="background_analyzer",
+                status="failed",
+                record_id=tracked_record_id,
+                error_message=str(exc),
+                duration_ms=int((time.monotonic() - started_at) * 1000),
+            )
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001
+        if tracked_run_id:
+            WorkflowPersistence.update_step_record(
+                run_id=tracked_run_id,
+                step_id="background_analyzer",
+                status="failed",
+                record_id=tracked_record_id,
+                error_message=str(exc),
+                duration_ms=int((time.monotonic() - started_at) * 1000),
+            )
+        raise
 
 
 @router.post("/polish")

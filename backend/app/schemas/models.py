@@ -220,6 +220,7 @@ class ChapterAnalyzeRequest(BaseModel):
     project_id: int = Field(description="所属项目 ID")
     chapter_id: int = Field(description="要分析的章节 ID")
     content: str = Field(description="章节正文")
+    run_id: str | None = Field(default=None, description="可选；将后台分析用量关联到章节生成记录")
 
 
 class PolishRequest(BaseModel):
