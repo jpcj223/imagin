@@ -71,7 +71,24 @@ export interface WorkflowStepRecord {
   started_at: string | null
   completed_at: string | null
   duration_ms: number | null
-  token_usage: { input_tokens?: number; output_tokens?: number; total_tokens?: number } | null
+  token_usage: {
+    input_tokens?: number
+    output_tokens?: number
+    total_tokens?: number
+    cached_input_tokens?: number
+    cost_cny?: number | null
+    pricing_snapshot?: {
+      config_id?: number | null
+      config_name?: string
+      model?: string
+      currency?: string
+      unit?: string
+      input_price_per_million?: number | null
+      output_price_per_million?: number | null
+      cached_input_price_per_million?: number | null
+      cached_input_uses_input_price?: boolean
+    }
+  } | null
   llm_calls: number
   input_snapshot: WorkflowStepInputSnapshot | null
   output_snapshot: Record<string, unknown> | null

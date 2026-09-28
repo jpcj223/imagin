@@ -13,6 +13,9 @@ export interface ModelConfig {
   frequency_penalty?: number | null
   presence_penalty?: number | null
   proxy_url?: string
+  input_price_per_million?: number | null
+  output_price_per_million?: number | null
+  cached_input_price_per_million?: number | null
   created_at?: string
   updated_at?: string
 }
@@ -29,6 +32,9 @@ export interface ModelConfigPayload {
   frequency_penalty?: number | null
   presence_penalty?: number | null
   proxy_url?: string
+  input_price_per_million?: number | null
+  output_price_per_million?: number | null
+  cached_input_price_per_million?: number | null
 }
 
 /** 列出所有模型配置。 */

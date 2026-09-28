@@ -8,6 +8,7 @@ import json
 
 from app.skills.base import BaseSkill, SkillMeta
 from app.skills.registry import SkillRegistry
+from app.memory.retriever import format_volume_outline
 
 
 @SkillRegistry.register("core_writing")
@@ -44,13 +45,27 @@ class CoreWritingSkill(BaseSkill):
         # 步骤 1：把结构化上下文压缩成写作资料包。
         project = context.get("project", {})
         world = context.get("world", {})
+        volume_outline = context.get("volume_outline") or {}
+        outline = context.get("outline", {})
         characters = context.get("characters", [])
         world_settings = context.get("world_settings", [])
         organizations = context.get("organizations", [])
         foreshadowings = context.get("foreshadowings", [])
         recent_summaries = context.get("recent_summaries", [])
         long_term_memories = context.get("long_term_memories", [])
+        has_combined_outline_context = bool(context.get("generation_outline_context_text"))
         generation_outline_context = context.get("generation_outline_context_text") or "暂无全书及相邻卷章细纲"
+
+        # 旧版 Agent 没有相邻卷章打包字段时仍显式附上当前卷章纲；V3 已由打包文本覆盖，不再重复。
+        legacy_outline_context = ""
+        if not has_combined_outline_context:
+            outline_parts = [f"当前卷纲：{format_volume_outline(volume_outline)}"]
+            outline_title = outline.get("title", "")
+            outline_desc = outline.get("description", "")
+            chapter_outline = f"{outline_title} - {outline_desc}" if outline_desc else outline_title
+            if chapter_outline:
+                outline_parts.append(f"本章大纲：{chapter_outline}")
+            legacy_outline_context = "\n".join(outline_parts)
 
         # 步骤 2：规划结果为空时说明当前模板直接写作，不展示空白的计划区。
         writing_plan = context.get("writing_plan") or "快速写作模式：没有独立规划步骤，请直接依据本章大纲安排剧情。"
@@ -61,6 +76,7 @@ class CoreWritingSkill(BaseSkill):
 世界观：{_format_world(world, world_settings)}
 大纲连续性资料（已包含总览、前后卷纲、当前与下一章细纲及上一章衔接）：
 {generation_outline_context}
+{legacy_outline_context}
 角色：{_format_characters(characters)}
 组织：{_format_organizations(organizations)}
 待处理伏笔：{_format_foreshadowings(foreshadowings)}

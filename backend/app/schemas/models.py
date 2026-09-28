@@ -42,6 +42,9 @@ class ModelConfigCreate(BaseModel):
     frequency_penalty: float | None = Field(default=None, ge=-2, le=2, description="频率惩罚，-2到2")
     presence_penalty: float | None = Field(default=None, ge=-2, le=2, description="存在惩罚，-2到2")
     proxy_url: str | None = Field(default=None, description="HTTP 代理地址，如 http://127.0.0.1:7890")
+    input_price_per_million: float | None = Field(default=None, ge=0, description="输入单价，人民币/百万 Token")
+    output_price_per_million: float | None = Field(default=None, ge=0, description="输出单价，人民币/百万 Token")
+    cached_input_price_per_million: float | None = Field(default=None, ge=0, description="缓存输入单价，人民币/百万 Token，可选")
 
 
 class WorldSettingSave(BaseModel):

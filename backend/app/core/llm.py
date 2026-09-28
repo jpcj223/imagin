@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import socket
 import urllib.error
@@ -8,7 +9,8 @@ import urllib.request
 from collections.abc import Iterator
 from typing import Any
 
-from app.db.database import get_connection
+from app.db.session import get_core_db
+from app.models.core.model_config import ModelConfig
 
 
 class LLMError(RuntimeError):
@@ -38,11 +40,77 @@ def _max_tokens_default() -> int:
 
 
 def get_active_model_config() -> dict[str, Any] | None:
-    with get_connection() as conn:
-        row = conn.execute(
-            "SELECT * FROM model_configs WHERE is_active = 1 ORDER BY id DESC LIMIT 1"
-        ).fetchone()
-    return dict(row) if row else None
+    """读取配置页使用的核心库，确保模型调用与费用设置来自同一条配置。"""
+    with get_core_db() as db:
+        config = (
+            db.query(ModelConfig)
+            .filter(ModelConfig.is_active == 1)
+            .order_by(ModelConfig.id.desc())
+            .first()
+        )
+        if config is None:
+            return None
+        return {
+            column.key: getattr(config, column.key)
+            for column in ModelConfig.__mapper__.column_attrs
+        }
+
+
+def _pricing_snapshot(config: dict[str, Any]) -> dict[str, Any]:
+    """生成不含凭据的模型与单价快照，随每次调用记录。"""
+    def read_price(field: str) -> float | None:
+        value = config.get(field)
+        if value is None or isinstance(value, bool):
+            return None
+        try:
+            price = float(value)
+        except (TypeError, ValueError, OverflowError):
+            return None
+        return price if math.isfinite(price) and price >= 0 else None
+
+    cached_price = read_price("cached_input_price_per_million")
+    input_price = read_price("input_price_per_million")
+    return {
+        "config_id": config.get("id"),
+        "config_name": config.get("name") or "",
+        "model": config.get("model") or "",
+        "currency": "CNY",
+        "unit": "per_million_tokens",
+        "input_price_per_million": input_price,
+        "output_price_per_million": read_price("output_price_per_million"),
+        "cached_input_price_per_million": cached_price,
+        "cached_input_uses_input_price": cached_price is None and input_price is not None,
+    }
+
+
+def _attach_pricing(token_usage: dict[str, int] | None, config: dict[str, Any]) -> dict[str, Any] | None:
+    """把供应商实报 Token 用量与调用时价格组合为可追溯估算。"""
+    if not token_usage:
+        return None
+
+    result: dict[str, Any] = dict(token_usage)
+    pricing = _pricing_snapshot(config)
+    result["pricing_snapshot"] = pricing
+    input_tokens = token_usage.get("input_tokens")
+    output_tokens = token_usage.get("output_tokens")
+    input_price = pricing["input_price_per_million"]
+    output_price = pricing["output_price_per_million"]
+    if input_tokens is None or output_tokens is None or input_price is None or output_price is None:
+        result["cost_cny"] = None
+        return result
+
+    cached_tokens = min(max(token_usage.get("cached_input_tokens", 0), 0), input_tokens)
+    uncached_tokens = max(input_tokens - cached_tokens, 0)
+    cached_price = pricing["cached_input_price_per_million"]
+    if cached_price is None:
+        cached_price = input_price
+    cost = (
+        uncached_tokens * input_price
+        + cached_tokens * cached_price
+        + output_tokens * output_price
+    ) / 1_000_000
+    result["cost_cny"] = round(cost, 8)
+    return result
 
 
 def get_effective_llm_settings(
@@ -59,6 +127,7 @@ def get_effective_llm_settings(
         "configured": True,
         "config_name": config.get("name") or "",
         "model": config.get("model") or "",
+        "pricing": _pricing_snapshot(config),
         "temperature": params.get("temperature"),
         "max_tokens": params.get("max_tokens"),
         "top_p": params.get("top_p"),
@@ -161,7 +230,7 @@ def chat_completion_with_usage(
     messages: list[dict[str, str]],
     temperature: float | None = None,
     max_tokens: int | None = None,
-) -> tuple[str, dict[str, int] | None]:
+) -> tuple[str, dict[str, Any] | None]:
     """调用兼容接口并同时返回供应商报告的 Token 用量。
 
     步骤 1：按现有配置发送聊天请求；步骤 2：读取文本和可用用量字段；
@@ -196,7 +265,7 @@ def chat_completion_with_usage(
     except (KeyError, IndexError, TypeError) as exc:
         raise LLMError("模型返回格式不符合 OpenAI-compatible 规范") from exc
 
-    return content, _normalize_token_usage(body.get("usage"))
+    return content, _attach_pricing(_normalize_token_usage(body.get("usage")), config)
 
 
 def _normalize_token_usage(raw_usage: Any) -> dict[str, int] | None:
@@ -205,10 +274,10 @@ def _normalize_token_usage(raw_usage: Any) -> dict[str, int] | None:
         return None
 
     # 步骤 1：兼容常用 input/output 字段别名；步骤 2：只接受非负整数值。
-    def read_count(*keys: str) -> int | None:
+    def read_count_from(source: dict[str, Any], *keys: str) -> int | None:
         # 步骤 1：依次读取供应商别名；步骤 2：忽略缺失、布尔值和无效数字。
         for key in keys:
-            value = raw_usage.get(key)
+            value = source.get(key)
             if value is None or isinstance(value, bool):
                 continue
             try:
@@ -219,17 +288,30 @@ def _normalize_token_usage(raw_usage: Any) -> dict[str, int] | None:
                 return count
         return None
 
+    def read_count(*keys: str) -> int | None:
+        return read_count_from(raw_usage, *keys)
+
     input_tokens = read_count("prompt_tokens", "input_tokens")
     output_tokens = read_count("completion_tokens", "output_tokens")
     total_tokens = read_count("total_tokens")
     if total_tokens is None and input_tokens is not None and output_tokens is not None:
         total_tokens = input_tokens + output_tokens
+    cached_input_tokens = read_count("cached_input_tokens", "cache_read_input_tokens")
+    if cached_input_tokens is None:
+        for details_key in ("prompt_tokens_details", "input_tokens_details", "prompt_token_details"):
+            details = raw_usage.get(details_key)
+            if isinstance(details, dict):
+                cached_input_tokens = read_count_from(details, "cached_tokens", "cache_read_input_tokens")
+                if cached_input_tokens is not None:
+                    break
+
     usage = {
         key: value
         for key, value in (
             ("input_tokens", input_tokens),
             ("output_tokens", output_tokens),
             ("total_tokens", total_tokens),
+            ("cached_input_tokens", cached_input_tokens),
         )
         if value is not None
     }
@@ -269,7 +351,7 @@ def chat_completion_stream_with_usage(
                     continue
 
                 # 步骤 3：部分供应商会在流末尾返回用量；没有时不估算。
-                usage = _normalize_token_usage(body.get("usage"))
+                usage = _attach_pricing(_normalize_token_usage(body.get("usage")), config)
                 if usage:
                     yield {"type": "usage", "usage": usage}
                 try:

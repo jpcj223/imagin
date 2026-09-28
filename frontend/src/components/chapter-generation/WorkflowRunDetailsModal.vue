@@ -71,12 +71,18 @@ const usage = computed(() => {
   let requests = 0
   let elapsed = 0
   let measuredAttempts = 0
+  let estimatedCost = 0
+  let pricedAttempts = 0
   const addTokenUsage = (tokenUsage?: WorkflowStepRecord['token_usage']) => {
     if (!hasTokenUsage(tokenUsage)) return
     input += tokenUsage?.input_tokens ?? 0
     output += tokenUsage?.output_tokens ?? 0
     total += tokenUsage?.total_tokens ?? (tokenUsage?.input_tokens ?? 0) + (tokenUsage?.output_tokens ?? 0)
     measuredAttempts += 1
+    if (typeof tokenUsage?.cost_cny === 'number') {
+      estimatedCost += tokenUsage.cost_cny
+      pricedAttempts += 1
+    }
   }
   for (const attempt of attempts) {
     addTokenUsage(attempt.token_usage)
@@ -101,6 +107,8 @@ const usage = computed(() => {
     requests,
     elapsed,
     measuredAttempts,
+    estimatedCost,
+    pricedAttempts,
     attempts: attempts.length || props.steps.filter(step => step.status !== 'pending').length,
   }
 })
@@ -119,6 +127,24 @@ const modelConfigLabel = computed(() => {
 
 function formatNumber(value?: number | null) {
   return typeof value === 'number' ? new Intl.NumberFormat('zh-CN').format(value) : '—'
+}
+
+function formatCurrency(value?: number | null) {
+  if (typeof value !== 'number') return '未配置'
+  return new Intl.NumberFormat('zh-CN', {
+    style: 'currency', currency: 'CNY', minimumFractionDigits: 4, maximumFractionDigits: 6,
+  }).format(value)
+}
+
+function stepCostLabel(step: NonNullable<typeof selectedStep.value>) {
+  const tokenUsage = step.tokenUsage
+  if (typeof tokenUsage?.cost_cny === 'number') return `费用约 ${formatCurrency(tokenUsage.cost_cny)}`
+  if (hasTokenUsage(tokenUsage)) return '费用未估（缺少单价）'
+  return '费用未估（缺少 Token 用量）'
+}
+
+function formatPrice(value?: number | null) {
+  return typeof value === 'number' ? `¥${value}/百万 Token` : '未配置'
 }
 
 function formatDuration(value?: number | null) {
@@ -175,10 +201,11 @@ function variantLabel(value: string) {
         <article><strong>{{ formatNumber(usage.input) }}</strong><span>输入 Token</span></article>
         <article><strong>{{ formatNumber(usage.output) }}</strong><span>输出 Token</span></article>
         <article><strong>{{ formatNumber(usage.total) }}</strong><span>合计 Token</span></article>
+        <article><strong>{{ usage.pricedAttempts ? `${formatCurrency(usage.estimatedCost)}${usage.pricedAttempts < usage.measuredAttempts ? ' *' : ''}` : '未配置' }}</strong><span>估算费用</span></article>
         <article><strong>{{ formatDuration(usage.elapsed) }}</strong><span>步骤耗时</span></article>
       </div>
       <p class="usage-note">
-        汇总包含本次运行的全部步骤尝试和重跑；{{ usage.attempts ? `${usage.measuredAttempts}/${usage.attempts} 次尝试已返回 Token 用量。` : '' }}中断或未返回用量时不推算。当前未配置模型单价，费用不做估算。
+        汇总包含本次运行的全部步骤尝试和重跑；{{ usage.attempts ? `${usage.measuredAttempts}/${usage.attempts} 次尝试已返回 Token，用 ${usage.pricedAttempts}/${usage.measuredAttempts || 0} 次用量估算费用。` : '' }}单价取模型调用时快照。缓存输入单价未填时按输入单价估算；服务商未返回缓存 Token 数时按普通输入计价。
       </p>
 
       <div class="step-layout">
@@ -198,7 +225,7 @@ function variantLabel(value: string) {
 
         <main v-if="selectedStep" class="step-detail">
           <div class="detail-title-row">
-            <div><h3>{{ selectedStep.label }}</h3><span>{{ formatDuration(selectedStep.durationMs) }} · {{ selectedStep.llmCalls || 0 }} 次模型请求</span></div>
+            <div><h3>{{ selectedStep.label }}</h3><span>{{ formatDuration(selectedStep.durationMs) }} · {{ selectedStep.llmCalls || 0 }} 次模型请求 · {{ stepCostLabel(selectedStep) }}</span></div>
             <span class="status-pill" :class="selectedStep.status">{{ statusLabel(selectedStep.status) }}</span>
           </div>
 
@@ -245,6 +272,7 @@ function variantLabel(value: string) {
               <div v-if="modelSettings?.configured"><span>采样参数</span><strong>温度 {{ modelSettings.temperature ?? '默认' }} · Top P {{ modelSettings.top_p ?? '默认' }}</strong></div>
               <div v-if="modelSettings?.configured"><span>最大输出</span><strong>{{ formatNumber(modelSettings.max_tokens) }} Token</strong></div>
               <div v-if="modelSettings?.configured"><span>频率 / 存在惩罚</span><strong>{{ modelSettings.frequency_penalty ?? '默认' }} / {{ modelSettings.presence_penalty ?? '默认' }}</strong></div>
+              <div v-if="modelSettings?.pricing" class="wide-setting"><span>调用时单价（元/百万 Token）</span><strong>输入 {{ formatPrice(modelSettings.pricing.input_price_per_million) }} · 输出 {{ formatPrice(modelSettings.pricing.output_price_per_million) }} · 缓存输入 {{ formatPrice(modelSettings.pricing.cached_input_price_per_million) }}</strong></div>
               <div v-if="settings.agent_skills?.length" class="wide-setting"><span>Agent 已装配技能</span><div class="tag-list"><em v-for="skill in settings.agent_skills" :key="skill">{{ skill }}</em></div></div>
               <div v-if="settings.generation_skills?.length" class="wide-setting"><span>本次写作重点</span><div class="tag-list"><em v-for="skill in settings.generation_skills" :key="skill">{{ skill }}</em></div></div>
               <p v-if="settings.model_called === false" class="wide-setting setting-note">此步骤使用本地兜底结果，没有调用模型。</p>
@@ -284,7 +312,7 @@ function variantLabel(value: string) {
 .modal-header h2 { margin: 5px 0 4px; font-size: 20px; }
 .modal-header p { margin: 0; color: var(--text-muted); font-size: 12px; }
 .close-button { width: 32px; height: 32px; border: 1px solid var(--border); border-radius: 8px; color: var(--text-secondary); background: var(--bg-secondary); font-size: 22px; cursor: pointer; }
-.usage-grid { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 8px; padding: 14px 24px 0; }
+.usage-grid { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 8px; padding: 14px 24px 0; }
 .usage-grid article { min-width: 0; display: grid; gap: 3px; padding: 10px 12px; border: 1px solid var(--border); border-radius: 10px; background: var(--bg-secondary); }
 .usage-grid strong { overflow: hidden; color: #9b92ff; font-size: 18px; text-overflow: ellipsis; white-space: nowrap; }
 .usage-grid span { color: var(--text-muted); font-size: 11px; }

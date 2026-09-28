@@ -6,6 +6,7 @@ from __future__ import annotations
 
 from app.skills.base import BaseSkill, SkillMeta
 from app.skills.registry import SkillRegistry
+from app.memory.retriever import format_volume_outline
 
 
 @SkillRegistry.register("core_planning")
@@ -34,7 +35,15 @@ class CorePlanningSkill(BaseSkill):
 
     def pre_process(self, context, params):
         """构建规划上下文文本。"""
+        has_combined_outline_context = bool(context.get("generation_outline_context_text"))
         context["generation_outline_context_text"] = context.get("generation_outline_context_text") or "暂无全书及相邻卷章细纲"
+        # 保留旧版单步骤生成依赖的独立卷纲字段；当前 V3 规划 Prompt 不引用它，避免重复装入。
+        context["volume_outline_text"] = format_volume_outline(context.get("volume_outline"))
+        context["legacy_volume_outline_prompt"] = (
+            f"当前卷纲（必读）：{context['volume_outline_text']}"
+            if not has_combined_outline_context and context.get("volume_outline")
+            else ""
+        )
         characters = context.get("characters", [])
         foreshadowings = context.get("foreshadowings", [])
         recent_summaries = context.get("recent_summaries", [])

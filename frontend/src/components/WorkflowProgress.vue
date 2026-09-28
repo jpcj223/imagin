@@ -8,7 +8,13 @@ export interface StepInfo {
   status: 'pending' | 'running' | 'completed' | 'failed' | 'skipped' | 'paused'
   durationMs?: number
   startedAt?: number
-  tokenUsage?: { input_tokens?: number; output_tokens?: number; total_tokens?: number } | null
+  tokenUsage?: {
+    input_tokens?: number
+    output_tokens?: number
+    total_tokens?: number
+    cached_input_tokens?: number
+    cost_cny?: number | null
+  } | null
   llmCalls?: number
   outputSummary?: string
   outputContent?: string

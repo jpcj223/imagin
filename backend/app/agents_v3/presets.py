@@ -104,6 +104,7 @@ def create_planner_agent(variant: str = "default", **extra_params) -> BaseAgent:
             "为第 {chapter_no} 章制定可直接交给写手的情节蓝图。\n"
             "全书及相邻卷章连续性资料（已包含当前卷纲和本章细纲，请勿重复）：\n"
             "{generation_outline_context_text}\n\n"
+            "{legacy_volume_outline_prompt}\n\n"
             "与本章直接相关的角色、伏笔及近期剧情：\n{_planning_context}\n\n"
             "请按以下结构简洁输出（约 5-7 个剧情节拍，避免泛泛口号）：\n"
             "【本章目标】一句话说明本章要完成的剧情变化。\n"

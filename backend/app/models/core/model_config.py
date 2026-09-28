@@ -24,6 +24,10 @@ class ModelConfig(Base):
     frequency_penalty = Column(Float, default=0)
     presence_penalty = Column(Float, default=0)
     proxy_url = Column(String(512), default="")
+    # 单价统一按人民币/百万 Token 录入；缓存输入价格可留空并回退到普通输入单价估算。
+    input_price_per_million = Column(Float, nullable=True)
+    output_price_per_million = Column(Float, nullable=True)
+    cached_input_price_per_million = Column(Float, nullable=True)
     # 时间戳
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())

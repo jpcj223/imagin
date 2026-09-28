@@ -271,6 +271,49 @@
               </div>
             </div>
 
+            <!-- 单价由作者按服务商账单填写，运行费用按模型实际返回的 Token 估算。 -->
+            <div class="form-section">
+              <div class="section-title">
+                费用估算
+                <span class="section-hint">人民币 / 百万 Token</span>
+              </div>
+              <div class="param-grid">
+                <n-form-item label="输入单价（元/百万 Token）">
+                  <n-input-number
+                    v-model:value="form.input_price_per_million"
+                    :min="0"
+                    :precision="6"
+                    :step="0.1"
+                    placeholder="未配置"
+                    style="width: 100%"
+                  />
+                </n-form-item>
+                <n-form-item label="输出单价（元/百万 Token）">
+                  <n-input-number
+                    v-model:value="form.output_price_per_million"
+                    :min="0"
+                    :precision="6"
+                    :step="0.1"
+                    placeholder="未配置"
+                    style="width: 100%"
+                  />
+                </n-form-item>
+                <n-form-item label="缓存输入单价（可选）">
+                  <n-input-number
+                    v-model:value="form.cached_input_price_per_million"
+                    :min="0"
+                    :precision="6"
+                    :step="0.1"
+                    placeholder="留空时按输入单价估算"
+                    style="width: 100%"
+                  />
+                </n-form-item>
+              </div>
+              <div class="field-hint">
+                留空不影响生成。运行记录使用服务商返回的 Token 数和本次调用单价估算费用；缓存 Token 用量未返回时按普通输入计价。
+              </div>
+            </div>
+
             <!-- 网络代理 -->
             <div class="form-section">
               <div class="section-title">
@@ -351,6 +394,9 @@ const form = reactive<{
   frequency_penalty: number | null
   presence_penalty: number | null
   proxy_url: string
+  input_price_per_million: number | null
+  output_price_per_million: number | null
+  cached_input_price_per_million: number | null
 }>({
   name: '',
   base_url: '',
@@ -363,6 +409,9 @@ const form = reactive<{
   frequency_penalty: 0,
   presence_penalty: 0,
   proxy_url: '',
+  input_price_per_million: null,
+  output_price_per_million: null,
+  cached_input_price_per_million: null,
 })
 
 const isNewMode = ref(false)
@@ -460,6 +509,9 @@ function fillFormFromSelected() {
   form.frequency_penalty = cfg.frequency_penalty ?? 0
   form.presence_penalty = cfg.presence_penalty ?? 0
   form.proxy_url = cfg.proxy_url ?? ''
+  form.input_price_per_million = cfg.input_price_per_million ?? null
+  form.output_price_per_million = cfg.output_price_per_million ?? null
+  form.cached_input_price_per_million = cfg.cached_input_price_per_million ?? null
 }
 
 function createNew() {
@@ -476,6 +528,9 @@ function createNew() {
   form.frequency_penalty = 0
   form.presence_penalty = 0
   form.proxy_url = ''
+  form.input_price_per_million = null
+  form.output_price_per_million = null
+  form.cached_input_price_per_million = null
 }
 
 function applyPreset(preset: { name: string; base_url: string; model: string }) {
@@ -558,6 +613,9 @@ async function doDuplicate(cfg: ModelConfig) {
       frequency_penalty: cfg.frequency_penalty ?? undefined,
       presence_penalty: cfg.presence_penalty ?? undefined,
       proxy_url: cfg.proxy_url ?? undefined,
+      input_price_per_million: cfg.input_price_per_million ?? undefined,
+      output_price_per_million: cfg.output_price_per_million ?? undefined,
+      cached_input_price_per_million: cfg.cached_input_price_per_million ?? undefined,
     })
     notify.success('已复制配置')
     await loadConfigs()
@@ -600,6 +658,9 @@ function buildPayload(): ModelConfigPayload {
     frequency_penalty: form.frequency_penalty,
     presence_penalty: form.presence_penalty,
     proxy_url: form.proxy_url.trim() || undefined,
+    input_price_per_million: form.input_price_per_million,
+    output_price_per_million: form.output_price_per_million,
+    cached_input_price_per_million: form.cached_input_price_per_million,
   }
 }
 

@@ -39,6 +39,7 @@
       <div class="workflow-metrics-grid">
         <div><strong>{{ usage.llmCalls }}</strong><span>模型请求</span></div>
         <div><strong>{{ formatTokenCount(usage.totalTokens) }}</strong><span>已返回 Token</span></div>
+        <div><strong>{{ usage.pricedSteps ? formatCurrency(usage.estimatedCost) : '未配置' }}</strong><span>费用估算（{{ usage.pricedSteps }}/{{ usage.measuredSteps }}）</span></div>
         <div><strong>{{ usage.measuredSteps }} / {{ usage.steps.length }}</strong><span>有用量记录的步骤</span></div>
         <div><strong>{{ formatDuration(usage.durationMs) }}</strong><span>累计步骤耗时</span></div>
       </div>
@@ -52,7 +53,7 @@
           <span>{{ stepTokenUsage(step) }}<br>{{ step.duration_ms == null ? '耗时未记录' : formatDuration(step.duration_ms) }}</span>
         </div>
       </div>
-      <p class="workflow-usage-note">Token 仅显示模型服务商实际返回的用量；未返回会明确标为未知，不做估算。</p>
+      <p class="workflow-usage-note">Token 显示模型服务商实际返回的用量；费用使用调用时单价快照估算，缺少用量或单价时不推算。</p>
     </div>
 
     <div v-if="visibleEvents.length" class="local-events-section">
@@ -111,6 +112,8 @@ const usage = computed(() => {
       const tokens = step.token_usage
       return total + (tokens?.total_tokens ?? ((tokens?.input_tokens ?? 0) + (tokens?.output_tokens ?? 0)))
     }, 0),
+    pricedSteps: steps.filter((step) => typeof step.token_usage?.cost_cny === 'number').length,
+    estimatedCost: steps.reduce((total, step) => total + (step.token_usage?.cost_cny ?? 0), 0),
     llmCalls: steps.reduce((total, step) => total + (step.llm_calls || 0), 0),
     durationMs: steps.reduce((total, step) => total + (step.duration_ms || 0), 0),
   }
@@ -215,6 +218,12 @@ function formatTokenCount(value: number) {
   return new Intl.NumberFormat('zh-CN').format(value)
 }
 
+function formatCurrency(value: number) {
+  return new Intl.NumberFormat('zh-CN', {
+    style: 'currency', currency: 'CNY', minimumFractionDigits: 4, maximumFractionDigits: 6,
+  }).format(value)
+}
+
 function formatDuration(value: number) {
   const seconds = Math.floor(value / 1000)
   return seconds < 60 ? `${seconds} 秒` : `${Math.floor(seconds / 60)} 分 ${seconds % 60} 秒`
@@ -234,10 +243,12 @@ function stepTokenUsage(step: WorkflowStepRecord) {
   }
   const parts = [
     tokens.input_tokens != null ? `输入 ${formatTokenCount(tokens.input_tokens)}` : '',
+    tokens.cached_input_tokens != null ? `缓存输入 ${formatTokenCount(tokens.cached_input_tokens)}` : '',
     tokens.output_tokens != null ? `输出 ${formatTokenCount(tokens.output_tokens)}` : '',
     tokens.total_tokens != null ? `合计 ${formatTokenCount(tokens.total_tokens)}` : '',
   ].filter(Boolean)
-  return `${parts.join(' / ')} tokens`
+  const cost = typeof tokens.cost_cny === 'number' ? ` · 约 ${formatCurrency(tokens.cost_cny)}` : ''
+  return `${parts.join(' / ')} tokens${cost}`
 }
 
 function stepContextSummary(step: WorkflowStepRecord) {

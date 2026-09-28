@@ -51,6 +51,13 @@ export interface SettingTokenUsage {
   input_tokens?: number
   output_tokens?: number
   total_tokens?: number
+  cached_input_tokens?: number
+  cost_cny?: number | null
+  pricing_snapshot?: {
+    input_price_per_million?: number | null
+    output_price_per_million?: number | null
+    cached_input_price_per_million?: number | null
+  }
   source?: 'local' | 'unreported' | 'unavailable' | string
 }
 
