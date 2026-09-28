@@ -294,12 +294,12 @@
                     type="warning"
                     block
                     size="large"
-                    :loading="loading"
+                    :loading="workflowAction === 'resume'"
                     :disabled="loading"
                     @click="resumeGenerateV3"
                   >
                     <template #icon>⏯️</template>
-                    继续生成（断点续传）
+                    {{ workflowAction === 'resume' ? '正在断点续传…' : '继续生成（断点续传）' }}
                   </n-button>
                   <div v-if="isInterrupted && interruptedRunId && !canResumeInterruptedRun" class="interrupted-target-hint">
                     生成已暂停在第 {{ interruptedGenerationTarget?.chapterNo }} 章；切回该章后可继续生成
@@ -317,7 +317,7 @@
                     type="primary"
                     block
                     size="large"
-                    :loading="loading"
+                    :loading="workflowAction === 'generate' || (loading && !workflowAction && !useV3Workflow)"
                     :disabled="loading || !nextChapterTarget?.available"
                     @click="requestGenerate('generate')"
                   >
@@ -327,7 +327,7 @@
                   <n-button
                     v-if="!useV3Workflow"
                     block
-                    :loading="loading"
+                    :loading="loading && !workflowAction"
                     :disabled="loading || !nextChapterTarget?.available"
                     @click="requestGenerate('generateAndAnalyze')"
                   >
@@ -729,6 +729,7 @@ const projectStore = useProjectStore()
 
 // ---- 基础状态 ----
 const loading = ref(false)
+const workflowAction = ref<'generate' | 'resume' | 'restart' | null>(null)
 const workflowStreamActive = ref(false)
 const stopRequested = ref(false)
 const chapterGenerationAbortController = ref<AbortController | null>(null)
@@ -2460,11 +2461,13 @@ async function generateV3(options: { showToast?: boolean } = {}) {
   const projectId = await ensureProject()
   if (!projectId) return false
 
+  workflowAction.value = 'generate'
   loading.value = true
   hydrateInstructionFromSelection()
   ensureActiveOutline()
   if (!hasGenerationGoal()) {
     loading.value = false
+    workflowAction.value = null
     message.warning('请先选择大纲或填写本章目标')
     addEvent('生成拦截', '缺少大纲或本章目标，已取消生成', 'error')
     return false
@@ -2617,6 +2620,7 @@ async function generateV3(options: { showToast?: boolean } = {}) {
     return false
   } finally {
     loading.value = false
+    workflowAction.value = null
     workflowStreamActive.value = false
     stopRequested.value = false
   }
@@ -2636,6 +2640,7 @@ async function resumeGenerateV3() {
   const resumeTarget = interruptedGenerationTarget.value
     ? { ...interruptedGenerationTarget.value }
     : { outlineId: form.outline_id, chapterNo: form.chapter_no, chapterId: chapterId.value }
+  workflowAction.value = 'resume'
   loading.value = true
   activeGenerationTarget.value = resumeTarget
   showWorkflowPanel.value = true
@@ -2733,12 +2738,13 @@ async function resumeGenerateV3() {
       addEvent('续传已暂停', '已保留已完成步骤和当前草稿，可继续恢复', 'info')
       message.info('续传已中断并保留进度')
     } else {
-      message.error('续传失败，请重试')
+      message.error(`续传失败：${errorMessage(error)}`)
     }
     showWorkflowPanel.value = false
     return false
   } finally {
     loading.value = false
+    workflowAction.value = null
     workflowStreamActive.value = false
     stopRequested.value = false
     replacePartialOnNextWriterDelta = false
@@ -2780,6 +2786,7 @@ async function handleRestartFromStep(stepId: string) {
     ? { ...interruptedGenerationTarget.value }
     : { outlineId: form.outline_id, chapterNo: form.chapter_no, chapterId: chapterId.value }
   activeGenerationTarget.value = restartTarget
+  workflowAction.value = 'restart'
   loading.value = true
   workflowStreamActive.value = true
   stopRequested.value = false
@@ -2854,6 +2861,7 @@ async function handleRestartFromStep(stepId: string) {
     showWorkflowPanel.value = false
   } finally {
     loading.value = false
+    workflowAction.value = null
     workflowStreamActive.value = false
     stopRequested.value = false
   }

@@ -367,21 +367,10 @@ export async function workflowResumeStream(
 ): Promise<{ status: string; run_id: string; session_context: Record<string, unknown> } | null> {
   const controller = new AbortController()
   const timeoutId = window.setTimeout(() => controller.abort(), 600000)
-  const response = await fetch('/backend-api/agents/v3/workflow/resume/stream', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload),
-    signal: controller.signal,
-  })
-
-  if (!response.ok || !response.body) {
-    window.clearTimeout(timeoutId)
-    throw new Error(`续传请求失败：${response.status}`)
-  }
-
-  const reader = response.body.getReader()
+  let reader: ReadableStreamDefaultReader<Uint8Array> | null = null
   const decoder = new TextDecoder()
   let buffer = ''
+  let streamEnded = false
   let finalResult: { status: string; run_id: string; session_context: Record<string, unknown> } | null = null
 
   function consumeLine(line: string) {
@@ -423,9 +412,24 @@ export async function workflowResumeStream(
   }
 
   try {
+    const response = await fetch('/backend-api/agents/v3/workflow/resume/stream', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+      signal: controller.signal,
+    })
+
+    if (!response.ok || !response.body) {
+      throw new Error(`续传请求失败：${response.status}`)
+    }
+
+    reader = response.body.getReader()
     while (true) {
       const { value, done } = await reader.read()
-      if (done) break
+      if (done) {
+        streamEnded = true
+        break
+      }
       buffer += decoder.decode(value, { stream: true })
       const lines = buffer.split('\n')
       buffer = lines.pop() ?? ''
@@ -434,13 +438,15 @@ export async function workflowResumeStream(
     buffer += decoder.decode()
     consumeLine(buffer)
   } catch (error) {
+    controller.abort()
     if (error instanceof DOMException && error.name === 'AbortError') {
-      throw new Error('工作流执行超时：10 分钟内未完成')
+      throw new Error('断点续传等待超时：10 分钟内未完成')
     }
     throw error
   } finally {
     window.clearTimeout(timeoutId)
-    reader.releaseLock()
+    if (reader) reader.releaseLock()
+    if (!streamEnded) controller.abort()
   }
 
   return finalResult
