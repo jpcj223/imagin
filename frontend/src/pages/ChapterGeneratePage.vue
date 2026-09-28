@@ -926,6 +926,7 @@ const canApplyDialogueCandidate = computed(() => Boolean(
   && dialogueCandidate.value.expectedContent === draft.value,
 ))
 const draftSaveStatus = ref<'saved' | 'unsaved' | 'saving' | 'error'>('unsaved')
+const draftSaveError = ref('')
 const persistedDraftFingerprint = ref('')
 let draftAutosaveTimer: ReturnType<typeof setTimeout> | undefined
 let draftSaveInFlight: Promise<boolean> | null = null
@@ -1774,15 +1775,7 @@ async function prepareNextGenerationTarget() {
   if (!projectId) return false
 
   // 步骤 1：切换生成目标前先保存旧章，避免新章输出覆盖旧章编辑区。
-  if (
-    (chapterId.value !== null || chapterTitle.value.trim() || draft.value.trim())
-    && draftFingerprint() !== persistedDraftFingerprint.value
-  ) {
-    if (!await persistChapterDraft(true)) {
-      message.error('当前章节草稿未能保存，先解决保存问题再生成下一章')
-      return false
-    }
-  }
+  if (!await saveDraftBeforeNavigation('生成下一章')) return false
 
   nextChapterTargetLoading.value = true
   try {
@@ -2038,13 +2031,7 @@ async function prepareForChapterSwitch(): Promise<boolean> {
       }
     }
 
-    if (draftFingerprint() !== persistedDraftFingerprint.value) {
-      if (draftAutosaveTimer) clearTimeout(draftAutosaveTimer)
-      if (!await persistChapterDraft(true)) {
-        message.error('当前章节草稿未能保存，先解决保存问题再切换细纲')
-        return false
-      }
-    }
+    if (!await saveDraftBeforeNavigation('切换细纲')) return false
 
     if (
       interruptedGenerationTarget.value
@@ -2092,6 +2079,36 @@ function draftFingerprint(
   outlineId = form.outline_id,
 ) {
   return JSON.stringify([id, title, content, chapterNo, outlineId])
+}
+
+function isDefaultChapterTitle(title: string, chapterNo: number) {
+  const titleNumber = Number(title.trim().match(/^第\s*(\d+)\s*章$/)?.[1])
+  return Number.isInteger(chapterNo) && titleNumber === chapterNo
+}
+
+/** 空白新细纲的“第 N 章”只是占位标题，不需要创建空草稿记录。 */
+function hasDraftToPersist() {
+  if (chapterId.value !== null || draft.value.trim()) return true
+  const title = chapterTitle.value.trim()
+  return Boolean(title) && !isDefaultChapterTitle(title, form.chapter_no)
+}
+
+/** 离开当前目标前仅保存真实草稿；空白占位章节直接记为干净状态。 */
+async function saveDraftBeforeNavigation(action: string) {
+  if (draftAutosaveTimer) clearTimeout(draftAutosaveTimer)
+  if (draftSaveInFlight) await draftSaveInFlight
+  if (!hasDraftToPersist()) {
+    markDraftPersisted()
+    return true
+  }
+  if (draftFingerprint() === persistedDraftFingerprint.value) return true
+  if (await persistChapterDraft(true)) return true
+
+  const detail = draftSaveError.value
+  message.error(detail
+    ? `当前章节草稿保存失败，暂不能${action}：${detail}`
+    : `当前章节草稿保存失败，暂不能${action}。请检查网络或服务状态后重试。`)
+  return false
 }
 
 function markDraftPersisted(storedContent = draft.value) {
@@ -3025,8 +3042,8 @@ async function persistChapterDraft(silent = true): Promise<boolean> {
     return draftSaveInFlight
   }
 
-  // 空白编辑器不创建空记录；已有章节清空正文时仍允许保存这个修改。
-  if (!chapterId.value && !chapterTitle.value.trim() && !draft.value.trim()) return false
+  // 空白新细纲不创建空记录；已有章节清空正文时仍允许保存这个修改。
+  if (!hasDraftToPersist()) return false
   const projectId = await ensureProject()
   if (!projectId) return false
 
@@ -3047,6 +3064,7 @@ async function persistChapterDraft(silent = true): Promise<boolean> {
   }
 
   draftSaveStatus.value = 'saving'
+  draftSaveError.value = ''
   const request = (async () => {
     try {
       const saved = target.chapterId
@@ -3058,7 +3076,9 @@ async function persistChapterDraft(silent = true): Promise<boolean> {
       if (existingIndex >= 0) chapters.value[existingIndex] = saved
       else chapters.value.unshift(saved)
       const sameEditor = projectStore.currentProject?.id === projectId
-        && (target.chapterId ? chapterId.value === target.chapterId : chapterId.value === null)
+        && chapterId.value === target.chapterId
+        && form.outline_id === target.outlineId
+        && form.chapter_no === target.chapterNo
       if (sameEditor) {
         if (!target.chapterId) setActiveChapterId(saved.id, projectId)
         if (!chapterTitle.value.trim()) chapterTitle.value = target.title
@@ -3080,7 +3100,10 @@ async function persistChapterDraft(silent = true): Promise<boolean> {
       return true
     } catch (error) {
       const sameEditor = projectStore.currentProject?.id === projectId
-        && (target.chapterId ? chapterId.value === target.chapterId : chapterId.value === null)
+        && chapterId.value === target.chapterId
+        && form.outline_id === target.outlineId
+        && form.chapter_no === target.chapterNo
+      draftSaveError.value = errorMessage(error) || '章节草稿保存失败'
       if (sameEditor) draftSaveStatus.value = 'error'
       if (!silent) message.error(errorMessage(error) || '章节草稿保存失败')
       return false
@@ -3652,10 +3675,13 @@ watch(
       if (draftSaveStatus.value !== 'error') draftSaveStatus.value = 'saved'
       return
     }
+    if (!hasDraftToPersist()) {
+      markDraftPersisted()
+      return
+    }
     draftSaveStatus.value = 'unsaved'
     if (draftAutosaveTimer) clearTimeout(draftAutosaveTimer)
     if (loading.value) return
-    if (!chapterId.value && !chapterTitle.value.trim() && !draft.value.trim()) return
     draftAutosaveTimer = setTimeout(() => {
       void persistChapterDraft(true)
     }, 800)
@@ -3671,7 +3697,7 @@ onMounted(() => {
 onBeforeUnmount(() => {
   if (workflowClockTimer) clearInterval(workflowClockTimer)
   if (draftAutosaveTimer) clearTimeout(draftAutosaveTimer)
-  if (draftFingerprint() !== persistedDraftFingerprint.value && !loading.value) {
+  if (draftFingerprint() !== persistedDraftFingerprint.value && hasDraftToPersist() && !loading.value) {
     void persistChapterDraft(true)
   }
 })
