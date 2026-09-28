@@ -107,7 +107,7 @@ class UserPreference(Base):
     user_id = Column(Integer, default=1, index=True)
     project_id = Column(Integer, ForeignKey("projects.id", ondelete="CASCADE"), nullable=True, index=True)
 
-    default_template = Column(String(64), default="smart_mode")
+    default_template = Column(String(64), default="quick_write")
     default_writer_variant = Column(String(32), default="default")
     default_temperature = Column(Integer, default=80)  # 0-200，对应 0.0-2.0
     default_target_word_count = Column(Integer, default=3000)

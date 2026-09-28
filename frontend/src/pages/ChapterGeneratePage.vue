@@ -990,7 +990,7 @@ const rhythmOptions = [
 // ---- v3 工作流相关 ----
 const useV3Workflow = ref(true)  // 默认使用 v3 工作流
 const workflowTemplates = ref<WorkflowTemplate[]>([])
-const selectedWorkflow = ref('smart_mode')  // 默认智能模式
+const selectedWorkflow = ref('quick_write')  // 默认采用单次模型请求，减少串行等待
 const workflowSteps = ref<StepInfo[]>([])
 const currentWorkflowStep = ref<string | null>(null)
 const workflowProgress = ref(0)
@@ -1307,7 +1307,7 @@ const prefsLoading = ref(false)
 const prefsSaving = ref(false)
 const editorPrefsSaving = ref(false)
 const userPrefs = reactive({
-  default_template: 'smart_mode',
+  default_template: 'quick_write',
   default_writer_variant: 'default',
   default_temperature: 80,
   default_target_word_count: 3000,
@@ -1339,7 +1339,7 @@ const autoSyncOptions = [
 function buildWorkflowSteps(templateName: string): StepInfo[] {
   const templates: Record<string, StepInfo[]> = {
     quick_write: [
-      { id: 'writer', label: '正文写作', icon: '✍️', status: 'pending' },
+      { id: 'writer', label: '按细纲写作', icon: '✍️', status: 'pending' },
     ],
     smart_mode: [
       { id: 'planner', label: '情节规划', icon: '📋', status: 'pending' },
@@ -1353,7 +1353,7 @@ function buildWorkflowSteps(templateName: string): StepInfo[] {
       { id: 'analyzer', label: '深度分析', icon: '🔍', status: 'pending' },
     ],
   }
-  return templates[templateName] ?? templates.smart_mode
+  return templates[templateName] ?? templates.quick_write
 }
 
 // ---- 精修模式 ----
@@ -2930,9 +2930,11 @@ function clearInterruptedState() {
 async function loadWorkflowTemplates() {
   try {
     workflowTemplates.value = await getWorkflowTemplates()
-    // 如果有模板，选择第一个默认模板
+    // 初始化时优先使用项目偏好；没有可用偏好时采用单次请求的高效创作。
     if (workflowTemplates.value.length > 0) {
-      const defaultTemplate = workflowTemplates.value.find(t => t.name === 'smart_mode') ?? workflowTemplates.value[0]
+      const defaultTemplate = workflowTemplates.value.find(t => t.name === userPrefs.default_template)
+        ?? workflowTemplates.value.find(t => t.name === 'quick_write')
+        ?? workflowTemplates.value[0]
       selectedWorkflow.value = defaultTemplate.name
     }
     // 初始化工作流步骤，让流水线始终可见
@@ -2941,9 +2943,9 @@ async function loadWorkflowTemplates() {
     console.warn('加载工作流模板失败，使用内置默认值', error)
     // 使用内置默认模板
     workflowTemplates.value = [
-      { name: 'quick_write', label: '快速写作', description: '单步写作，最快出稿', icon: '⚡', category: 'writing', step_count: 1 },
-      { name: 'smart_mode', label: '智能模式', description: '分析 + 规划 + 写作，质量均衡', icon: '🎯', category: 'writing', step_count: 3 },
-      { name: 'deep_creation', label: '深度创作', description: '分析 + 规划 + 写作 + 精修', icon: '🎨', category: 'writing', step_count: 4 },
+      { name: 'quick_write', label: '高效创作', description: '单次模型请求；沿用总纲、卷纲、单章细纲及连续性资料，正文完成后可单独分析沉淀', icon: '⚡', category: 'writing', step_count: 1 },
+      { name: 'smart_mode', label: '智能模式', description: '规划、正文、分析依次调用模型；自动生成剧情蓝图并分析沉淀，耗时较长', icon: '🎯', category: 'writing', step_count: 3 },
+      { name: 'deep_creation', label: '深度创作', description: '规划、写作、精修、分析依次调用模型，耗时最长', icon: '🎨', category: 'writing', step_count: 4 },
     ]
     workflowSteps.value = buildWorkflowSteps(selectedWorkflow.value)
   }

@@ -95,16 +95,16 @@ class WorkflowTemplate:
 BUILTIN_TEMPLATES: dict[str, WorkflowTemplate] = {
     "quick_write": WorkflowTemplate(
         name="quick_write",
-        label="快速写作",
-        description="直接生成正文，没有规划和分析。速度最快。",
+        label="高效创作",
+        description="单次模型请求。直接依据大纲、卷纲、单章细纲和连续性资料写正文；完成后可单独分析沉淀。",
         icon="🚀",
         category="basic",
         steps=[
             WorkflowStep(
                 step_id="writer",
                 agent_type="writer",
-                variant="fast",
-                label="写作",
+                variant="default",
+                label="按细纲写作",
                 params={},
                 output_mapping={"content": "draft_content", "source": "draft_source"},
             ),
@@ -113,7 +113,7 @@ BUILTIN_TEMPLATES: dict[str, WorkflowTemplate] = {
     "smart_mode": WorkflowTemplate(
         name="smart_mode",
         label="智能模式",
-        description="先规划再写作，写完自动分析。平衡质量和效率。",
+        description="规划、正文、分析依次调用模型；适合需要自动生成剧情蓝图与章后沉淀，耗时较长。",
         icon="✨",
         category="basic",
         steps=[

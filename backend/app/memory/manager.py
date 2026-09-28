@@ -243,7 +243,7 @@ class MemoryManager:
     def _default_preferences(self) -> dict:
         """默认偏好值。"""
         return {
-            "default_template": "smart_mode",
+            "default_template": "quick_write",
             "default_writer_variant": "default",
             "default_temperature": 80,
             "default_target_word_count": 3000,

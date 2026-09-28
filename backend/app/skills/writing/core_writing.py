@@ -68,7 +68,10 @@ class CoreWritingSkill(BaseSkill):
             legacy_outline_context = "\n".join(outline_parts)
 
         # 步骤 2：规划结果为空时说明当前模板直接写作，不展示空白的计划区。
-        writing_plan = context.get("writing_plan") or "快速写作模式：没有独立规划步骤，请直接依据本章大纲安排剧情。"
+        writing_plan = context.get("writing_plan") or (
+            "高效创作模式：不额外调用规划模型；请依据已传入的总纲、相邻卷章纲和本章细纲，"
+            "在本次正文写作中组织剧情节拍。"
+        )
 
         # 步骤 3：当前/相邻卷章纲只在连续性资料出现一次，避免重复消耗输入 Token。
         context_text = f"""
