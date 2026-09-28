@@ -38,12 +38,13 @@
         <div class="editor-container">
           <n-input
             :style="{ '--chapter-editor-font-size': `${editorFontSize}px` }"
-            v-model:value="draft"
+            :value="draft"
             type="textarea"
             class="chapter-textarea"
             :autosize="{ minRows: 20 }"
             :bordered="false"
             ref="editorInput"
+            @update:value="handleDraftInput"
             @mouseup="captureSelection"
             @keyup="captureSelection"
             placeholder="在这里写你的小说正文...
@@ -77,6 +78,8 @@
 
 <script setup lang="ts">
 import { computed, ref } from 'vue'
+import { nextTick } from 'vue'
+import { indentChapterInput } from './paragraphIndent'
 
 type PolishSegment = { text: string; status: 'same' | 'changed' }
 
@@ -102,6 +105,22 @@ const emit = defineEmits<{
 }>()
 
 const editorInput = ref<{ $el?: HTMLElement } | null>(null)
+
+function handleDraftInput(value: string) {
+  const textarea = editorInput.value?.$el?.querySelector('textarea')
+  const selectionStart = textarea instanceof HTMLTextAreaElement ? textarea.selectionStart : value.length
+  const selectionEnd = textarea instanceof HTMLTextAreaElement ? textarea.selectionEnd : value.length
+  const formatted = indentChapterInput(value, selectionStart, selectionEnd)
+  emit('update:draft', formatted.value)
+  if (textarea instanceof HTMLTextAreaElement && formatted.value !== value) {
+    void nextTick(() => {
+      textarea.setSelectionRange(
+        Math.min(formatted.selectionStart, textarea.value.length),
+        Math.min(formatted.selectionEnd, textarea.value.length),
+      )
+    })
+  }
+}
 
 // 步骤 1：将编辑值作为受控输入回传页面，正文保存和生成仍由工作台统一协调。
 const chapterTitle = computed({

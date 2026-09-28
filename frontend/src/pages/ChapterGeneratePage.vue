@@ -290,7 +290,7 @@
                     {{ stopRequested ? '正在断开模型请求…' : '中断并保留进度' }}
                   </n-button>
                   <n-button
-                    v-if="isInterrupted && interruptedRunId"
+                    v-if="isInterrupted && interruptedRunId && canResumeInterruptedRun"
                     type="warning"
                     block
                     size="large"
@@ -301,6 +301,9 @@
                     <template #icon>⏯️</template>
                     继续生成（断点续传）
                   </n-button>
+                  <div v-if="isInterrupted && interruptedRunId && !canResumeInterruptedRun" class="interrupted-target-hint">
+                    生成已暂停在第 {{ interruptedGenerationTarget?.chapterNo }} 章；切回该章后可继续生成
+                  </div>
                   <n-button
                     v-if="currentRunId && !isInterrupted && !showWorkflowPanel"
                     block
@@ -693,6 +696,7 @@ import type { StepInfo } from '@/components/WorkflowProgress.vue'
 import WorkflowPipeline from '@/components/WorkflowPipeline.vue'
 import GenerationResourceBrowser from '@/components/chapter-generation/GenerationResourceBrowser.vue'
 import ChapterEditorPanel from '@/components/chapter-generation/ChapterEditorPanel.vue'
+import { appendIndentedChapterText, indentChapterParagraphs } from '@/components/chapter-generation/paragraphIndent'
 import ChapterDialoguePanel from '@/components/chapter-generation/ChapterDialoguePanel.vue'
 import type { ChapterDialogueCandidate, ChapterDialogueMessage } from '@/components/chapter-generation/chapterDialogueTypes'
 import ChapterAnalysisPanel from '@/components/chapter-generation/ChapterAnalysisPanel.vue'
@@ -727,6 +731,7 @@ const projectStore = useProjectStore()
 const loading = ref(false)
 const workflowStreamActive = ref(false)
 const stopRequested = ref(false)
+const chapterGenerationAbortController = ref<AbortController | null>(null)
 const draft = ref('')
 const chapterTitle = ref('')
 const analysis = ref('')
@@ -974,6 +979,17 @@ const chapterTracePanel = ref<InstanceType<typeof ChapterTracePanel> | null>(nul
 const showWorkflowPanel = ref(false)  // 生成中显示步骤面板
 const isInterrupted = ref(false)  // 是否为中断状态
 const interruptedRunId = ref<string | null>(null)  // 中断的 run_id
+type GenerationTarget = { outlineId: number | null; chapterNo: number; chapterId: number | null }
+const activeGenerationTarget = ref<GenerationTarget | null>(null)
+const interruptedGenerationTarget = ref<GenerationTarget | null>(null)
+const canResumeInterruptedRun = computed(() => {
+  const target = interruptedGenerationTarget.value
+  return !target || (
+    target.outlineId === form.outline_id
+    && target.chapterNo === form.chapter_no
+    && (target.chapterId === null || target.chapterId === chapterId.value)
+  )
+})
 let replacePartialOnNextWriterDelta = false
 const workflowClock = ref(Date.now())
 let workflowClockTimer: ReturnType<typeof setInterval> | undefined
@@ -1737,7 +1753,9 @@ async function refreshContextPreview(options: { silent?: boolean } = {}) {
 // ---- 生成相关 ----
 async function requestGenerate(mode: 'generate' | 'generateAndAnalyze') {
   if (isInterrupted.value && interruptedRunId.value) {
-    message.warning('当前章节生成尚未完成，请先继续或重跑这次任务，再生成下一章')
+    message.warning(canResumeInterruptedRun.value
+      ? '当前章节生成尚未完成，请先继续或重跑这次任务，再生成下一章'
+      : `第 ${interruptedGenerationTarget.value?.chapterNo} 章仍有暂停的生成任务，请返回该章继续后再生成新章`)
     return
   }
   if (loading.value || !await prepareNextGenerationTarget()) return
@@ -1919,18 +1937,10 @@ async function selectChapterOutline(item: OutlineItem) {
 
   if (form.outline_id === item.id && (relatedChapter?.id ?? null) === chapterId.value) return
 
-  // 先保存编辑区当前草稿，避免切到另一条细纲时丢失尚未落库的内容。
-  const hasCurrentDraft = chapterId.value !== null || chapterTitle.value.trim() || draft.value.trim()
-  if (hasCurrentDraft && draftFingerprint() !== persistedDraftFingerprint.value) {
-    if (draftAutosaveTimer) clearTimeout(draftAutosaveTimer)
-    if (!await persistChapterDraft(true)) {
-      message.error('当前章节草稿未能保存，先解决保存问题再切换细纲')
-      return
-    }
-  }
+  if (!await prepareForChapterSwitch()) return
 
   if (relatedChapter) {
-    await selectChapter(relatedChapter)
+    await selectChapter(relatedChapter, { prepared: true })
     return
   }
 
@@ -1955,6 +1965,103 @@ async function selectChapterOutline(item: OutlineItem) {
   void refreshChapterVersions()
   if (activeTab.value === 'logs') void refreshTrace()
   nextTick(() => autoRecommendContext())
+}
+
+let chapterSwitchPreparation: Promise<boolean> | null = null
+
+function waitUntilGenerationSettles(timeoutMs = 45000): Promise<boolean> {
+  if (!loading.value) return Promise.resolve(true)
+  return new Promise((resolve) => {
+    let stopWatching = () => {}
+    let timeoutId = 0
+    const finish = (settled: boolean) => {
+      window.clearTimeout(timeoutId)
+      stopWatching()
+      resolve(settled)
+    }
+    timeoutId = window.setTimeout(() => finish(false), timeoutMs)
+    stopWatching = watch(loading, (isLoading) => {
+      if (!isLoading) finish(true)
+    })
+    if (!loading.value) finish(true)
+  })
+}
+
+/** 切章时暂停当前生成并保存已输出正文，避免生成结果写入另一章。 */
+async function prepareForChapterSwitch(): Promise<boolean> {
+  if (chapterSwitchPreparation) {
+    message.info('正在安全暂停并保存当前章节，请稍候')
+    return false
+  }
+
+  const preparation = (async () => {
+    if (loading.value && useV3Workflow.value && activeGenerationTarget.value && !workflowStreamActive.value) {
+      const deadline = Date.now() + 20000
+      while (loading.value && !workflowStreamActive.value && Date.now() < deadline) {
+        await new Promise((resolve) => window.setTimeout(resolve, 50))
+      }
+    }
+
+    if (loading.value) {
+      if (workflowStreamActive.value) {
+        const deadline = Date.now() + 20000
+        while (loading.value && workflowStreamActive.value && !currentRunId.value && Date.now() < deadline) {
+          await new Promise((resolve) => window.setTimeout(resolve, 50))
+        }
+        if (loading.value && !currentRunId.value) {
+          message.warning('生成流程尚未就绪，请稍候再切换章节')
+          return false
+        }
+        if (loading.value && !stopRequested.value) await stopCurrentGeneration()
+        if (!await waitUntilGenerationSettles()) {
+          message.warning('生成仍在停止，请稍后再切换章节')
+          return false
+        }
+        if (interruptedRunId.value && activeGenerationTarget.value) {
+          interruptedGenerationTarget.value = {
+            ...activeGenerationTarget.value,
+            chapterId: chapterId.value ?? activeGenerationTarget.value.chapterId,
+          }
+          addEvent('切换章节', `已暂停第 ${activeGenerationTarget.value.chapterNo} 章并保留进度`)
+        }
+      } else if (chapterGenerationAbortController.value) {
+        chapterGenerationAbortController.value.abort()
+        if (!await waitUntilGenerationSettles()) {
+          message.warning('生成仍在停止，请稍后再切换章节')
+          return false
+        }
+        addEvent('切换章节', '已停止当前正文生成并保留已输出内容')
+      } else {
+        message.warning('当前操作完成后即可切换章节')
+        return false
+      }
+    }
+
+    if (draftFingerprint() !== persistedDraftFingerprint.value) {
+      if (draftAutosaveTimer) clearTimeout(draftAutosaveTimer)
+      if (!await persistChapterDraft(true)) {
+        message.error('当前章节草稿未能保存，先解决保存问题再切换细纲')
+        return false
+      }
+    }
+
+    if (
+      interruptedGenerationTarget.value
+      && interruptedGenerationTarget.value.outlineId === form.outline_id
+      && interruptedGenerationTarget.value.chapterNo === form.chapter_no
+      && chapterId.value !== null
+    ) {
+      interruptedGenerationTarget.value.chapterId = chapterId.value
+    }
+    return true
+  })()
+
+  chapterSwitchPreparation = preparation
+  try {
+    return await preparation
+  } finally {
+    if (chapterSwitchPreparation === preparation) chapterSwitchPreparation = null
+  }
 }
 
 function chapterSelectionStorageKey(projectId: number) {
@@ -1986,9 +2093,15 @@ function draftFingerprint(
   return JSON.stringify([id, title, content, chapterNo, outlineId])
 }
 
-function markDraftPersisted() {
-  persistedDraftFingerprint.value = draftFingerprint()
-  draftSaveStatus.value = 'saved'
+function markDraftPersisted(storedContent = draft.value) {
+  persistedDraftFingerprint.value = draftFingerprint(
+    chapterId.value,
+    chapterTitle.value,
+    storedContent,
+    form.chapter_no,
+    form.outline_id,
+  )
+  draftSaveStatus.value = draftFingerprint() === persistedDraftFingerprint.value ? 'saved' : 'unsaved'
 }
 
 /** 页面刷新或切换项目后恢复最近编辑的草稿。 */
@@ -2031,27 +2144,19 @@ async function restoreChapterSelection(projectId: number, chapterList: ChapterIt
   }
 }
 
-async function selectChapter(item: ChapterItem, options: { recordEvent?: boolean } = {}) {
-  // 切换同一项目的章节前先落库，避免用户刚输入就点选下一章时丢失修改。
-  const sameProject = chapterProjectId.value === projectStore.currentProject?.id
-  if (
-    sameProject
-    && chapterId.value !== null
-    && chapterId.value !== item.id
-    && draftFingerprint() !== persistedDraftFingerprint.value
-  ) {
-    if (draftAutosaveTimer) clearTimeout(draftAutosaveTimer)
-    await persistChapterDraft(true)
-  }
+async function selectChapter(item: ChapterItem, options: { recordEvent?: boolean; prepared?: boolean } = {}) {
+  if (chapterProjectId.value === projectStore.currentProject?.id && chapterId.value === item.id) return
+  if (!options.prepared && !await prepareForChapterSwitch()) return
 
   const relatedOutline = findOutlineForChapter(item)
   setActiveChapterId(item.id)
   form.outline_id = relatedOutline?.id ?? item.outline_id
   form.chapter_no = Number.isInteger(item.chapter_no) && item.chapter_no > 0 ? item.chapter_no : 1
   form.instruction = relatedOutline?.description || form.instruction || item.title
-  draft.value = item.content
+  const storedContent = item.content
+  draft.value = indentChapterParagraphs(storedContent)
   chapterTitle.value = item.title
-  markDraftPersisted()
+  markDraftPersisted(storedContent)
   analysis.value = ''
   clearAnalysisSections()
   const savedAnalysis = summaries.value.find((summary) => summary.chapter_id === item.id)
@@ -2098,17 +2203,21 @@ async function generate(options: { showToast?: boolean } = {}) {
     addEvent('生成拦截', '缺少大纲或本章目标，已取消生成', 'error')
     return false
   }
-  await refreshContextPreview()
+  const generationController = new AbortController()
+  chapterGenerationAbortController.value = generationController
   const previousDraft = draft.value
   const previousAnalysis = analysis.value
   const previousPolishOriginal = polishOriginal.value
-  addEvent('生成启动', `第 ${form.chapter_no} 章，节奏 ${form.rhythm_level}`, 'running')
-  draft.value = ''
-  analysis.value = ''
-  polishOriginal.value = ''
-  consistencyResult.value = null
-  clearAnalysisSections()
+  let rawGeneratedContent = ''
   try {
+    await refreshContextPreview()
+    if (generationController.signal.aborted) throw new Error('章节生成已中断，当前输出已保留')
+    addEvent('生成启动', `第 ${form.chapter_no} 章，节奏 ${form.rhythm_level}`, 'running')
+    draft.value = ''
+    analysis.value = ''
+    polishOriginal.value = ''
+    consistencyResult.value = null
+    clearAnalysisSections()
     const result = await draftChapterStream(
       {
         project_id: projectId,
@@ -2127,10 +2236,12 @@ async function generate(options: { showToast?: boolean } = {}) {
           addEvent('流式生成', detail, 'running')
         },
         onDelta: (content) => {
-          draft.value += content
+          rawGeneratedContent += content
+          draft.value = appendIndentedChapterText(draft.value, content)
         },
         onError: (detail) => addEvent('生成中断', detail, 'error'),
-      }
+      },
+      generationController.signal,
     )
     if (!result) throw new Error('流式生成未返回完成事件')
     setActiveChapterId(result.chapter_id, projectId)
@@ -2138,7 +2249,7 @@ async function generate(options: { showToast?: boolean } = {}) {
     if (!chapterTitle.value) {
       chapterTitle.value = `第${form.chapter_no}章`
     }
-    markDraftPersisted()
+    markDraftPersisted(rawGeneratedContent)
     addEvent('保存章节', `章节 ID ${result.chapter_id} 已写入草稿库`)
     await loadResources()
     addEvent('生成完成', result.source === 'llm' ? '真实模型已返回正文' : result.source, 'success')
@@ -2150,11 +2261,18 @@ async function generate(options: { showToast?: boolean } = {}) {
     if (!draft.value.trim()) draft.value = previousDraft
     analysis.value = previousAnalysis
     polishOriginal.value = previousPolishOriginal
-    addEvent('生成失败', errorMessage(error), 'error')
-    message.error(draft.value.trim() ? '生成中断，已保留当前输出' : '章节生成失败')
+    if (generationController.signal.aborted) {
+      addEvent('生成已停止', '按切换章节请求停止；已输出内容保留在当前章节', 'info')
+    } else {
+      addEvent('生成失败', errorMessage(error), 'error')
+      message.error(draft.value.trim() ? '生成中断，已保留当前输出' : '章节生成失败')
+    }
     return false
   } finally {
     loading.value = false
+    if (chapterGenerationAbortController.value === generationController) {
+      chapterGenerationAbortController.value = null
+    }
   }
 }
 
@@ -2184,7 +2302,7 @@ function applyWorkflowCompletion(
   // 步骤 2：完成后使用后端确认的最终稿，避免精修稿或恢复后的正文留在旧状态。
   if (status === 'completed') {
     const finalContent = sessionContext.final_content || sessionContext.draft_content
-    if (typeof finalContent === 'string' && finalContent.trim()) draft.value = finalContent
+    if (typeof finalContent === 'string' && finalContent.trim()) draft.value = indentChapterParagraphs(finalContent)
   }
 
   // 步骤 3：从持久化结果回填分析和章节关联，覆盖刷新后没有收到步骤事件的情况。
@@ -2201,8 +2319,16 @@ function applyWorkflowCompletion(
   }
   if (typeof sessionContext.chapter_id === 'number') {
     setActiveChapterId(sessionContext.chapter_id)
+    if (activeGenerationTarget.value) activeGenerationTarget.value.chapterId = sessionContext.chapter_id
   }
-  if (status === 'completed') markDraftPersisted()
+  if (status === 'completed') {
+    const storedContent = String(sessionContext.final_content || sessionContext.draft_content || draft.value)
+    markDraftPersisted(storedContent)
+    interruptedGenerationTarget.value = null
+    activeGenerationTarget.value = null
+  } else if (activeGenerationTarget.value) {
+    interruptedGenerationTarget.value = { ...activeGenerationTarget.value }
+  }
 }
 
 /** 读取工作流持久化步骤详情，回填服务端耗时和 Token 用量。 */
@@ -2217,7 +2343,7 @@ async function refreshWorkflowRunDetail(runId: string) {
       interruptedRunId.value = runId
       isInterrupted.value = true
       const partial = detail.session_context?.interrupted_partial_content
-      if (typeof partial === 'string' && partial && !draft.value.trim()) draft.value = partial
+      if (typeof partial === 'string' && partial && !draft.value.trim()) draft.value = indentChapterParagraphs(partial)
     }
     for (const record of detail.steps) {
       const step = workflowSteps.value.find((item) => item.id === record.step_id)
@@ -2343,6 +2469,12 @@ async function generateV3(options: { showToast?: boolean } = {}) {
     addEvent('生成拦截', '缺少大纲或本章目标，已取消生成', 'error')
     return false
   }
+  activeGenerationTarget.value = {
+    outlineId: form.outline_id,
+    chapterNo: form.chapter_no,
+    chapterId: chapterId.value,
+  }
+  interruptedGenerationTarget.value = null
   await refreshContextPreview()
 
   const previousDraft = draft.value
@@ -2403,9 +2535,7 @@ async function generateV3(options: { showToast?: boolean } = {}) {
         onStepContext: applyWorkflowStepContext,
         onDelta: (stepId, content) => {
           // 只有写作步骤的 delta 写入正文
-          if (stepId === 'writer') {
-            draft.value += content
-          }
+        if (stepId === 'writer') draft.value = appendIndentedChapterText(draft.value, content)
         },
         onStepDone: (stepId, result) => {
           applyWorkflowStepDone(stepId, result)
@@ -2416,15 +2546,14 @@ async function generateV3(options: { showToast?: boolean } = {}) {
           if (stepId === 'analyzer' && result) applyWorkflowAnalysisResult(result)
 
           // 如果是精修步骤，把精修结果写入草稿
-          if (stepId === 'polisher' && result?.content) {
-            draft.value = result.content as string
-          }
+          if (stepId === 'polisher' && result?.content) draft.value = indentChapterParagraphs(String(result.content))
         },
         onWorkflowDone: (status, runId, sessionContext) => {
           applyWorkflowCompletion(status, runId, sessionContext, '工作流')
         },
         onChangeProposalsReady: (savedChapterId, pendingCount) => {
           setActiveChapterId(savedChapterId, projectId)
+          if (activeGenerationTarget.value) activeGenerationTarget.value.chapterId = savedChapterId
           addEvent('变化提案就绪', pendingCount + ' 条待审核', 'success')
           void loadChapterChangeProposals()
         },
@@ -2464,6 +2593,12 @@ async function generateV3(options: { showToast?: boolean } = {}) {
     return true
   } catch (error) {
     if (currentRunId.value) await refreshWorkflowRunDetail(currentRunId.value)
+    if (currentRunId.value && activeGenerationTarget.value) {
+      interruptedGenerationTarget.value = {
+        ...activeGenerationTarget.value,
+        chapterId: chapterId.value ?? activeGenerationTarget.value.chapterId,
+      }
+    }
     if (!draft.value.trim()) draft.value = previousDraft
     if (currentRunId.value) {
       // 步骤 3：即使规划或分析步骤中断、正文为空，也保留运行 ID 供续跑。
@@ -2490,11 +2625,19 @@ async function generateV3(options: { showToast?: boolean } = {}) {
 // ---- v3 断点续传 ----
 async function resumeGenerateV3() {
   if (loading.value || !interruptedRunId.value) return false
+  if (!canResumeInterruptedRun.value) {
+    message.warning(`请先切回第 ${interruptedGenerationTarget.value?.chapterNo} 章再继续生成`)
+    return false
+  }
 
   const projectId = await ensureProject()
   if (!projectId) return false
 
+  const resumeTarget = interruptedGenerationTarget.value
+    ? { ...interruptedGenerationTarget.value }
+    : { outlineId: form.outline_id, chapterNo: form.chapter_no, chapterId: chapterId.value }
   loading.value = true
+  activeGenerationTarget.value = resumeTarget
   showWorkflowPanel.value = true
   workflowRunDetail.value = null
 
@@ -2507,8 +2650,8 @@ async function resumeGenerateV3() {
     const result = await workflowResumeStream(
       {
         run_id: interruptedRunId.value,
-        chapter_no: form.chapter_no,
-        outline_id: form.outline_id ?? undefined,
+        chapter_no: resumeTarget.chapterNo,
+        outline_id: resumeTarget.outlineId ?? undefined,
       },
       {
         onStepStart: (stepId, label, runId) => {
@@ -2525,7 +2668,7 @@ async function resumeGenerateV3() {
               draft.value = ''
               replacePartialOnNextWriterDelta = false
             }
-            draft.value += content
+            draft.value = appendIndentedChapterText(draft.value, content)
           }
         },
         onStepDone: (stepId, stepResult) => {
@@ -2536,7 +2679,7 @@ async function resumeGenerateV3() {
           if (stepId === 'analyzer' && stepResult) applyWorkflowAnalysisResult(stepResult)
 
           if (stepId === 'polisher' && stepResult?.content) {
-            draft.value = stepResult.content as string
+            draft.value = indentChapterParagraphs(String(stepResult.content))
           }
         },
         onWorkflowDone: (status, runId, sessionContext) => {
@@ -2544,6 +2687,7 @@ async function resumeGenerateV3() {
         },
         onChangeProposalsReady: (savedChapterId, pendingCount) => {
           setActiveChapterId(savedChapterId)
+          if (activeGenerationTarget.value) activeGenerationTarget.value.chapterId = savedChapterId
           addEvent('变化提案就绪', pendingCount + ' 条待审核', 'success')
           void loadChapterChangeProposals()
         },
@@ -2610,6 +2754,10 @@ async function handleRestartFromStep(stepId: string) {
       return
     }
   }
+  if (interruptedRunId.value && !canResumeInterruptedRun.value) {
+    message.warning(`请先切回第 ${interruptedGenerationTarget.value?.chapterNo} 章再重跑步骤`)
+    return
+  }
 
   const step = workflowSteps.value.find(s => s.id === stepId)
   if (!step) return
@@ -2628,6 +2776,10 @@ async function handleRestartFromStep(stepId: string) {
 
   // 使用续传接口 + restart_from_step_id 实现重跑
   isInterrupted.value = false
+  const restartTarget = interruptedGenerationTarget.value
+    ? { ...interruptedGenerationTarget.value }
+    : { outlineId: form.outline_id, chapterNo: form.chapter_no, chapterId: chapterId.value }
+  activeGenerationTarget.value = restartTarget
   loading.value = true
   workflowStreamActive.value = true
   stopRequested.value = false
@@ -2640,8 +2792,8 @@ async function handleRestartFromStep(stepId: string) {
     const result = await workflowResumeStream(
       {
         run_id: runId,
-        chapter_no: form.chapter_no,
-        outline_id: form.outline_id ?? undefined,
+        chapter_no: restartTarget.chapterNo,
+        outline_id: restartTarget.outlineId ?? undefined,
         restart_from_step_id: stepId,
       },
       {
@@ -2653,7 +2805,7 @@ async function handleRestartFromStep(stepId: string) {
         },
         onStepContext: applyWorkflowStepContext,
         onDelta: (sid, content) => {
-          if (sid === 'writer') draft.value += content
+          if (sid === 'writer') draft.value = appendIndentedChapterText(draft.value, content)
         },
         onStepDone: (sid, stepResult) => {
           applyWorkflowStepDone(sid, stepResult)
@@ -2662,7 +2814,7 @@ async function handleRestartFromStep(stepId: string) {
 
           if (sid === 'analyzer' && stepResult) applyWorkflowAnalysisResult(stepResult)
           if (sid === 'polisher' && stepResult?.content) {
-            draft.value = stepResult.content as string
+            draft.value = indentChapterParagraphs(String(stepResult.content))
           }
         },
         onWorkflowDone: (status, newRunId, sessionContext) => {
@@ -2670,6 +2822,7 @@ async function handleRestartFromStep(stepId: string) {
         },
         onChangeProposalsReady: (savedChapterId, pendingCount) => {
           setActiveChapterId(savedChapterId)
+          if (activeGenerationTarget.value) activeGenerationTarget.value.chapterId = savedChapterId
           addEvent('变化提案就绪', pendingCount + ' 条待审核', 'success')
           void loadChapterChangeProposals()
         },
@@ -2694,6 +2847,7 @@ async function handleRestartFromStep(stepId: string) {
     if (currentRunId.value) {
       isInterrupted.value = true
       interruptedRunId.value = currentRunId.value
+      if (activeGenerationTarget.value) interruptedGenerationTarget.value = { ...activeGenerationTarget.value }
     }
     addEvent('重跑失败', errorMessage(error), 'error')
     message.error('重跑失败')
@@ -2814,8 +2968,8 @@ async function refreshChapterVersions() {
 }
 
 function handleChapterVersionRestored(payload: { content: string; version: GenerationVersion }) {
-  draft.value = payload.content
-  markDraftPersisted()
+  draft.value = indentChapterParagraphs(payload.content)
+  markDraftPersisted(payload.content)
   polishOriginal.value = ''
   addEvent('恢复版本', `从 v${payload.version.version_number} 创建了新版本`, 'success')
   void loadResources()
@@ -3326,9 +3480,8 @@ async function applyChapterDialogueCandidate() {
     })
 
     // 步骤 1：后端已同时更新正文与版本；步骤 2：同步编辑区和列表状态。
-    draft.value = candidate.proposedContent
-    persistedDraftFingerprint.value = draftFingerprint()
-    draftSaveStatus.value = 'saved'
+    draft.value = indentChapterParagraphs(candidate.proposedContent)
+    markDraftPersisted(candidate.proposedContent)
     dialogueCandidate.value = null
     dialogueMessages.value.push({
       id: `assistant-applied-${Date.now()}`,
@@ -3451,7 +3604,7 @@ async function doPolish() {
       instruction: mode.desc,
     })
     polishOriginal.value = beforePolish
-    draft.value = result.content
+    draft.value = indentChapterParagraphs(result.content)
     await Promise.all([refreshChapterVersions(), loadResources()])
     addEvent('精修完成', `已保存为 v${result.version_number}，变化段落已高亮`)
     message.success(`精修稿已保存为 v${result.version_number}`)
@@ -4001,6 +4154,16 @@ watch(
   display: flex;
   flex-direction: column;
   gap: 8px;
+}
+
+.interrupted-target-hint {
+  padding: 9px 11px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  color: var(--text-secondary);
+  background: var(--bg-card);
+  font-size: 12px;
+  line-height: 1.5;
 }
 
 .secondary-actions {

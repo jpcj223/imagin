@@ -90,23 +90,16 @@ export async function draftChapter(payload: Record<string, unknown>) {
 
 export async function draftChapterStream(
   payload: Record<string, unknown>,
-  handlers: ChapterDraftStreamHandlers
+  handlers: ChapterDraftStreamHandlers,
+  signal?: AbortSignal,
 ): Promise<Omit<ChapterDraftResult, 'content'> | null> {
   // 流式章节生成使用 fetch 读取 NDJSON；Axios 在浏览器侧不适合逐块消费响应体。
   const controller = new AbortController()
   const timeoutId = window.setTimeout(() => controller.abort(), 300000)
-  const response = await fetch('/backend-api/agents/chapter-draft/stream', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload),
-    signal: controller.signal
-  })
-  if (!response.ok || !response.body) {
-    window.clearTimeout(timeoutId)
-    throw new Error(`流式生成请求失败：${response.status}`)
-  }
-
-  const reader = response.body.getReader()
+  const abortFromCaller = () => controller.abort(signal?.reason)
+  if (signal?.aborted) abortFromCaller()
+  else signal?.addEventListener('abort', abortFromCaller, { once: true })
+  let reader: ReadableStreamDefaultReader<Uint8Array> | null = null
   const decoder = new TextDecoder()
   let buffer = ''
   let doneResult: Omit<ChapterDraftResult, 'content'> | null = null
@@ -131,6 +124,15 @@ export async function draftChapterStream(
   }
 
   try {
+    const response = await fetch('/backend-api/agents/chapter-draft/stream', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+      signal: controller.signal
+    })
+    if (!response.ok || !response.body) throw new Error(`流式生成请求失败：${response.status}`)
+    reader = response.body.getReader()
+
     while (true) {
       const { value, done } = await reader.read()
       if (done) break
@@ -146,13 +148,17 @@ export async function draftChapterStream(
     buffer += decoder.decode()
     consumeLine(buffer)
   } catch (error) {
+    if (signal?.aborted) {
+      throw new Error('章节生成已中断，当前输出已保留')
+    }
     if (error instanceof DOMException && error.name === 'AbortError') {
       throw new Error('流式生成超时：5 分钟内未完成')
     }
     throw error
   } finally {
     window.clearTimeout(timeoutId)
-    reader.releaseLock()
+    signal?.removeEventListener('abort', abortFromCaller)
+    reader?.releaseLock()
   }
 
   return doneResult
