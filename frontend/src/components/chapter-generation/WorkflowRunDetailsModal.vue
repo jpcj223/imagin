@@ -16,6 +16,22 @@ const props = defineProps<{
 const emit = defineEmits<{ (event: 'update:visible', visible: boolean): void }>()
 const selectedStepId = ref('')
 
+type ModelPricingSnapshot = {
+  input_price_per_million?: number | null
+  output_price_per_million?: number | null
+  cached_input_price_per_million?: number | null
+  cached_input_uses_input_price?: boolean
+}
+
+function pricingForStep(step: { effectiveSettings?: Record<string, any> }): ModelPricingSnapshot | undefined {
+  return step.effectiveSettings?.model?.pricing as ModelPricingSnapshot | undefined
+}
+
+function hasCompletePricing(pricing?: ModelPricingSnapshot) {
+  return typeof pricing?.input_price_per_million === 'number'
+    && typeof pricing.output_price_per_million === 'number'
+}
+
 function hasTokenUsage(usage?: WorkflowStepRecord['token_usage']) {
   return Boolean(usage && [usage.input_tokens, usage.output_tokens, usage.total_tokens].some(value => typeof value === 'number'))
 }
@@ -100,6 +116,41 @@ const usage = computed(() => {
       elapsed += liveStep.durationMs ?? (liveStep.startedAt ? props.clock - liveStep.startedAt : 0)
     }
   }
+  const pricingSnapshots = mergedSteps.value
+    .map(pricingForStep)
+    .filter((pricing): pricing is ModelPricingSnapshot => Boolean(pricing))
+  const hasPriceSnapshot = pricingSnapshots.length > 0
+  const hasAnyPrice = pricingSnapshots.some((pricing) =>
+    typeof pricing.input_price_per_million === 'number'
+      || typeof pricing.output_price_per_million === 'number',
+  )
+  const hasCompletePrice = pricingSnapshots.some(hasCompletePricing)
+  const isRunning = props.runDetail?.run.status === 'running'
+    || mergedSteps.value.some((step) => step.status === 'running')
+  const costLabel = pricedAttempts
+    ? `${formatCurrency(estimatedCost)}${pricedAttempts < measuredAttempts ? ' *' : ''}`
+    : !hasPriceSnapshot
+      ? requests ? '无价格快照' : '—'
+      : !hasAnyPrice
+        ? '未配置单价'
+        : !hasCompletePrice
+          ? '单价未配全'
+          : isRunning
+            ? '等待用量'
+            : measuredAttempts === 0
+              ? '未返回用量'
+              : '无法估算'
+  const costNote = pricedAttempts
+    ? '费用按调用时单价和服务商返回的 Token 用量估算；带 * 表示部分尝试缺少用量或单价。'
+    : !hasPriceSnapshot
+      ? '本次运行没有单价快照；新运行会记录当前模型配置。'
+      : !hasAnyPrice
+        ? '本次运行已保存模型配置，但当时没有填写输入和输出单价。'
+        : !hasCompletePrice
+          ? '输入和输出单价需要同时配置，才能估算费用。'
+          : isRunning
+            ? '单价已记录，等待模型返回 Token 用量后计算费用。'
+            : '服务商未返回 Token 用量，暂时无法估算费用。'
   return {
     input,
     output,
@@ -109,6 +160,8 @@ const usage = computed(() => {
     measuredAttempts,
     estimatedCost,
     pricedAttempts,
+    costLabel,
+    costNote,
     attempts: attempts.length || props.steps.filter(step => step.status !== 'pending').length,
   }
 })
@@ -139,12 +192,22 @@ function formatCurrency(value?: number | null) {
 function stepCostLabel(step: NonNullable<typeof selectedStep.value>) {
   const tokenUsage = step.tokenUsage
   if (typeof tokenUsage?.cost_cny === 'number') return `费用约 ${formatCurrency(tokenUsage.cost_cny)}`
-  if (hasTokenUsage(tokenUsage)) return '费用未估（缺少单价）'
-  return '费用未估（缺少 Token 用量）'
+  const pricing = pricingForStep(step)
+  if (!pricing) return '费用未估（无价格快照）'
+  if (!hasCompletePricing(pricing)) return '费用未估（单价未配全）'
+  if (hasTokenUsage(tokenUsage)) return '费用未估（服务商未返回单价用量）'
+  return step.status === 'running' ? '单价已配置，等待用量' : '服务商未返回 Token 用量'
 }
 
 function formatPrice(value?: number | null) {
   return typeof value === 'number' ? `¥${value}/百万 Token` : '未配置'
+}
+
+function formatCachedInputPrice(pricing?: ModelPricingSnapshot) {
+  if (typeof pricing?.cached_input_price_per_million === 'number') {
+    return formatPrice(pricing.cached_input_price_per_million)
+  }
+  return pricing?.cached_input_uses_input_price ? '按输入单价' : '未配置'
 }
 
 function formatDuration(value?: number | null) {
@@ -201,11 +264,11 @@ function variantLabel(value: string) {
         <article><strong>{{ formatNumber(usage.input) }}</strong><span>输入 Token</span></article>
         <article><strong>{{ formatNumber(usage.output) }}</strong><span>输出 Token</span></article>
         <article><strong>{{ formatNumber(usage.total) }}</strong><span>合计 Token</span></article>
-        <article><strong>{{ usage.pricedAttempts ? `${formatCurrency(usage.estimatedCost)}${usage.pricedAttempts < usage.measuredAttempts ? ' *' : ''}` : '未配置' }}</strong><span>估算费用</span></article>
+        <article><strong>{{ usage.costLabel }}</strong><span>估算费用</span></article>
         <article><strong>{{ formatDuration(usage.elapsed) }}</strong><span>步骤耗时</span></article>
       </div>
       <p class="usage-note">
-        汇总包含本次运行的全部步骤尝试和重跑；{{ usage.attempts ? `${usage.measuredAttempts}/${usage.attempts} 次尝试已返回 Token，用 ${usage.pricedAttempts}/${usage.measuredAttempts || 0} 次用量估算费用。` : '' }}单价取模型调用时快照。缓存输入单价未填时按输入单价估算；服务商未返回缓存 Token 数时按普通输入计价。
+        汇总包含本次运行的全部步骤尝试和重跑；{{ usage.attempts ? `${usage.measuredAttempts}/${usage.attempts} 次尝试已返回 Token。` : '' }}{{ usage.costNote }}缓存输入单价未填时按输入单价估算；服务商未返回缓存 Token 数时按普通输入计价。
       </p>
 
       <div class="step-layout">
@@ -272,7 +335,7 @@ function variantLabel(value: string) {
               <div v-if="modelSettings?.configured"><span>采样参数</span><strong>温度 {{ modelSettings.temperature ?? '默认' }} · Top P {{ modelSettings.top_p ?? '默认' }}</strong></div>
               <div v-if="modelSettings?.configured"><span>最大输出</span><strong>{{ formatNumber(modelSettings.max_tokens) }} Token</strong></div>
               <div v-if="modelSettings?.configured"><span>频率 / 存在惩罚</span><strong>{{ modelSettings.frequency_penalty ?? '默认' }} / {{ modelSettings.presence_penalty ?? '默认' }}</strong></div>
-              <div v-if="modelSettings?.pricing" class="wide-setting"><span>调用时单价（元/百万 Token）</span><strong>输入 {{ formatPrice(modelSettings.pricing.input_price_per_million) }} · 输出 {{ formatPrice(modelSettings.pricing.output_price_per_million) }} · 缓存输入 {{ formatPrice(modelSettings.pricing.cached_input_price_per_million) }}</strong></div>
+              <div v-if="modelSettings?.pricing" class="wide-setting"><span>调用时单价（元/百万 Token）</span><strong>输入 {{ formatPrice(modelSettings.pricing.input_price_per_million) }} · 输出 {{ formatPrice(modelSettings.pricing.output_price_per_million) }} · 缓存输入 {{ formatCachedInputPrice(modelSettings.pricing) }}</strong></div>
               <div v-if="settings.agent_skills?.length" class="wide-setting"><span>Agent 已装配技能</span><div class="tag-list"><em v-for="skill in settings.agent_skills" :key="skill">{{ skill }}</em></div></div>
               <div v-if="settings.generation_skills?.length" class="wide-setting"><span>本次写作重点</span><div class="tag-list"><em v-for="skill in settings.generation_skills" :key="skill">{{ skill }}</em></div></div>
               <p v-if="settings.model_called === false" class="wide-setting setting-note">此步骤使用本地兜底结果，没有调用模型。</p>

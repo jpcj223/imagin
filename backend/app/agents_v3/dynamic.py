@@ -8,6 +8,7 @@ from collections.abc import Iterator
 from typing import Any
 
 from app.core.llm import (
+    LLMCancelled,
     LLMError,
     chat_completion_stream_with_usage,
     chat_completion_with_usage,
@@ -58,6 +59,7 @@ class DynamicAgent(BaseAgent):
     def run(self, context: dict[str, Any], params: dict[str, Any] | None = None) -> dict[str, Any]:
         """同步执行。"""
         effective_params = {**self.params, **(params or {})}
+        cancel_event = effective_params.pop("_cancel_event", None)
 
         # 1. Skill 前处理
         ctx = self._apply_skills_pre(context, effective_params)
@@ -71,8 +73,12 @@ class DynamicAgent(BaseAgent):
             content, token_usage = chat_completion_with_usage(
                 messages,
                 **self._extract_llm_params(effective_params),
+                cancel_event=cancel_event,
             )
             source = "llm"
+        except LLMCancelled:
+            # 用户停止时不能走 fallback，否则暂停请求会被误当成一次成功生成。
+            raise
         except LLMError as exc:
             content = self._get_fallback_content(ctx, effective_params)
             source = f"fallback: {exc}"
@@ -100,6 +106,7 @@ class DynamicAgent(BaseAgent):
     ) -> Iterator[dict[str, Any]]:
         """流式执行。"""
         effective_params = {**self.params, **(params or {})}
+        cancel_event = effective_params.pop("_cancel_event", None)
 
         # 1. Skill 前处理
         ctx = self._apply_skills_pre(context, effective_params)
@@ -116,6 +123,7 @@ class DynamicAgent(BaseAgent):
             for event in chat_completion_stream_with_usage(
                 messages,
                 **self._extract_llm_params(effective_params),
+                cancel_event=cancel_event,
             ):
                 if event.get("type") == "usage":
                     token_usage = event.get("usage")
@@ -124,6 +132,8 @@ class DynamicAgent(BaseAgent):
                     chunks.append(chunk)
                     yield {"type": "delta", "content": chunk}
             content = "".join(chunks)
+        except LLMCancelled:
+            raise
         except LLMError as exc:
             # Fallback：流式输出兜底内容
             source = f"fallback: {exc}"

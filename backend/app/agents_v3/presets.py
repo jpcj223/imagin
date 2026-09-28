@@ -68,6 +68,7 @@ def create_analyzer_agent(variant: str = "default", **extra_params) -> BaseAgent
         .with_icon("🔍")
         .with_description("分析章节正文，抽取结构化数据")
         .with_category("analysis")
+        .with_supports_streaming(True)
         .with_system_prompt(
             "你是臆想创作的章节事实分析 Agent。只依据最终正文提取可沉淀事实，供后续连贯写作和作者审核；"
             "不制定剧情计划、不改写或润色正文、不输出模型内部推理过程。"
@@ -96,6 +97,7 @@ def create_planner_agent(variant: str = "default", **extra_params) -> BaseAgent:
         .with_icon("📋")
         .with_description("根据大纲制定详细写作计划")
         .with_category("writing")
+        .with_supports_streaming(True)
         .with_system_prompt(
             "你是臆想创作的剧情规划师 Agent，负责把大纲细化为可执行的写作计划。"
             "只规划当前章节，不写小说正文、不复述大纲，也不输出模型内部推理过程。"
@@ -137,6 +139,7 @@ def create_polisher_agent(variant: str = "default", **extra_params) -> BaseAgent
         .with_icon("💎")
         .with_description("润色优化章节正文")
         .with_category("writing")
+        .with_supports_streaming(True)
         .with_system_prompt(
             "你是臆想创作的小说精修 Agent，负责保留剧情事实并提升文本质量。"
         )

@@ -132,6 +132,12 @@ export interface WorkflowStepInputSnapshot extends Record<string, unknown> {
       top_p?: number
       frequency_penalty?: number
       presence_penalty?: number
+      pricing?: {
+        input_price_per_million?: number | null
+        output_price_per_million?: number | null
+        cached_input_price_per_million?: number | null
+        cached_input_uses_input_price?: boolean
+      }
     }
   }
 }

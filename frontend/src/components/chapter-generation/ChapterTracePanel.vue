@@ -39,7 +39,7 @@
       <div class="workflow-metrics-grid">
         <div><strong>{{ usage.llmCalls }}</strong><span>模型请求</span></div>
         <div><strong>{{ formatTokenCount(usage.totalTokens) }}</strong><span>已返回 Token</span></div>
-        <div><strong>{{ usage.pricedSteps ? formatCurrency(usage.estimatedCost) : '未配置' }}</strong><span>费用估算（{{ usage.pricedSteps }}/{{ usage.measuredSteps }}）</span></div>
+        <div><strong>{{ usage.costLabel }}</strong><span>费用估算（{{ usage.pricedSteps }}/{{ usage.measuredSteps }}）</span></div>
         <div><strong>{{ usage.measuredSteps }} / {{ usage.steps.length }}</strong><span>有用量记录的步骤</span></div>
         <div><strong>{{ formatDuration(usage.durationMs) }}</strong><span>累计步骤耗时</span></div>
       </div>
@@ -53,7 +53,7 @@
           <span>{{ stepTokenUsage(step) }}<br>{{ step.duration_ms == null ? '耗时未记录' : formatDuration(step.duration_ms) }}</span>
         </div>
       </div>
-      <p class="workflow-usage-note">Token 显示模型服务商实际返回的用量；费用使用调用时单价快照估算，缺少用量或单价时不推算。</p>
+      <p class="workflow-usage-note">Token 显示模型服务商实际返回的用量；{{ usage.costNote }}缓存输入价格留空时按普通输入单价估算。</p>
     </div>
 
     <div v-if="visibleEvents.length" class="local-events-section">
@@ -105,6 +105,44 @@ const usage = computed(() => {
     const tokens = step.token_usage
     return tokens && [tokens.input_tokens, tokens.output_tokens, tokens.total_tokens].some((value) => typeof value === 'number')
   })
+  const pricingSnapshots = steps
+    .map((step) => step.input_snapshot?.effective_settings?.model?.pricing)
+    .filter((pricing): pricing is NonNullable<typeof pricing> => Boolean(pricing))
+  const hasAnyPrice = pricingSnapshots.some((pricing) =>
+    typeof pricing.input_price_per_million === 'number'
+      || typeof pricing.output_price_per_million === 'number',
+  )
+  const hasCompletePrice = pricingSnapshots.some((pricing) =>
+    typeof pricing.input_price_per_million === 'number'
+      && typeof pricing.output_price_per_million === 'number',
+  )
+  const isRunning = detail.value?.run.status === 'running'
+  const pricedSteps = steps.filter((step) => typeof step.token_usage?.cost_cny === 'number').length
+  const estimatedCost = steps.reduce((total, step) => total + (step.token_usage?.cost_cny ?? 0), 0)
+  const costLabel = pricedSteps
+    ? `${formatCurrency(estimatedCost)}${pricedSteps < measured.length ? ' *' : ''}`
+    : !pricingSnapshots.length
+      ? '无价格快照'
+      : !hasAnyPrice
+        ? '未配置单价'
+        : !hasCompletePrice
+          ? '单价未配全'
+          : isRunning
+            ? '等待用量'
+            : measured.length === 0
+              ? '未返回用量'
+              : '无法估算'
+  const costNote = pricedSteps
+    ? '费用按调用时单价和服务商返回的 Token 用量估算。'
+    : !pricingSnapshots.length
+      ? '旧记录没有单价快照，新运行会记录当时配置。'
+      : !hasAnyPrice
+        ? '调用时未配置输入和输出单价。'
+        : !hasCompletePrice
+          ? '输入和输出单价需要同时配置。'
+          : isRunning
+            ? '单价已配置，等待模型返回 Token 用量。'
+            : '服务商未返回 Token 用量，无法估算费用。'
   return {
     steps,
     measuredSteps: measured.length,
@@ -112,8 +150,10 @@ const usage = computed(() => {
       const tokens = step.token_usage
       return total + (tokens?.total_tokens ?? ((tokens?.input_tokens ?? 0) + (tokens?.output_tokens ?? 0)))
     }, 0),
-    pricedSteps: steps.filter((step) => typeof step.token_usage?.cost_cny === 'number').length,
-    estimatedCost: steps.reduce((total, step) => total + (step.token_usage?.cost_cny ?? 0), 0),
+    pricedSteps,
+    estimatedCost,
+    costLabel,
+    costNote,
     llmCalls: steps.reduce((total, step) => total + (step.llm_calls || 0), 0),
     durationMs: steps.reduce((total, step) => total + (step.duration_ms || 0), 0),
   }

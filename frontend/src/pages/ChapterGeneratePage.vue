@@ -178,9 +178,10 @@
                     <div><strong>{{ formatTokenCount(workflowUsage.inputTokens) }}</strong><span>输入 Token</span></div>
                     <div><strong>{{ formatTokenCount(workflowUsage.outputTokens) }}</strong><span>输出 Token</span></div>
                     <div><strong>{{ formatTokenCount(workflowUsage.totalTokens) }}</strong><span>合计 Token</span></div>
+                    <div><strong>{{ workflowUsage.costLabel }}</strong><span>估算费用</span></div>
                     <div><strong>{{ formatWorkflowDuration(workflowUsage.durationMs) }}</strong><span>步骤耗时</span></div>
                   </div>
-                  <p class="workflow-usage-note">统计包含失败请求与重跑；Token 仅累计服务商返回值。当前未配置模型单价，不估算费用。</p>
+                  <p class="workflow-usage-note">统计包含失败请求与重跑；{{ workflowUsage.costNote }}</p>
                 </div>
               </div>
 
@@ -286,7 +287,7 @@
                     :disabled="stopRequested || !currentRunId"
                     @click="stopCurrentGeneration"
                   >
-                    {{ stopRequested ? '正在安全中断…' : '中断并保留进度' }}
+                    {{ stopRequested ? '正在断开模型请求…' : '中断并保留进度' }}
                   </n-button>
                   <n-button
                     v-if="isInterrupted && interruptedRunId"
@@ -987,14 +988,22 @@ const workflowUsage = computed(() => {
   let totalTokens = 0
   let llmCalls = 0
   let durationMs = 0
+  let measuredAttempts = 0
+  let pricedAttempts = 0
+  let estimatedCost = 0
   const hasUsage = (usage?: WorkflowStepRecord['token_usage']) => Boolean(
     usage && [usage.input_tokens, usage.output_tokens, usage.total_tokens].some(value => typeof value === 'number'),
   )
   const addUsage = (usage?: WorkflowStepRecord['token_usage']) => {
     if (!hasUsage(usage)) return
+    measuredAttempts += 1
     inputTokens += usage?.input_tokens ?? 0
     outputTokens += usage?.output_tokens ?? 0
     totalTokens += usage?.total_tokens ?? (usage?.input_tokens ?? 0) + (usage?.output_tokens ?? 0)
+    if (typeof usage?.cost_cny === 'number') {
+      pricedAttempts += 1
+      estimatedCost += usage.cost_cny
+    }
   }
   for (const attempt of attempts) {
     addUsage(attempt.token_usage)
@@ -1012,12 +1021,57 @@ const workflowUsage = computed(() => {
         ?? (liveStep.startedAt ? workflowClock.value - liveStep.startedAt : 0)
     }
   }
+  const pricingSnapshots = [
+    ...attempts.map((attempt) => attempt.input_snapshot?.effective_settings?.model?.pricing),
+    ...workflowSteps.value.map((step) => {
+      const settings = step.effectiveSettings as { model?: { pricing?: { input_price_per_million?: number | null; output_price_per_million?: number | null } } } | undefined
+      return settings?.model?.pricing
+    }),
+  ].filter((pricing): pricing is NonNullable<typeof pricing> => Boolean(pricing))
+  const hasPriceSnapshot = pricingSnapshots.length > 0
+  const hasAnyPrice = pricingSnapshots.some((pricing) =>
+    typeof pricing.input_price_per_million === 'number'
+      || typeof pricing.output_price_per_million === 'number',
+  )
+  const hasCompletePrice = pricingSnapshots.some((pricing) =>
+    typeof pricing.input_price_per_million === 'number'
+      && typeof pricing.output_price_per_million === 'number',
+  )
+  const isRunning = loading.value || workflowRunDetail.value?.run.status === 'running'
+  const costLabel = pricedAttempts
+    ? `${formatWorkflowCurrency(estimatedCost)}${pricedAttempts < measuredAttempts ? ' *' : ''}`
+    : !hasPriceSnapshot
+      ? llmCalls ? '无价格快照' : '—'
+      : !hasAnyPrice
+        ? '未配置单价'
+        : !hasCompletePrice
+          ? '单价未配全'
+          : isRunning
+            ? '等待用量'
+            : measuredAttempts === 0
+              ? '未返回用量'
+              : '无法估算'
+  const costNote = pricedAttempts
+    ? '费用已按调用时价格估算。'
+    : !hasPriceSnapshot
+      ? '本次运行没有价格快照。'
+      : !hasAnyPrice
+        ? '本次调用时没有配置输入和输出单价。'
+        : !hasCompletePrice
+          ? '输入和输出单价需要同时配置。'
+          : isRunning
+            ? '单价已配置，等待模型返回 Token 用量。'
+            : '服务商未返回 Token 用量，无法估算费用。'
   return {
     inputTokens,
     outputTokens,
     totalTokens,
     llmCalls,
     durationMs,
+    pricedAttempts,
+    estimatedCost,
+    costLabel,
+    costNote,
   }
 })
 
@@ -2216,7 +2270,7 @@ function applyWorkflowStepDone(stepId: string, result: Record<string, unknown>) 
   step.startedAt = undefined
   const tokenUsage = result.token_usage
   step.tokenUsage = tokenUsage && typeof tokenUsage === 'object'
-    ? tokenUsage as { input_tokens?: number; output_tokens?: number; total_tokens?: number }
+    ? tokenUsage as WorkflowStepRecord['token_usage']
     : null
   step.llmCalls = typeof result.llm_calls === 'number' ? result.llm_calls : 0
 
@@ -2245,6 +2299,12 @@ function formatTokenCount(value: number) {
   return new Intl.NumberFormat('zh-CN').format(value)
 }
 
+function formatWorkflowCurrency(value: number) {
+  return new Intl.NumberFormat('zh-CN', {
+    style: 'currency', currency: 'CNY', minimumFractionDigits: 4, maximumFractionDigits: 6,
+  }).format(value)
+}
+
 function formatWorkflowDuration(value: number) {
   const seconds = Math.floor(value / 1000)
   if (seconds < 60) return `${seconds} 秒`
@@ -2260,7 +2320,7 @@ async function stopCurrentGeneration() {
   try {
     await pauseWorkflowRun(runId)
     addEvent('请求中断', '已收到请求，正在结束当前步骤并保留进度', 'info')
-    message.info('正在安全中断，当前步骤会在最近一次模型输出后停止')
+    message.info('正在关闭当前模型连接并保留已完成步骤')
   } catch (error) {
     stopRequested.value = false
     message.error(errorMessage(error) || '中断请求失败')

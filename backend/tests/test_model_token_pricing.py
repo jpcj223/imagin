@@ -2,18 +2,108 @@
 from __future__ import annotations
 
 import unittest
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import MagicMock, patch
 
 from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.orm import Session
 
-from app.core.llm import _attach_pricing, _normalize_token_usage, get_active_model_config
+from app.core.llm import (
+    LLMCancelled,
+    _attach_pricing,
+    _build_payload,
+    _normalize_token_usage,
+    chat_completion_with_usage,
+    chat_completion_stream_with_usage,
+    get_active_model_config,
+)
 from app.db.migrations.core.v024_model_token_prices import upgrade
 from app.models.core.model_config import ModelConfig
 from app.schemas.core.models import ModelConfigCreate, ModelConfigUpdate
 
 
 class ModelTokenPricingTests(unittest.TestCase):
+    def test_stream_requests_provider_usage_for_cost_estimation(self):
+        payload = _build_payload({"model": "qwen-test"}, [], stream=True)
+
+        self.assertTrue(payload["stream"])
+        self.assertEqual(payload["stream_options"], {"include_usage": True})
+
+    def test_stream_usage_chunk_is_counted_even_when_it_has_no_choices(self):
+        class StreamResponse:
+            def __init__(self):
+                self.lines = [
+                    b'data: {"choices":[{"delta":{"content":"hello"}}]}\n',
+                    b'data: {"choices":[],"usage":{"prompt_tokens":1000,"completion_tokens":100}}\n',
+                    b"data: [DONE]\n",
+                ]
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return None
+
+            def __iter__(self):
+                return iter(self.lines)
+
+        config = {
+            "model": "qwen-test",
+            "base_url": "https://example.invalid/v1",
+            "api_key": "test-key",
+            "input_price_per_million": 0.5,
+            "output_price_per_million": 4,
+        }
+        with patch("app.core.llm.get_active_model_config", return_value=config), patch(
+            "app.core.llm._make_urlopen", return_value=StreamResponse()
+        ):
+            events = list(chat_completion_stream_with_usage([{"role": "user", "content": "test"}]))
+
+        self.assertEqual(events[0], {"type": "delta", "content": "hello"})
+        self.assertEqual(events[1]["type"], "usage")
+        self.assertEqual(events[1]["usage"]["cost_cny"], 0.0009)
+
+    def test_cancellation_closes_a_blocked_non_streaming_response(self):
+        class BlockingResponse:
+            def __init__(self):
+                self.read_started = threading.Event()
+                self.closed = threading.Event()
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                self.close()
+
+            def read(self):
+                self.read_started.set()
+                self.closed.wait(timeout=3)
+                raise OSError("response closed")
+
+            def close(self):
+                self.closed.set()
+
+        response = BlockingResponse()
+        cancel_event = threading.Event()
+        config = {
+            "model": "qwen-test",
+            "base_url": "https://example.invalid/v1",
+            "api_key": "test-key",
+        }
+        with patch("app.core.llm.get_active_model_config", return_value=config), patch(
+            "app.core.llm._make_urlopen", return_value=response
+        ), ThreadPoolExecutor(max_workers=1) as pool:
+            future = pool.submit(
+                chat_completion_with_usage,
+                [{"role": "user", "content": "test"}],
+                cancel_event=cancel_event,
+            )
+            self.assertTrue(response.read_started.wait(timeout=1))
+            cancel_event.set()
+            with self.assertRaises(LLMCancelled):
+                future.result(timeout=1)
+
     def test_normalizes_cached_input_token_aliases(self):
         usage = _normalize_token_usage({
             "prompt_tokens": 1200,

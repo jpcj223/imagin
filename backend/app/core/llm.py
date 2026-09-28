@@ -4,6 +4,7 @@ import json
 import math
 import os
 import socket
+import threading
 import urllib.error
 import urllib.request
 from collections.abc import Iterator
@@ -15,6 +16,49 @@ from app.models.core.model_config import ModelConfig
 
 class LLMError(RuntimeError):
     pass
+
+
+class LLMCancelled(LLMError):
+    """用户主动停止当前模型请求。"""
+
+
+def _interrupt_response(response: Any) -> None:
+    """关闭底层 socket，尽可能让阻塞中的 urllib 读取立即返回。"""
+    try:
+        raw_socket = response.fp.raw._sock
+        raw_socket.shutdown(socket.SHUT_RDWR)
+    except (AttributeError, OSError, ValueError):
+        pass
+    try:
+        response.close()
+    except (AttributeError, OSError, ValueError):
+        pass
+
+
+def _watch_response_cancellation(response: Any, cancel_event: threading.Event | None):
+    """监控工作流取消信号，并在模型响应阻塞时关闭连接。"""
+    if cancel_event is None:
+        return lambda: None
+    if cancel_event.is_set():
+        _interrupt_response(response)
+        return lambda: None
+
+    finished = threading.Event()
+
+    def watch() -> None:
+        while not finished.wait(0.05):
+            if cancel_event.is_set():
+                _interrupt_response(response)
+                return
+
+    watcher = threading.Thread(target=watch, name="llm-cancel-watch", daemon=True)
+    watcher.start()
+
+    def stop_watching() -> None:
+        finished.set()
+        watcher.join(timeout=0.2)
+
+    return stop_watching
 
 
 def _api_timeout_seconds() -> int:
@@ -179,6 +223,8 @@ def _build_payload(config: dict[str, Any], messages: list[dict[str, str]],
 
     if stream:
         payload["stream"] = True
+        # OpenAI-compatible 流式接口默认可能不回传用量；请求最后一个 chunk 附带 Token 统计。
+        payload["stream_options"] = {"include_usage": True}
 
     return payload
 
@@ -230,6 +276,7 @@ def chat_completion_with_usage(
     messages: list[dict[str, str]],
     temperature: float | None = None,
     max_tokens: int | None = None,
+    cancel_event: threading.Event | None = None,
 ) -> tuple[str, dict[str, Any] | None]:
     """调用兼容接口并同时返回供应商报告的 Token 用量。
 
@@ -239,6 +286,8 @@ def chat_completion_with_usage(
     config = get_active_model_config()
     if not config:
         raise LLMError("尚未配置可用模型")
+    if cancel_event is not None and cancel_event.is_set():
+        raise LLMCancelled("用户中断模型请求")
 
     base_url = config["base_url"].rstrip("/")
     if "/anthropic" in base_url.lower():
@@ -251,14 +300,28 @@ def chat_completion_with_usage(
 
     try:
         with _make_urlopen(config, payload) as response:
-            body = json.loads(response.read().decode("utf-8"))
+            stop_watching = _watch_response_cancellation(response, cancel_event)
+            try:
+                body = json.loads(response.read().decode("utf-8"))
+            finally:
+                stop_watching()
     except urllib.error.HTTPError as exc:
+        if cancel_event is not None and cancel_event.is_set():
+            raise LLMCancelled("用户中断模型请求") from exc
         detail = exc.read().decode("utf-8", errors="ignore")
         raise LLMError(f"模型接口返回错误：{exc.code} {detail}") from exc
     except urllib.error.URLError as exc:
+        if cancel_event is not None and cancel_event.is_set():
+            raise LLMCancelled("用户中断模型请求") from exc
         raise LLMError(f"无法连接模型接口：{exc.reason}") from exc
     except (TimeoutError, socket.timeout) as exc:
+        if cancel_event is not None and cancel_event.is_set():
+            raise LLMCancelled("用户中断模型请求") from exc
         raise LLMError(f"模型接口读取超时：{_api_timeout_seconds()} 秒内未返回完整响应") from exc
+    except Exception as exc:
+        if cancel_event is not None and cancel_event.is_set():
+            raise LLMCancelled("用户中断模型请求") from exc
+        raise
 
     try:
         content = body["choices"][0]["message"]["content"]
@@ -322,12 +385,15 @@ def chat_completion_stream_with_usage(
     messages: list[dict[str, str]],
     temperature: float | None = None,
     max_tokens: int | None = None,
+    cancel_event: threading.Event | None = None,
 ) -> Iterator[dict[str, Any]]:
     """流式请求并保留供应商主动返回的 Token 用量事件。"""
     # 步骤 1：按当前 OpenAI-compatible 配置建立流；步骤 2：逐条解析文本和可选用量事件。
     config = get_active_model_config()
     if not config:
         raise LLMError("尚未配置可用模型")
+    if cancel_event is not None and cancel_event.is_set():
+        raise LLMCancelled("用户中断模型请求")
 
     base_url = config["base_url"].rstrip("/")
     if "/anthropic" in base_url.lower():
@@ -336,37 +402,53 @@ def chat_completion_stream_with_usage(
     payload = _build_payload(config, messages, temperature=temperature, max_tokens=max_tokens, stream=True)
     try:
         with _make_urlopen(config, payload) as response:
-            for raw_line in response:
-                line = raw_line.decode("utf-8", errors="ignore").strip()
-                if not line or not line.startswith("data:"):
-                    continue
-                data = line.removeprefix("data:").strip()
-                if data == "[DONE]":
-                    break
-                try:
-                    body = json.loads(data)
-                except json.JSONDecodeError:
-                    continue
-                if not isinstance(body, dict):
-                    continue
+            stop_watching = _watch_response_cancellation(response, cancel_event)
+            try:
+                for raw_line in response:
+                    if cancel_event is not None and cancel_event.is_set():
+                        raise LLMCancelled("用户中断模型请求")
+                    line = raw_line.decode("utf-8", errors="ignore").strip()
+                    if not line or not line.startswith("data:"):
+                        continue
+                    data = line.removeprefix("data:").strip()
+                    if data == "[DONE]":
+                        break
+                    try:
+                        body = json.loads(data)
+                    except json.JSONDecodeError:
+                        continue
+                    if not isinstance(body, dict):
+                        continue
 
-                # 步骤 3：部分供应商会在流末尾返回用量；没有时不估算。
-                usage = _attach_pricing(_normalize_token_usage(body.get("usage")), config)
-                if usage:
-                    yield {"type": "usage", "usage": usage}
-                try:
-                    content = body["choices"][0].get("delta", {}).get("content") or ""
-                except (KeyError, IndexError, TypeError):
-                    continue
-                if content:
-                    yield {"type": "delta", "content": content}
+                    # 用量 chunk 通常 choices 为空；先处理用量，再读取可能不存在的文本增量。
+                    usage = _attach_pricing(_normalize_token_usage(body.get("usage")), config)
+                    if usage:
+                        yield {"type": "usage", "usage": usage}
+                    try:
+                        content = body["choices"][0].get("delta", {}).get("content") or ""
+                    except (KeyError, IndexError, TypeError):
+                        continue
+                    if content:
+                        yield {"type": "delta", "content": content}
+            finally:
+                stop_watching()
     except urllib.error.HTTPError as exc:
+        if cancel_event is not None and cancel_event.is_set():
+            raise LLMCancelled("用户中断模型请求") from exc
         detail = exc.read().decode("utf-8", errors="ignore")
         raise LLMError(f"模型接口返回错误：{exc.code} {detail}") from exc
     except urllib.error.URLError as exc:
+        if cancel_event is not None and cancel_event.is_set():
+            raise LLMCancelled("用户中断模型请求") from exc
         raise LLMError(f"无法连接模型接口：{exc.reason}") from exc
     except (TimeoutError, socket.timeout) as exc:
+        if cancel_event is not None and cancel_event.is_set():
+            raise LLMCancelled("用户中断模型请求") from exc
         raise LLMError(f"模型接口读取超时：{_api_timeout_seconds()} 秒内未返回完整响应") from exc
+    except Exception as exc:
+        if cancel_event is not None and cancel_event.is_set():
+            raise LLMCancelled("用户中断模型请求") from exc
+        raise
 
 
 def chat_completion_stream(messages: list[dict[str, str]],

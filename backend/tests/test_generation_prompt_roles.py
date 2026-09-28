@@ -2,13 +2,39 @@
 from __future__ import annotations
 
 import unittest
+import threading
+from unittest.mock import patch
 
-from app.agents_v3.presets import create_planner_agent, create_writer_agent
+from app.agents_v3.base import AgentMeta
+from app.agents_v3.dynamic import DynamicAgent
+from app.agents_v3.presets import (
+    create_analyzer_agent,
+    create_planner_agent,
+    create_polisher_agent,
+    create_writer_agent,
+)
+from app.core.llm import LLMCancelled
 from app.skills.writing.core_planning import CorePlanningSkill
 from app.skills.writing.core_writing import CoreWritingSkill
 
 
 class GenerationPromptRoleTests(unittest.TestCase):
+    def test_all_smart_mode_steps_support_streaming_for_responsive_cancellation(self):
+        agents = [
+            create_planner_agent(),
+            create_writer_agent(),
+            create_polisher_agent(),
+            create_analyzer_agent(),
+        ]
+
+        self.assertTrue(all(agent.meta.supports_streaming for agent in agents))
+
+    def test_dynamic_agent_does_not_turn_user_cancellation_into_fallback_output(self):
+        agent = DynamicAgent(meta=AgentMeta(name="cancel-test", label="取消测试"))
+        with patch("app.agents_v3.dynamic.chat_completion_with_usage", side_effect=LLMCancelled("stop")):
+            with self.assertRaises(LLMCancelled):
+                agent.run({}, {"_cancel_event": threading.Event()})
+
     def test_planner_prompt_requires_ordered_causal_beats_without_duplicate_outline(self):
         planner = create_planner_agent()
         messages = planner._build_messages(
