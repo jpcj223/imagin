@@ -125,7 +125,8 @@ class BaseAgent(ABC):
         for key in context:
             if key.startswith("_") and key.endswith(("_instruction", "_notes", "_styles", "_context")):
                 val = context[key]
-                if val:
+                # Prompt 模板可能已经显式引用该资料包；若再次追加会让大纲/写作上下文重复占用 Token。
+                if val and str(val) not in base_prompt:
                     fragments.append(str(val))
 
         if not fragments:

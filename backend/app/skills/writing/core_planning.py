@@ -6,7 +6,6 @@ from __future__ import annotations
 
 from app.skills.base import BaseSkill, SkillMeta
 from app.skills.registry import SkillRegistry
-from app.memory.retriever import format_volume_outline
 
 
 @SkillRegistry.register("core_planning")
@@ -27,40 +26,54 @@ class CorePlanningSkill(BaseSkill):
     )
 
     prompt_fragment = """
-请根据本章大纲，制定详细的写作计划。要求结构清晰、可执行性强，
-包含出场人物、剧情节拍、场景安排、伏笔安排和注意事项。
+规划只需给出当前章节可执行的因果安排；具体章节目标、人物行动、冲突结果、场景节奏和伏笔处理由 Agent 主提示规定。
+不要重述输入资料、输出小说正文或生成泛化的写作建议。
 """.strip()
 
     required_context = ["outline"]
 
     def pre_process(self, context, params):
         """构建规划上下文文本。"""
-        outline = context.get("outline", {})
-        context["volume_outline_text"] = format_volume_outline(context.get("volume_outline"))
         context["generation_outline_context_text"] = context.get("generation_outline_context_text") or "暂无全书及相邻卷章细纲"
         characters = context.get("characters", [])
         foreshadowings = context.get("foreshadowings", [])
         recent_summaries = context.get("recent_summaries", [])
 
-        # 构建补充信息
-        extra_info = []
+        # 只把对情节决策有用的字段压缩给规划师；完整设定仍会进入正文写作上下文。
+        references = ["【相关人物】"]
+        for character in characters:
+            if not isinstance(character, dict) or not character.get("name"):
+                continue
+            details = [
+                character.get("role_type"),
+                str(character.get("personality") or "")[:80],
+                str(character.get("motivation") or "")[:80],
+            ]
+            references.append(f"- {character['name']}：" + "；".join(str(item) for item in details if item))
+        if len(references) == 1:
+            references.append("- 暂无明确角色资料")
 
-        if characters:
-            char_names = [c.get("name", "") for c in characters[:5] if c.get("name")]
-            if char_names:
-                extra_info.append(f"可能出场的人物：{', '.join(char_names)}")
-
-        if foreshadowings:
-            pending = [f.get("keyword", "") for f in foreshadowings[:5]
-                       if f.get("status") in ("pending", "planted", "payoff_pending") and f.get("keyword")]
-            if pending:
-                extra_info.append(f"待处理伏笔：{', '.join(pending)}")
+        references.append("【相关伏笔】")
+        found_foreshadowing = False
+        for item in foreshadowings:
+            if not isinstance(item, dict) or not item.get("keyword"):
+                continue
+            if item.get("status") not in ("pending", "planted", "developing", "payoff_pending"):
+                continue
+            found_foreshadowing = True
+            description = str(item.get("description") or "")[:100]
+            references.append(f"- {item['keyword']}（{item.get('status', '未标记')}）：{description}".rstrip("："))
+        if not found_foreshadowing:
+            references.append("- 暂无待处理伏笔")
 
         if recent_summaries:
-            extra_info.append("前情提要：已准备好，写作时请注意承接上一章剧情")
+            references.append("【近期剧情摘要】")
+            for item in recent_summaries[:3]:
+                summary = str(item.get("summary") or "").strip()
+                if summary:
+                    references.append(f"- 第{item.get('chapter_no', '?')}章：{summary[:140]}")
 
-        if extra_info:
-            context["_planning_extra"] = "\n".join(extra_info)
+        context["_planning_context"] = "\n".join(references)
 
         return context
 

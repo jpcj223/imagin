@@ -141,7 +141,10 @@ class GenerationOptionsTests(unittest.TestCase):
         ):
             events = engine.run_stream(chapter_no=1)
             self.assertEqual(next(events)["type"], "step_start")
+            # 流式正文前会先发送本步骤实际加载的资料和配置快照。
+            self.assertEqual(next(events)["type"], "step_context")
             first_delta = next(events)
+            self.assertEqual(first_delta["type"], "delta")
             self.assertEqual(first_delta["content"], "先到的正文")
             engine._cancel_event.set()
             final_event = next(events)

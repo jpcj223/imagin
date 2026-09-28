@@ -8,7 +8,6 @@ import json
 
 from app.skills.base import BaseSkill, SkillMeta
 from app.skills.registry import SkillRegistry
-from app.memory.retriever import format_volume_outline
 
 
 @SkillRegistry.register("core_writing")
@@ -40,13 +39,11 @@ class CoreWritingSkill(BaseSkill):
 
         步骤 1：整理世界观、大纲、人物和记忆资料。
         步骤 2：把规划结果加入正文提示；快速写作模板使用明确的无规划说明。
-        步骤 3：压缩结构化设定，供 Writer Prompt 统一引用。
+        步骤 3：压缩结构化设定，避免重复附带已经包含在连续性资料中的卷纲和章纲。
         """
         # 步骤 1：把结构化上下文压缩成写作资料包。
         project = context.get("project", {})
         world = context.get("world", {})
-        volume_outline = context.get("volume_outline") or {}
-        outline = context.get("outline", {})
         characters = context.get("characters", [])
         world_settings = context.get("world_settings", [])
         organizations = context.get("organizations", [])
@@ -58,19 +55,18 @@ class CoreWritingSkill(BaseSkill):
         # 步骤 2：规划结果为空时说明当前模板直接写作，不展示空白的计划区。
         writing_plan = context.get("writing_plan") or "快速写作模式：没有独立规划步骤，请直接依据本章大纲安排剧情。"
 
-        # 步骤 3：生成统一资料包，Writer Prompt 会同时单独引用 writing_plan。
+        # 步骤 3：当前/相邻卷章纲只在连续性资料出现一次，避免重复消耗输入 Token。
         context_text = f"""
 项目：{project.get("name", "")}
 世界观：{_format_world(world, world_settings)}
-全书及相邻卷章连续性资料（总览、前后卷纲、当前与下一章细纲、上一章衔接）：
+大纲连续性资料（已包含总览、前后卷纲、当前与下一章细纲及上一章衔接）：
 {generation_outline_context}
-当前卷纲：{format_volume_outline(volume_outline)}
-本章大纲：{_format_outline(outline)}
 角色：{_format_characters(characters)}
 组织：{_format_organizations(organizations)}
 待处理伏笔：{_format_foreshadowings(foreshadowings)}
 最近章节摘要：{_format_summaries(recent_summaries)}
 已确认长期记忆：{_format_long_term_memories(long_term_memories)}
+创作边界：以当前章细纲为准；相邻卷章只用于承接和铺垫，不提前完成后续核心事件。
 """.strip()
 
         context["writing_plan"] = writing_plan
@@ -116,14 +112,6 @@ def _format_world(world: dict, world_settings: list[dict] | None = None) -> str:
         parts.append(f"{label}：{detail_text}" if detail_text else label)
 
     return "\n".join(parts) if parts else "暂无世界观设定"
-
-
-def _format_outline(outline: dict) -> str:
-    if not outline:
-        return "暂无大纲"
-    title = outline.get("title", "")
-    desc = outline.get("description", "")
-    return f"{title} - {desc}" if desc else title
 
 
 def _format_characters(characters: list[dict]) -> str:
