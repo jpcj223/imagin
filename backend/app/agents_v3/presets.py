@@ -78,6 +78,10 @@ def create_analyzer_agent(variant: str = "default", **extra_params) -> BaseAgent
             "分析只记录正文明确发生且可能影响后续创作的摘要、人物/关系变化、组织/世界设定变化、伏笔和时间线；"
             "不要重复本章规划或罗列没有发生变化的设定。\n\n章节正文：\n{content}"
         )
+        # 分析只沉淀后续创作需要的事实；限制冗长解释，避免分析步骤拖住正文交付。
+        .with_param("max_tokens", 1400)
+        # 分析步骤最多等待 2 分钟；规划和正文仍使用原模型请求时限，避免压缩高质量生成时间。
+        .with_param("_request_timeout_seconds", 120)
     )
 
     VariantManager.apply_to_builder(builder, variant, "analyzer")

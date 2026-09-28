@@ -10,6 +10,7 @@ from typing import Any
 from app.core.llm import (
     LLMCancelled,
     LLMError,
+    LLMTimeout,
     chat_completion_stream_with_usage,
     chat_completion_with_usage,
 )
@@ -60,6 +61,7 @@ class DynamicAgent(BaseAgent):
         """同步执行。"""
         effective_params = {**self.params, **(params or {})}
         cancel_event = effective_params.pop("_cancel_event", None)
+        request_timeout_seconds = effective_params.pop("_request_timeout_seconds", None)
 
         # 1. Skill 前处理
         ctx = self._apply_skills_pre(context, effective_params)
@@ -74,8 +76,16 @@ class DynamicAgent(BaseAgent):
                 messages,
                 **self._extract_llm_params(effective_params),
                 cancel_event=cancel_event,
+                request_timeout_seconds=request_timeout_seconds,
             )
             source = "llm"
+        except LLMTimeout as exc:
+            if self.meta.agent_type != "analyzer":
+                raise
+            # 分析超时不阻断已经写完的正文；把分析标为不可用，供作者之后单独重试。
+            content = ""
+            source = f"timeout: {exc}"
+            token_usage = None
         except LLMCancelled:
             # 用户停止时不能走 fallback，否则暂停请求会被误当成一次成功生成。
             raise
@@ -107,6 +117,7 @@ class DynamicAgent(BaseAgent):
         """流式执行。"""
         effective_params = {**self.params, **(params or {})}
         cancel_event = effective_params.pop("_cancel_event", None)
+        request_timeout_seconds = effective_params.pop("_request_timeout_seconds", None)
 
         # 1. Skill 前处理
         ctx = self._apply_skills_pre(context, effective_params)
@@ -124,14 +135,23 @@ class DynamicAgent(BaseAgent):
                 messages,
                 **self._extract_llm_params(effective_params),
                 cancel_event=cancel_event,
+                request_timeout_seconds=request_timeout_seconds,
             ):
                 if event.get("type") == "usage":
                     token_usage = event.get("usage")
                 elif event.get("type") == "delta":
                     chunk = event.get("content", "")
                     chunks.append(chunk)
-                    yield {"type": "delta", "content": chunk}
+                    # 分析输出是结构化数据，先在 Agent 内缓冲；超时后不能把半截 JSON 展示成有效结果。
+                    if self.meta.agent_type != "analyzer":
+                        yield {"type": "delta", "content": chunk}
             content = "".join(chunks)
+        except LLMTimeout as exc:
+            if self.meta.agent_type != "analyzer":
+                raise
+            # 分析超时不阻断已经写完的正文；保留章节交付并明确报告分析未完成。
+            source = f"timeout: {exc}"
+            content = ""
         except LLMCancelled:
             raise
         except LLMError as exc:

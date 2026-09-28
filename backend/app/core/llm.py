@@ -5,6 +5,7 @@ import math
 import os
 import socket
 import threading
+import time
 import urllib.error
 import urllib.request
 from collections.abc import Iterator
@@ -22,6 +23,10 @@ class LLMCancelled(LLMError):
     """用户主动停止当前模型请求。"""
 
 
+class LLMTimeout(LLMError):
+    """单次模型请求超过允许的墙钟时间。"""
+
+
 def _interrupt_response(response: Any) -> None:
     """关闭底层 socket，尽可能让阻塞中的 urllib 读取立即返回。"""
     try:
@@ -35,28 +40,40 @@ def _interrupt_response(response: Any) -> None:
         pass
 
 
-def _watch_response_cancellation(response: Any, cancel_event: threading.Event | None):
-    """监控工作流取消信号，并在模型响应阻塞时关闭连接。"""
-    if cancel_event is None:
-        return lambda: None
-    if cancel_event.is_set():
+def _watch_response_cancellation(
+    response: Any,
+    cancel_event: threading.Event | None,
+    deadline: float | None = None,
+):
+    """监控用户中断和模型请求总时限；上游心跳不能无限延长单次请求。"""
+    reason: dict[str, str | None] = {"value": None}
+    if cancel_event is not None and cancel_event.is_set():
         _interrupt_response(response)
+        reason["value"] = "cancelled"
+        return lambda: reason["value"]
+    if cancel_event is None and deadline is None:
         return lambda: None
 
     finished = threading.Event()
 
     def watch() -> None:
         while not finished.wait(0.05):
-            if cancel_event.is_set():
+            if cancel_event is not None and cancel_event.is_set():
+                reason["value"] = "cancelled"
+                _interrupt_response(response)
+                return
+            if deadline is not None and time.monotonic() >= deadline:
+                reason["value"] = "timeout"
                 _interrupt_response(response)
                 return
 
     watcher = threading.Thread(target=watch, name="llm-cancel-watch", daemon=True)
     watcher.start()
 
-    def stop_watching() -> None:
+    def stop_watching() -> str | None:
         finished.set()
         watcher.join(timeout=0.2)
+        return reason["value"]
 
     return stop_watching
 
@@ -72,6 +89,16 @@ def _api_timeout_seconds() -> int:
         return max(10, int(raw) // 1000)
     except ValueError:
         return 300
+
+
+def _resolve_request_timeout(override: int | float | None = None) -> int:
+    """解析单次请求上限；特定步骤可缩短等待时间，但不影响其他步骤。"""
+    if override is None:
+        return _api_timeout_seconds()
+    try:
+        return max(10, int(override))
+    except (TypeError, ValueError, OverflowError):
+        return _api_timeout_seconds()
 
 
 def _max_tokens_default() -> int:
@@ -229,7 +256,11 @@ def _build_payload(config: dict[str, Any], messages: list[dict[str, str]],
     return payload
 
 
-def _make_urlopen(config: dict[str, Any], payload: dict[str, Any]):
+def _make_urlopen(
+    config: dict[str, Any],
+    payload: dict[str, Any],
+    timeout_seconds: int | None = None,
+):
     """构造并发送请求，返回 response 对象（供 with 使用）。
 
     支持 proxy_url 配置；没有代理时走默认直连。
@@ -248,15 +279,16 @@ def _make_urlopen(config: dict[str, Any], payload: dict[str, Any]):
     )
 
     proxy_url = config.get("proxy_url") or ""
+    timeout = _api_timeout_seconds() if timeout_seconds is None else timeout_seconds
     if proxy_url:
         proxy_handler = urllib.request.ProxyHandler({
             "http": proxy_url,
             "https": proxy_url,
         })
         opener = urllib.request.build_opener(proxy_handler)
-        return opener.open(request, timeout=_api_timeout_seconds())
+        return opener.open(request, timeout=timeout)
     else:
-        return urllib.request.urlopen(request, timeout=_api_timeout_seconds())
+        return urllib.request.urlopen(request, timeout=timeout)
 
 
 def chat_completion(messages: list[dict[str, str]], temperature: float | None = None,
@@ -277,6 +309,7 @@ def chat_completion_with_usage(
     temperature: float | None = None,
     max_tokens: int | None = None,
     cancel_event: threading.Event | None = None,
+    request_timeout_seconds: int | None = None,
 ) -> tuple[str, dict[str, Any] | None]:
     """调用兼容接口并同时返回供应商报告的 Token 用量。
 
@@ -298,27 +331,46 @@ def chat_completion_with_usage(
     payload = _build_payload(config, messages, temperature=temperature,
                              max_tokens=max_tokens, stream=False)
 
+    timeout_seconds = _resolve_request_timeout(request_timeout_seconds)
+    deadline = time.monotonic() + timeout_seconds
+    watch_reason: str | None = None
     try:
-        with _make_urlopen(config, payload) as response:
-            stop_watching = _watch_response_cancellation(response, cancel_event)
+        with _make_urlopen(config, payload, timeout_seconds=timeout_seconds) as response:
+            stop_watching = _watch_response_cancellation(response, cancel_event, deadline)
             try:
                 body = json.loads(response.read().decode("utf-8"))
             finally:
-                stop_watching()
+                watch_reason = stop_watching()
+            if watch_reason == "cancelled":
+                raise LLMCancelled("用户中断模型请求")
+            if watch_reason == "timeout":
+                raise LLMTimeout(f"模型请求总耗时超过 {timeout_seconds} 秒；本步骤已停止，可稍后重试")
     except urllib.error.HTTPError as exc:
+        if watch_reason == "timeout":
+            raise LLMTimeout(f"模型请求总耗时超过 {timeout_seconds} 秒；本步骤已停止，可稍后重试") from exc
         if cancel_event is not None and cancel_event.is_set():
             raise LLMCancelled("用户中断模型请求") from exc
         detail = exc.read().decode("utf-8", errors="ignore")
         raise LLMError(f"模型接口返回错误：{exc.code} {detail}") from exc
     except urllib.error.URLError as exc:
+        if watch_reason == "timeout":
+            raise LLMTimeout(f"模型请求总耗时超过 {timeout_seconds} 秒；本步骤已停止，可稍后重试") from exc
         if cancel_event is not None and cancel_event.is_set():
             raise LLMCancelled("用户中断模型请求") from exc
+        if isinstance(exc.reason, (TimeoutError, socket.timeout)):
+            raise LLMTimeout(f"模型接口 {timeout_seconds} 秒内未返回数据；本步骤已停止，可稍后重试") from exc
         raise LLMError(f"无法连接模型接口：{exc.reason}") from exc
     except (TimeoutError, socket.timeout) as exc:
+        if watch_reason == "timeout":
+            raise LLMTimeout(f"模型请求总耗时超过 {timeout_seconds} 秒；本步骤已停止，可稍后重试") from exc
         if cancel_event is not None and cancel_event.is_set():
             raise LLMCancelled("用户中断模型请求") from exc
-        raise LLMError(f"模型接口读取超时：{_api_timeout_seconds()} 秒内未返回完整响应") from exc
+        raise LLMTimeout(f"模型接口读取超时：{timeout_seconds} 秒内未返回完整响应") from exc
+    except LLMTimeout:
+        raise
     except Exception as exc:
+        if watch_reason == "timeout":
+            raise LLMTimeout(f"模型请求总耗时超过 {timeout_seconds} 秒；本步骤已停止，可稍后重试") from exc
         if cancel_event is not None and cancel_event.is_set():
             raise LLMCancelled("用户中断模型请求") from exc
         raise
@@ -386,6 +438,7 @@ def chat_completion_stream_with_usage(
     temperature: float | None = None,
     max_tokens: int | None = None,
     cancel_event: threading.Event | None = None,
+    request_timeout_seconds: int | None = None,
 ) -> Iterator[dict[str, Any]]:
     """流式请求并保留供应商主动返回的 Token 用量事件。"""
     # 步骤 1：按当前 OpenAI-compatible 配置建立流；步骤 2：逐条解析文本和可选用量事件。
@@ -400,9 +453,14 @@ def chat_completion_stream_with_usage(
         raise LLMError("当前模型通道使用 OpenAI-compatible 协议，请填写以 /v1 结尾的兼容地址，例如 https://api.siliconflow.cn/v1")
 
     payload = _build_payload(config, messages, temperature=temperature, max_tokens=max_tokens, stream=True)
+    timeout_seconds = _resolve_request_timeout(request_timeout_seconds)
+    request_deadline = time.monotonic() + timeout_seconds
+    watch_reason: str | None = None
     try:
-        with _make_urlopen(config, payload) as response:
-            stop_watching = _watch_response_cancellation(response, cancel_event)
+        with _make_urlopen(config, payload, timeout_seconds=timeout_seconds) as response:
+            stop_watching = _watch_response_cancellation(
+                response, cancel_event, deadline=request_deadline
+            )
             try:
                 for raw_line in response:
                     if cancel_event is not None and cancel_event.is_set():
@@ -431,21 +489,49 @@ def chat_completion_stream_with_usage(
                     if content:
                         yield {"type": "delta", "content": content}
             finally:
-                stop_watching()
+                watch_reason = stop_watching()
+            if watch_reason == "cancelled":
+                raise LLMCancelled("用户中断模型请求")
+            if watch_reason == "timeout":
+                raise LLMTimeout(
+                    f"模型请求总耗时超过 {timeout_seconds} 秒；本步骤已停止，可稍后重试"
+                )
     except urllib.error.HTTPError as exc:
+        if watch_reason == "timeout":
+            raise LLMTimeout(
+                f"模型请求总耗时超过 {timeout_seconds} 秒；本步骤已停止，可稍后重试"
+            ) from exc
         if cancel_event is not None and cancel_event.is_set():
             raise LLMCancelled("用户中断模型请求") from exc
         detail = exc.read().decode("utf-8", errors="ignore")
         raise LLMError(f"模型接口返回错误：{exc.code} {detail}") from exc
     except urllib.error.URLError as exc:
+        if watch_reason == "timeout":
+            raise LLMTimeout(
+                f"模型请求总耗时超过 {timeout_seconds} 秒；本步骤已停止，可稍后重试"
+            ) from exc
         if cancel_event is not None and cancel_event.is_set():
             raise LLMCancelled("用户中断模型请求") from exc
+        if isinstance(exc.reason, (TimeoutError, socket.timeout)):
+            raise LLMTimeout(
+                f"模型接口 {timeout_seconds} 秒内未返回数据；本步骤已停止，可稍后重试"
+            ) from exc
         raise LLMError(f"无法连接模型接口：{exc.reason}") from exc
     except (TimeoutError, socket.timeout) as exc:
+        if watch_reason == "timeout":
+            raise LLMTimeout(
+                f"模型请求总耗时超过 {timeout_seconds} 秒；本步骤已停止，可稍后重试"
+            ) from exc
         if cancel_event is not None and cancel_event.is_set():
             raise LLMCancelled("用户中断模型请求") from exc
-        raise LLMError(f"模型接口读取超时：{_api_timeout_seconds()} 秒内未返回完整响应") from exc
+        raise LLMTimeout(f"模型接口读取超时：{timeout_seconds} 秒内未返回完整响应") from exc
+    except LLMTimeout:
+        raise
     except Exception as exc:
+        if watch_reason == "timeout":
+            raise LLMTimeout(
+                f"模型请求总耗时超过 {timeout_seconds} 秒；本步骤已停止，可稍后重试"
+            ) from exc
         if cancel_event is not None and cancel_event.is_set():
             raise LLMCancelled("用户中断模型请求") from exc
         raise

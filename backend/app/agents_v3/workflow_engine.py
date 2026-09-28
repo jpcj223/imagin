@@ -220,6 +220,8 @@ class WorkflowEngine:
 
     _cancel_events: dict[str, threading.Event] = {}
     _cancel_events_lock = threading.Lock()
+    _execution_locks: dict[str, threading.Lock] = {}
+    _execution_locks_lock = threading.Lock()
 
     @classmethod
     def _event_for_run(cls, run_id: str) -> threading.Event:
@@ -242,6 +244,27 @@ class WorkflowEngine:
         with cls._cancel_events_lock:
             if cls._cancel_events.get(run_id) is event:
                 cls._cancel_events.pop(run_id, None)
+
+    @classmethod
+    def _acquire_execution_lock(cls, run_id: str) -> threading.Lock | None:
+        """同一工作流只允许一个流式执行，防止超时后续传叠加模型请求。"""
+        with cls._execution_locks_lock:
+            lock = cls._execution_locks.get(run_id)
+            if lock is not None and lock.locked():
+                return None
+            if lock is None:
+                lock = threading.Lock()
+                cls._execution_locks[run_id] = lock
+            lock.acquire()
+            return lock
+
+    @classmethod
+    def _release_execution_lock(cls, run_id: str, lock: threading.Lock) -> None:
+        """在锁表互斥区内释放并移除锁，避免释放/重建之间出现双执行竞态。"""
+        with cls._execution_locks_lock:
+            if cls._execution_locks.get(run_id) is lock:
+                lock.release()
+                cls._execution_locks.pop(run_id, None)
 
     @classmethod
     def request_pause(cls, run_id: str) -> bool:
@@ -731,9 +754,13 @@ class WorkflowEngine:
 
         if step.agent_type == "analyzer":
             # 步骤 2：模型调用失败时，兜底文本只用于界面诊断，不能成为正式章节分析。
-            if str(result.get("source", "")).startswith("fallback:"):
+            source = str(result.get("source", ""))
+            if source.startswith(("fallback:", "timeout:")):
                 result["analysis_status"] = "unavailable"
-                result.setdefault("analysis_message", "模型服务不可用，本次未保存章节分析；配置模型后可重新分析。")
+                if source.startswith("timeout:"):
+                    result["analysis_message"] = source.removeprefix("timeout:").strip()
+                else:
+                    result.setdefault("analysis_message", "模型服务不可用，本次未保存章节分析；配置模型后可重新分析。")
                 result["summary"] = ""
                 result["character_changes"] = ""
                 result["world_changes"] = ""
@@ -984,6 +1011,37 @@ class WorkflowEngine:
         }
 
     def run_stream(
+        self,
+        chapter_no: int,
+        outline_id: int | None = None,
+        instruction: str | None = None,
+        rhythm_level: str | None = None,
+        context_selection: dict[str, list[int]] | None = None,
+        manual_context_selection: dict[str, list[int]] | None = None,
+        generation_options: dict[str, Any] | None = None,
+    ) -> Iterator[dict[str, Any]]:
+        """带运行互斥保护的流式执行入口。"""
+        lock = self._acquire_execution_lock(self.run_id)
+        if lock is None:
+            yield {
+                "type": "error",
+                "message": "该工作流仍有模型请求在执行，当前续传未启动；请等待原请求结束后刷新状态。",
+            }
+            return
+        try:
+            yield from self._run_stream_unlocked(
+                chapter_no=chapter_no,
+                outline_id=outline_id,
+                instruction=instruction,
+                rhythm_level=rhythm_level,
+                context_selection=context_selection,
+                manual_context_selection=manual_context_selection,
+                generation_options=generation_options,
+            )
+        finally:
+            self._release_execution_lock(self.run_id, lock)
+
+    def _run_stream_unlocked(
         self,
         chapter_no: int,
         outline_id: int | None = None,

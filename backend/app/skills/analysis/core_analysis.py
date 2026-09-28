@@ -67,13 +67,68 @@ class CoreAnalysisSkill(BaseSkill):
     def pre_process(self, context, params):
         """把章节相关的项目资料整理成分析上下文，帮助实体名称精确对齐。
 
-        步骤 1：整理本章实际选中的人物、组织和伏笔。
-        步骤 2：加入实际送入写作上下文的世界观条目，供变化识别对照。
-        步骤 3：将精简后的实体目录注入分析提示词。
+        步骤 1：保留正文提及或作者手动选中的人物、组织、设定和伏笔。
+        步骤 2：压缩保留字段，供变化识别时对照。
+        步骤 3：将精简实体目录注入分析提示词。
         """
         world = context.get("world") or {}
-        world_settings = [item for item in context.get("world_settings", []) if isinstance(item, dict)]
-        character_items = [item for item in context.get("characters", []) if isinstance(item, dict)]
+        chapter_text = str(context.get("content") or context.get("draft_content") or "")
+        folded_text = chapter_text.casefold()
+        manual_selection = context.get("manual_context_selection") or {}
+        selected_context = context.get("context_selection") or {}
+        selected_ids_by_category = {
+            category: {
+                str(item_id)
+                for source in (selected_context, manual_selection)
+                for item_id in (source.get(category) or [])
+            }
+            for category in (
+                "character_ids", "organization_ids", "world_setting_ids", "foreshadowing_ids"
+            )
+        }
+
+        def is_selected(item: dict[str, Any], category: str) -> bool:
+            item_id = item.get("id")
+            return item_id is not None and str(item_id) in selected_ids_by_category.get(category, set())
+
+        def is_relevant(item: dict[str, Any], category: str, fields: tuple[str, ...]) -> bool:
+            if is_selected(item, category):
+                return True
+            return any(
+                len(term) >= 2 and term.casefold() in folded_text
+                for term in (str(item.get(field) or "").strip() for field in fields)
+            )
+
+        def relevant_items(key: str, category: str, fields: tuple[str, ...]) -> list[dict[str, Any]]:
+            values = context.get(key)
+            if not isinstance(values, list):
+                return []
+            return [
+                item for item in values
+                if isinstance(item, dict) and is_relevant(item, category, fields)
+            ]
+
+        def compact(value: Any, limit: int = 240) -> str:
+            return str(value or "").strip()[:limit]
+
+        def compact_relations(value: Any) -> list[str | dict[str, str]]:
+            if not isinstance(value, list):
+                return []
+            compacted = []
+            for relation in value[:8]:
+                if isinstance(relation, dict):
+                    compacted.append({
+                        str(key): compact(item, 120)
+                        for key, item in list(relation.items())[:6]
+                    })
+                else:
+                    compacted.append(compact(relation, 120))
+            return compacted
+
+        world_settings = relevant_items("world_settings", "world_setting_ids", ("title",))
+        character_items = relevant_items("characters", "character_ids", ("name",))
+        organizations = relevant_items("organizations", "organization_ids", ("name",))
+        foreshadowings = relevant_items("foreshadowings", "foreshadowing_ids", ("keyword",))
         character_names = {
             item.get("id"): item.get("name", "")
             for item in character_items
@@ -82,18 +137,20 @@ class CoreAnalysisSkill(BaseSkill):
         references = {
             "characters": [
                 {
-                    "name": item.get("name", ""),
-                    "identity": item.get("identity", ""),
-                    "faction": item.get("faction", ""),
-                    "status": item.get("status", ""),
-                    "personality": item.get("personality", ""),
+                    "name": compact(item.get("name"), 80),
+                    "identity": compact(item.get("identity"), 120),
+                    "faction": compact(item.get("faction"), 100),
+                    "status": compact(item.get("status"), 60),
+                    "personality": compact(item.get("personality"), 240),
                     "relationships": [
                         {
-                            "target_name": relation.get("target_name")
-                            or character_names.get(relation.get("target_id"), ""),
-                            "relation_type": relation.get("relation_type", ""),
+                            "target_name": compact(
+                                relation.get("target_name")
+                                or character_names.get(relation.get("target_id"), ""), 80
+                            ),
+                            "relation_type": compact(relation.get("relation_type"), 80),
                         }
-                        for relation in _read_relation_list(item.get("character_relations"))[:12]
+                        for relation in _read_relation_list(item.get("character_relations"))[:8]
                         if isinstance(relation, dict)
                     ],
                 }
@@ -101,39 +158,37 @@ class CoreAnalysisSkill(BaseSkill):
             ],
             "organizations": [
                 {
-                    "name": item.get("name", ""),
-                    "org_type": item.get("org_type", ""),
-                    "status": item.get("status", ""),
-                    "goal": item.get("goal", ""),
-                    "relations": item.get("relations", []),
-                }
-                for item in context.get("organizations", [])
-                if isinstance(item, dict)
+                    "name": compact(item.get("name"), 100),
+                    "org_type": compact(item.get("org_type"), 80),
+                    "status": compact(item.get("status"), 60),
+                    "goal": compact(item.get("goal"), 240),
+                    "relations": compact_relations(item.get("relations")),
+                } for item in organizations
             ],
             "foreshadowings": [
                 {
-                    "keyword": item.get("keyword", ""),
-                    "status": item.get("status", ""),
-                    "description": item.get("description", ""),
-                }
-                for item in context.get("foreshadowings", [])
-                if isinstance(item, dict)
+                    "keyword": compact(item.get("keyword"), 100),
+                    "status": compact(item.get("status"), 60),
+                    "description": compact(item.get("description"), 260),
+                } for item in foreshadowings
             ],
             "world": {
-                key: world.get(key, "")
+                key: compact(world.get(key), 400)
                 for key in ("title", "era", "geography", "atmosphere", "rules", "extra")
             },
             "world_settings": [
                 {
-                    key: item.get(key, "")
+                    key: compact(item.get(key), 360)
                     for key in ("title", "era", "category", "geography", "atmosphere", "rules", "extra")
                 }
                 for item in world_settings
             ],
         }
         processed = dict(context)
-        # 步骤 3：Agent 基类追加分析对照资料，正文原始上下文仍保留在工作流状态。
-        processed["_analysis_reference_context"] = json.dumps(references, ensure_ascii=False, indent=2)
+        # 只注入正文提及的实体与作者手动指定的资料，避免把整个项目名录重复塞入分析请求。
+        processed["_analysis_reference_context"] = json.dumps(
+            references, ensure_ascii=False, separators=(",", ":")
+        )
         return processed
 
     def post_process(self, result, context, params):
